@@ -3,7 +3,8 @@ use std::process::Command;
 fn main() {
     slint_build::compile("ui/app.slint").expect("ui");
     let commit = Command::new("git")
-        .args(["rev-parse", "--short=12", "HEAD"])
+        // in a container another user owns the repository, and git then gives no commit
+        .args(["-c", "safe.directory=*", "rev-parse", "--short=12", "HEAD"])
         .output();
     let commit = commit
         .ok()
