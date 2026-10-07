@@ -188,7 +188,7 @@ fn main() -> Result<(), slint::PlatformError> {
         },
         tracks: Tracks {
             video: vec![64.0],
-            audio: vec![(36.0, false), (36.0, false)],
+            audio: vec![(36.0, false)],
         },
         preview: Some(preview),
         ids: 0,
