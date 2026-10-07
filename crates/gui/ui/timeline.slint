@@ -142,7 +142,7 @@ export component Timeline inherits Rectangle {
             if root.video.length > 1: Action {
                 x: parent.width - 30px;
                 width: 18px;
-                text: "✕";
+                text: "×";
                 clicked => {
                     root.remove-lane(false, index);
                 }
@@ -203,7 +203,7 @@ export component Timeline inherits Rectangle {
                 }
                 Action {
                     width: 18px;
-                    text: "✕";
+                    text: "×";
                     clicked => {
                         root.remove-lane(true, index);
                     }

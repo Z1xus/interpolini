@@ -28,6 +28,8 @@ export global Icons {
     out property <string> frame: "M3 6V3h3M10 3h3v3M13 10v3h-3M6 13H3v-3M6.5 6.5h3v3h-3z";
     out property <string> hidden: "M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8zM8 6a2 2 0 1 0 0 4a2 2 0 1 0 0-4zM3 13.5 13 2.5";
     out property <string> check: "M3.5 8.5 6.5 11.5 12.5 4.5";
+    out property <string> down: "M4 6h8l-4 5z";
+    out property <string> right: "M6 4v8l5-4z";
 }
 
 export component Icon inherits Path {
@@ -321,12 +323,14 @@ export component Dropdown inherits Rectangle {
         font-size: 12px;
         vertical-alignment: center;
     }
-    Text {
-        x: parent.width - 18px;
-        text: "▾";
+    Icon {
+        x: parent.width - 20px;
+        y: (parent.height - self.height) / 2;
+        width: 12px;
+        height: 12px;
+        shape: Icons.down;
+        filled: true;
         color: Theme.faint;
-        font-size: 10px;
-        vertical-alignment: center;
     }
     touch := TouchArea {
         mouse-cursor: pointer;
@@ -389,12 +393,14 @@ export component Section inherits VerticalLayout {
                 root.open = !root.open;
             }
         }
-        Text {
-            x: 12px;
-            text: root.open ? "▾" : "▸";
+        Icon {
+            x: 10px;
+            y: (parent.height - self.height) / 2;
+            width: 12px;
+            height: 12px;
+            shape: root.open ? Icons.down : Icons.right;
+            filled: true;
             color: Theme.faint;
-            font-size: 10px;
-            vertical-alignment: center;
         }
         Text {
             x: 28px;
@@ -621,12 +627,12 @@ export component MenuItem inherits Rectangle {
         padding-left: 8px;
         padding-right: 12px;
         spacing: 8px;
-        Text {
+        Icon {
+            y: (parent.height - self.height) / 2;
             width: 10px;
-            text: root.checked ? "✓" : "";
-            color: Theme.accent;
-            font-size: 11px;
-            vertical-alignment: center;
+            height: 10px;
+            shape: Icons.check;
+            color: root.checked ? Theme.accent : transparent;
         }
         Text {
             horizontal-stretch: 1;
