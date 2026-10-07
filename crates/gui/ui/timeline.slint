@@ -1,0 +1,623 @@
+import { Action, Theme } from "widgets.slint";
+import { Clip, Ghost, Lane } from "types.slint";
+
+export component Timeline inherits Rectangle {
+    in-out property <[Clip]> clips;
+    in property <[Lane]> video;
+    in property <[Lane]> audio;
+    in property <[Ghost]> ghosts;
+    in property <int> selected;
+    in property <int> link;
+    // the height of all tracks together
+    in property <length> content;
+    in property <image> art;
+    in property <image> art-mask;
+    in property <bool> light;
+    in property <float> extent;
+    in property <float> seconds;
+    in-out property <float> position;
+    callback seek();
+    callback select(int);
+    // adds a clip to the selected ones, or takes it out
+    callback extend(int);
+    // the clip, the time under the pointer, and if the clip moves without the other clips of its file
+    callback grab(int, float, bool);
+    callback drag(float, length, float);
+    callback release();
+    callback trim-start();
+    // the clip, and how near in seconds an edge must be to hold it
+    callback trimmed(int, float);
+    callback trim-done();
+    callback lane-height(bool, int, length);
+    callback lane-wheel(length, length);
+    callback add-lane(bool);
+    callback remove-lane(bool, int);
+    callback mute-lane(int);
+    property <length> gutter: 150px;
+    property <length> ruler: 24px;
+    property <float> zoom: 1;
+    property <float> scroll;
+    // how far the tracks are moved up, when they do not fit
+    property <length> lift;
+    property <length> spare: root.height - root.ruler - root.content;
+    // the tracks start in the middle when the panel is higher than them, and the wheel moves them
+    property <length> low: min(0px, -root.spare / 2);
+    property <length> high: max(-root.spare, root.spare / 2);
+    property <length> shift: clamp(root.lift, root.low, root.high) - max(0px, root.spare / 2);
+    // the playhead as a part of the full width
+    property <float> head: root.position * root.seconds / root.extent;
+    // the distance between two time labels, about 90px apart
+    property <float> raw: root.extent / max(1, area.width * root.zoom / 90px);
+    property <float> step: raw <= 1 ? 1 : raw <= 2 ? 2 : raw <= 5 ? 5 : raw <= 10 ? 10 : raw <= 15 ? 15 : raw <= 30 ? 30 : raw <= 60 ? 60 : raw <= 120 ? 120 : raw <= 300 ? 300 : ceil(raw / 600) * 600;
+    function pick(x: length) {
+        root.position = clamp(x / (area.width * root.zoom) * root.extent / root.seconds, 0, 1);
+        root.seek();
+    }
+    public function magnify(factor: float) {
+        root.grow(factor, root.head);
+    }
+    // the time and the depth below the ruler of a point in the window
+    public pure function time-at(x: length) -> float {
+        (x - inner.absolute-position.x) / inner.width * root.extent
+    }
+    public pure function depth-at(y: length) -> length {
+        y - area.absolute-position.y - root.ruler + root.shift
+    }
+    function grow(factor: float, at: float) {
+        root.scroll = at - (at - root.scroll) * root.zoom / clamp(root.zoom * factor, 0.1, 200);
+        root.zoom = clamp(root.zoom * factor, 0.1, 200);
+        root.scroll = clamp(root.scroll, 0, max(0, 1 - 1 / root.zoom));
+    }
+    function wheel(event: PointerScrollEvent, x: length, y: length) {
+        if event.modifiers.alt {
+            root.lane-wheel(y + root.shift, event.delta-y + event.delta-x);
+        } else if event.modifiers.control {
+            // the time under the pointer stays under the pointer
+            root.grow(event.delta-y > 0 ? 1.25 : 0.8, x / inner.width);
+        } else if event.modifiers.shift || root.spare == 0 {
+            root.scroll = clamp(root.scroll - (event.delta-y + event.delta-x) / inner.width, 0, max(0, 1 - 1 / root.zoom));
+        } else {
+            root.lift = clamp(root.lift - event.delta-y, root.low, root.high);
+        }
+    }
+    // the view follows the playhead when it leaves
+    changed position => {
+        if root.head < root.scroll || root.head > root.scroll + 1 / root.zoom {
+            root.scroll = clamp(root.head - 0.1 / root.zoom, 0, max(0, 1 - 1 / root.zoom));
+        }
+    }
+    max-width: 100000px;
+    background: Theme.rack;
+    clip: true;
+
+    Rectangle {
+        x: root.width - 340px;
+        y: root.height - 84px;
+        width: 330px;
+        height: 76px;
+        opacity: root.light ? 1 : 0.6;
+        Image {
+            width: parent.width;
+            height: 76px;
+            source: root.art-mask;
+            colorize: root.light ? Theme.ink : Theme.muted;
+            image-fit: contain;
+            horizontal-alignment: right;
+        }
+        Image {
+            width: parent.width;
+            height: 76px;
+            source: root.art;
+            image-fit: contain;
+            horizontal-alignment: right;
+        }
+    }
+
+    Rectangle {
+        x: 0;
+        y: root.ruler;
+        width: root.gutter;
+        height: root.height - root.ruler;
+        clip: true;
+        TouchArea {
+            scroll-event(event) => {
+                if event.modifiers.alt {
+                    root.lane-wheel(self.mouse-y + root.shift, event.delta-y + event.delta-x);
+                } else {
+                    root.lift = clamp(root.lift - event.delta-y, root.low, root.high);
+                }
+                accept
+            }
+        }
+        for lane[index] in root.video: Rectangle {
+            y: lane.y - root.shift;
+            height: lane.height;
+            Text {
+                x: 12px;
+                text: lane.name;
+                color: Theme.muted;
+                font-size: 11px;
+                font-family: "monospace";
+                vertical-alignment: center;
+            }
+            if root.video.length > 1: Action {
+                x: parent.width - 30px;
+                width: 18px;
+                text: "✕";
+                clicked => {
+                    root.remove-lane(false, index);
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.seam;
+            }
+            Rectangle {
+                y: 0;
+                height: 3px;
+                background: size.has-hover || size.pressed ? Theme.accent : transparent;
+            }
+            size := TouchArea {
+                // the panel grows upward with the track, so the height counts from where the drag started
+                property <length> anchor;
+                property <length> base;
+                y: 0;
+                height: 9px;
+                mouse-cursor: row-resize;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        self.anchor = self.absolute-position.y + self.mouse-y;
+                        self.base = lane.height;
+                    }
+                }
+                moved => {
+                    if self.pressed {
+                        root.lane-height(false, index, self.base - (self.absolute-position.y + self.mouse-y - self.anchor));
+                    }
+                }
+            }
+        }
+        for lane[index] in root.audio: Rectangle {
+            y: lane.y - root.shift;
+            height: lane.height;
+            HorizontalLayout {
+                x: 12px;
+                width: parent.width - 24px;
+                spacing: 8px;
+                Text {
+                    text: lane.name;
+                    color: lane.muted ? Theme.faint : Theme.muted;
+                    font-size: 11px;
+                    font-family: "monospace";
+                    vertical-alignment: center;
+                }
+                Action {
+                    text: "M";
+                    active: lane.muted;
+                    clicked => {
+                        root.mute-lane(index);
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                Action {
+                    width: 18px;
+                    text: "✕";
+                    clicked => {
+                        root.remove-lane(true, index);
+                    }
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.seam;
+            }
+            Rectangle {
+                y: 0;
+                height: 3px;
+                background: grow.has-hover || grow.pressed ? Theme.accent : transparent;
+            }
+            grow := TouchArea {
+                // the panel grows upward with the track, so the height counts from where the drag started
+                property <length> anchor;
+                property <length> base;
+                y: 0;
+                height: 9px;
+                mouse-cursor: row-resize;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        self.anchor = self.absolute-position.y + self.mouse-y;
+                        self.base = lane.height;
+                    }
+                }
+                moved => {
+                    if self.pressed {
+                        root.lane-height(true, index, self.base - (self.absolute-position.y + self.mouse-y - self.anchor));
+                    }
+                }
+            }
+        }
+    }
+    HorizontalLayout {
+        x: 12px;
+        y: 0;
+        width: root.gutter - 20px;
+        height: root.ruler;
+        spacing: 10px;
+        Text {
+            horizontal-stretch: 1;
+            text: "TIMELINE";
+            color: Theme.faint;
+            font-size: 10px;
+            letter-spacing: 1px;
+            vertical-alignment: center;
+        }
+        Action {
+            text: "+V";
+            clicked => {
+                root.add-lane(false);
+            }
+        }
+        Action {
+            text: "+A";
+            clicked => {
+                root.add-lane(true);
+            }
+        }
+    }
+    Rectangle {
+        x: root.gutter - 1px;
+        width: 1px;
+        background: Theme.seam;
+    }
+
+    area := Rectangle {
+        x: root.gutter;
+        width: root.width - root.gutter;
+        clip: true;
+
+        inner := Rectangle {
+            x: -root.scroll * self.width;
+            width: area.width * root.zoom;
+
+            Rectangle {
+                y: root.ruler;
+                // the tracks and the ruler go on after the last clip, when the view is wider
+                x: 0;
+                width: max(parent.width, area.width);
+                height: parent.height - root.ruler;
+                clip: true;
+
+                TouchArea {
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.down {
+                            root.select(-1);
+                        }
+                    }
+                    scroll-event(event) => {
+                        root.wheel(event, self.mouse-x, self.mouse-y);
+                        accept
+                    }
+                }
+                for lane in root.video: Rectangle {
+                    y: lane.y + lane.height - 1px - root.shift;
+                    height: 1px;
+                    background: Theme.seam.with-alpha(0.6);
+                }
+                for lane in root.audio: Rectangle {
+                    y: lane.y + lane.height - 1px - root.shift;
+                    height: 1px;
+                    background: Theme.seam.with-alpha(0.6);
+                }
+
+                for clip[index] in root.clips: Rectangle {
+                    property <bool> current: index == root.selected;
+                    property <bool> linked: clip.link == root.link;
+                    property <Lane> lane: clip.audio ? root.audio[clip.track] : root.video[clip.track];
+                    // a trim starts from these, so the edge follows the pointer and not the layout
+                    property <length> anchor;
+                    property <float> base;
+                    property <float> origin;
+                    // the width of the whole source at this scale
+                    property <length> whole: clip.length / root.extent * inner.width;
+                    // the time under the pointer, and how far down the tracks it is
+                    pure function time(x: length) -> float {
+                        (x - inner.absolute-position.x) / inner.width * root.extent
+                    }
+                    pure function depth(y: length) -> length {
+                        y - inner.absolute-position.y - root.ruler + root.shift
+                    }
+                    x: clip.at / root.extent * inner.width;
+                    y: lane.y + 2px - root.shift;
+                    width: clip.kept / root.extent * inner.width;
+                    height: lane.height - 4px;
+                    // the selected clip and the clips of its file draw over the others
+                    z: current ? 2 : linked ? 1 : 0;
+
+                    Rectangle {
+                        x: 1px;
+                        width: parent.width - 2px;
+                        // a solid base, so a clip under this one does not show through
+                        background: clip.audio ? Theme.rack : Theme.raised;
+                        border-width: 1px;
+                        border-color: current || clip.picked ? Theme.accent : linked ? Theme.accent.with-alpha(0.5) : Theme.seam;
+                        clip: true;
+                        if clip.audio: Rectangle {
+                            background: lane.muted ? Theme.void.with-alpha(0.3) : Theme.ghost;
+                        }
+                        if clip.still: Image {
+                            x: 3px;
+                            y: 15px;
+                            width: self.height * clip.ratio;
+                            height: parent.height - 17px;
+                            source: clip.thumbs[0];
+                        }
+                        if !clip.audio && !clip.still: HorizontalLayout {
+                            x: -clip.cut-in * whole;
+                            y: 15px;
+                            width: whole;
+                            height: parent.height - 16px;
+                            for thumb in clip.thumbs: Image {
+                                horizontal-stretch: 1;
+                                min-width: 0;
+                                source: thumb;
+                                image-fit: cover;
+                            }
+                        }
+                        if clip.audio: HorizontalLayout {
+                            x: -clip.cut-in * whole;
+                            width: whole;
+                            for peak in clip.wave: Rectangle {
+                                horizontal-stretch: 1;
+                                min-width: 0;
+                                Rectangle {
+                                    height: max(1px, peak * parent.height);
+                                    background: lane.muted ? Theme.faint : Theme.accent.with-alpha(0.7);
+                                }
+                            }
+                        }
+                        Rectangle {
+                            x: 0;
+                            width: clip.progress * parent.width;
+                            background: Theme.accent.with-alpha(0.35);
+                        }
+                        Text {
+                            x: 5px;
+                            y: 1px;
+                            width: parent.width - 10px;
+                            height: 14px;
+                            text: clip.state == "" ? clip.name : clip.state + "  " + clip.name;
+                            color: clip.state == "Done" ? Theme.ok : current ? Theme.ink : Theme.muted;
+                            font-size: 10px;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            mouse-cursor: move;
+                            pointer-event(event) => {
+                                if event.kind == PointerEventKind.down {
+                                    if event.modifiers.control {
+                                        root.extend(index);
+                                    } else if !clip.picked {
+                                        root.select(index);
+                                    }
+                                    root.grab(index, time(self.absolute-position.x + self.mouse-x), event.modifiers.alt);
+                                } else if event.kind == PointerEventKind.up {
+                                    root.release();
+                                }
+                            }
+                            moved => {
+                                if self.pressed {
+                                    root.drag(time(self.absolute-position.x + self.mouse-x), depth(self.absolute-position.y + self.mouse-y), 8px / inner.width * root.extent);
+                                }
+                            }
+                            scroll-event(event) => {
+                                root.wheel(event, self.absolute-position.x + self.mouse-x - inner.absolute-position.x, self.absolute-position.y + self.mouse-y - area.absolute-position.y - root.ruler);
+                                accept
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        x: 0;
+                        width: 7px;
+                        accessible-role: slider;
+                        accessible-label: "Start of " + clip.name;
+                        accessible-value: clip.cut-in;
+                        head := TouchArea {
+                            mouse-cursor: col-resize;
+                            pointer-event(event) => {
+                                if event.kind == PointerEventKind.down {
+                                    root.select(index);
+                                    root.trim-start();
+                                    anchor = self.absolute-position.x + self.mouse-x;
+                                    base = clip.cut-in;
+                                    origin = clip.at;
+                                } else if event.kind == PointerEventKind.up {
+                                    root.trim-done();
+                                }
+                            }
+                            moved => {
+                                if self.pressed {
+                                    // the end of the clip stays where it is
+                                    clip.cut-in = clamp(base + (self.absolute-position.x + self.mouse-x - anchor) / whole, max(0, base - origin / clip.length), clip.cut-out - 0.1 / clip.length);
+                                    clip.at = origin + (clip.cut-in - base) * clip.length;
+                                    root.trimmed(index, 8px / inner.width * root.extent);
+                                }
+                            }
+                        }
+                        Rectangle {
+                            x: 1px;
+                            width: 3px;
+                            background: head.has-hover || head.pressed ? Theme.accent : transparent;
+                        }
+                    }
+                    Rectangle {
+                        x: parent.width - self.width;
+                        width: 7px;
+                        accessible-role: slider;
+                        accessible-label: "End of " + clip.name;
+                        accessible-value: clip.cut-out;
+                        tail := TouchArea {
+                            mouse-cursor: col-resize;
+                            pointer-event(event) => {
+                                if event.kind == PointerEventKind.down {
+                                    root.select(index);
+                                    root.trim-start();
+                                    anchor = self.absolute-position.x + self.mouse-x;
+                                    base = clip.cut-out;
+                                } else if event.kind == PointerEventKind.up {
+                                    root.trim-done();
+                                }
+                            }
+                            moved => {
+                                if self.pressed {
+                                    clip.cut-out = clamp(base + (self.absolute-position.x + self.mouse-x - anchor) / whole, clip.cut-in + 0.1 / clip.length, 1);
+                                    root.trimmed(index, 8px / inner.width * root.extent);
+                                }
+                            }
+                        }
+                        Rectangle {
+                            x: parent.width - 4px;
+                            width: 3px;
+                            background: tail.has-hover || tail.pressed ? Theme.accent : transparent;
+                        }
+                    }
+                }
+
+                for ghost in root.ghosts: Rectangle {
+                    property <[Lane]> lanes: ghost.audio ? root.audio : root.video;
+                    property <Lane> lane: self.lanes[ghost.track];
+                    visible: ghost.track < self.lanes.length;
+                    x: ghost.at / root.extent * inner.width;
+                    y: self.lane.y + 2px - root.shift;
+                    width: ghost.length / root.extent * inner.width;
+                    height: self.lane.height - 4px;
+                    border-width: 1px;
+                    border-color: Theme.accent;
+                    background: Theme.ghost;
+                }
+
+                // the line between video and audio sizes the first audio track
+                if root.audio.length > 0: Rectangle {
+                    y: root.audio[0].y - root.shift - 3px;
+                    height: 6px;
+                    Rectangle {
+                        y: 2px;
+                        height: 2px;
+                        background: split.has-hover || split.pressed ? Theme.accent : transparent;
+                    }
+                    split := TouchArea {
+                        property <length> anchor;
+                        property <length> base;
+                        mouse-cursor: row-resize;
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down {
+                                self.anchor = self.absolute-position.y + self.mouse-y;
+                                self.base = root.audio[0].height;
+                            }
+                        }
+                        moved => {
+                            if self.pressed {
+                                root.lane-height(true, 0, self.base - (self.absolute-position.y + self.mouse-y - self.anchor));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // the ruler seeks, also over the clips
+            Rectangle {
+                y: 0;
+                x: 0;
+                width: max(parent.width, area.width);
+                height: root.ruler;
+                background: Theme.rack;
+                for index in floor(root.extent / min(1, root.zoom) / root.step) + 1: Rectangle {
+                    property <int> time: index * root.step;
+                    x: time / root.extent * inner.width;
+                    y: 0;
+                    width: 1px;
+                    height: 6px;
+                    background: Theme.seam;
+                    Text {
+                        x: 4px;
+                        y: 5px;
+                        text: floor(time / 60) + ":" + (mod(time, 60) < 10 ? "0" : "") + mod(time, 60);
+                        color: Theme.faint;
+                        font-size: 10px;
+                        font-family: "monospace";
+                    }
+                }
+                scrub := TouchArea {
+                    mouse-cursor: ew-resize;
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.down {
+                            root.pick(self.mouse-x);
+                        }
+                    }
+                    moved => {
+                        if self.pressed {
+                            root.pick(self.mouse-x);
+                        }
+                    }
+                    scroll-event(event) => {
+                        root.wheel(event, self.mouse-x, self.mouse-y - root.ruler);
+                        accept
+                    }
+                }
+                if scrub.has-hover && !scrub.pressed: Rectangle {
+                    property <float> time: scrub.mouse-x / inner.width * root.extent;
+                    x: scrub.mouse-x;
+                    width: 1px;
+                    background: Theme.muted;
+                    Rectangle {
+                        x: 4px;
+                        y: 4px;
+                        width: label.preferred-width + 6px;
+                        height: 14px;
+                        background: Theme.raised;
+                        label := Text {
+                            text: floor(time / 60) + ":" + (mod(floor(time), 60) < 10 ? "0" : "") + mod(floor(time), 60) + "." + floor(mod(time, 1) * 10);
+                            color: Theme.ink;
+                            font-size: 10px;
+                            font-family: "monospace";
+                        }
+                    }
+                }
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    background: Theme.seam;
+                }
+            }
+
+            Rectangle {
+                x: root.head * (inner.width - 1px);
+                width: 1px;
+                background: Theme.accent;
+                Path {
+                    x: -3.5px;
+                    y: 0;
+                    width: 8px;
+                    height: 5px;
+                    viewbox-width: 8;
+                    viewbox-height: 5;
+                    commands: "M0 0h8L4 5z";
+                    fill: Theme.accent;
+                }
+            }
+        }
+
+        if root.zoom > 1: Rectangle {
+            x: root.scroll * area.width;
+            y: area.height - 3px;
+            width: area.width / root.zoom;
+            height: 3px;
+            background: Theme.muted;
+        }
+    }
+}

@@ -1,0 +1,43 @@
+import { Theme } from "widgets.slint";
+
+export component Sheet inherits Window {
+    in property <string> heading;
+    in property <[{text: string, note: string}]> rows;
+    // a line under the rows
+    in property <string> note;
+    title: root.heading;
+    icon: @image-url("../../../assets/interpolini.svg");
+    background: Theme.rack;
+    default-font-size: 12px;
+    // one fixed size, so the window cannot be resized
+    width: 400px;
+    height: (root.rows.length + (root.note == "" ? 0 : 1)) * 26px + 24px;
+    VerticalLayout {
+        padding: 12px;
+        alignment: start;
+        for row in root.rows: HorizontalLayout {
+            height: 26px;
+            spacing: 32px;
+            Text {
+                horizontal-stretch: 1;
+                text: row.text;
+                color: Theme.ink;
+                vertical-alignment: center;
+            }
+            Text {
+                text: row.note;
+                color: Theme.faint;
+                font-family: "monospace";
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+        }
+        if root.note != "": Text {
+            height: 26px;
+            text: root.note;
+            color: Theme.faint;
+            font-size: 11px;
+            vertical-alignment: bottom;
+        }
+    }
+}

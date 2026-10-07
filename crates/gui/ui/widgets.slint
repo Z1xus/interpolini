@@ -1,0 +1,705 @@
+export global Theme {
+    in property <color> void: #0a0a0a;
+    in property <color> rack: #131313;
+    in property <color> raised: #1c1c1c;
+    in property <color> seam: #2a2a2a;
+    in property <color> ink: #ececec;
+    in property <color> muted: #9c9c9c;
+    in property <color> faint: #8a8a8a;
+    in property <color> accent: #e8483a;
+    in property <color> ok: #6fbf8b;
+    out property <color> ghost: accent.with-alpha(0.15);
+    out property <duration> quick: 140ms;
+}
+
+// the icon set of smoothie to go, on a 16 unit grid
+export global Icons {
+    out property <string> play: "M5.5 3.5v9l7-4.5z";
+    out property <string> pause: "M5.5 3.5v9M10.5 3.5v9";
+    out property <string> step-back: "M12 4v8L6.5 8zM4 3.5v9";
+    out property <string> step-forward: "M4 4v8l5.5-4zM12 3.5v9";
+    out property <string> mark-in: "M6 3.5h-2.5v9H6M8.5 8h5M11 5.5 13.5 8 11 10.5";
+    out property <string> mark-out: "M10 3.5h2.5v9H10M7.5 8h-5M5 5.5 2.5 8 5 10.5";
+    out property <string> clear: "M4 4l8 8M12 4l-8 8";
+    out property <string> split: "M8 2.5v11M5.5 5.5 3 8l2.5 2.5M10.5 5.5 13 8l-2.5 2.5";
+    out property <string> plus: "M8 3.5v9M3.5 8h9";
+    out property <string> trash: "M3.5 5h9M6.5 5V3.5h3V5M5 5v7.5h6V5M6.8 7v3.5M9.2 7v3.5";
+    out property <string> save: "M8 2.5v8M5 7.5 8 10.5l3-3M3.5 9.5v4h9v-4";
+    out property <string> frame: "M3 6V3h3M10 3h3v3M13 10v3h-3M6 13H3v-3M6.5 6.5h3v3h-3z";
+    out property <string> hidden: "M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8zM8 6a2 2 0 1 0 0 4a2 2 0 1 0 0-4zM3 13.5 13 2.5";
+    out property <string> check: "M3.5 8.5 6.5 11.5 12.5 4.5";
+}
+
+export component Icon inherits Path {
+    in property <string> shape;
+    in property <bool> filled;
+    in property <color> color: Theme.muted;
+    width: 16px;
+    height: 16px;
+    viewbox-width: 16;
+    viewbox-height: 16;
+    commands: root.shape;
+    fill: root.filled ? root.color : transparent;
+    stroke: root.filled ? transparent : root.color;
+    stroke-width: 1.5px;
+    stroke-line-join: round;
+}
+
+export component Label inherits Text {
+    color: Theme.muted;
+    font-size: 12px;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+export component Switch inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> label;
+    callback toggled(bool);
+    accessible-role: switch;
+    accessible-label: root.label;
+    accessible-checked: root.checked;
+    accessible-checkable: true;
+    accessible-action-default => {
+        root.checked = !root.checked;
+        root.toggled(root.checked);
+    }
+    width: 28px;
+    height: 14px;
+    border-width: 1px;
+    border-color: checked ? Theme.accent : Theme.seam;
+    background: checked ? Theme.ghost : Theme.void;
+    animate background, border-color { duration: Theme.quick; }
+    Rectangle {
+        x: root.checked ? 17px : 3px;
+        y: 3px;
+        width: 8px;
+        height: 8px;
+        background: root.checked ? Theme.accent : Theme.faint;
+        animate x, background { duration: Theme.quick; easing: ease-out; }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+}
+
+export component Row inherits HorizontalLayout {
+    in property <string> label;
+    height: 28px;
+    padding-left: 28px;
+    padding-right: 12px;
+    spacing: 10px;
+    Label {
+        width: 100px;
+        text: root.label;
+    }
+    @children
+}
+
+export component Tabs inherits HorizontalLayout {
+    in property <[string]> options;
+    in-out property <string> value;
+    callback changed(string);
+    spacing: 14px;
+    for option in root.options: Rectangle {
+        property <bool> active: option == root.value;
+        accessible-role: button;
+        accessible-label: option;
+        accessible-checkable: true;
+        accessible-checked: active;
+        accessible-action-default => {
+            root.value = option;
+            root.changed(option);
+        }
+        HorizontalLayout {
+            Text {
+                text: option;
+                color: active || touch.has-hover ? Theme.ink : Theme.faint;
+                font-size: 12px;
+                vertical-alignment: center;
+                animate color { duration: Theme.quick; }
+            }
+        }
+        Rectangle {
+            y: parent.height - 9px;
+            height: 2px;
+            background: active ? Theme.accent : transparent;
+            animate background { duration: Theme.quick; }
+        }
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.value = option;
+                root.changed(option);
+            }
+        }
+    }
+}
+
+export component Segment inherits HorizontalLayout {
+    in property <[string]> options;
+    in-out property <string> value;
+    callback changed(string);
+    alignment: end;
+    padding-top: 3px;
+    padding-bottom: 3px;
+    for option in root.options: Rectangle {
+        property <bool> active: option == root.value;
+        accessible-role: button;
+        accessible-label: option;
+        accessible-checkable: true;
+        accessible-checked: active;
+        accessible-action-default => {
+            root.value = option;
+            root.changed(option);
+        }
+        border-width: 1px;
+        border-color: active ? Theme.accent : Theme.seam;
+        background: active ? Theme.ghost : touch.has-hover ? Theme.raised : transparent;
+        animate background, border-color { duration: Theme.quick; }
+        HorizontalLayout {
+            padding-left: 6px;
+            padding-right: 6px;
+            Text {
+                text: option;
+                color: active ? Theme.ink : Theme.muted;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+        }
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.value = option;
+                root.changed(option);
+            }
+        }
+    }
+}
+
+export component Slider inherits Rectangle {
+    in property <float> minimum: 0;
+    in property <float> maximum: 1;
+    in property <float> step: 0.1;
+    in-out property <float> value;
+    in property <string> label;
+    callback changed(float);
+    accessible-role: slider;
+    accessible-label: root.label;
+    accessible-value: root.value;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-value-step: root.step;
+    accessible-action-increment => {
+        root.value = min(root.maximum, root.value + root.step);
+        root.changed(root.value);
+    }
+    accessible-action-decrement => {
+        root.value = max(root.minimum, root.value - root.step);
+        root.changed(root.value);
+    }
+    property <float> fraction: clamp((value - minimum) / (maximum - minimum), 0, 1);
+    function pick(position: length) {
+        root.value = minimum + round(clamp(position / root.width, 0, 1) * (maximum - minimum) / step) * step;
+        root.changed(root.value);
+    }
+    min-width: 60px;
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 2px;
+        background: Theme.seam;
+    }
+    Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: root.fraction * root.width;
+        height: 2px;
+        background: Theme.accent;
+    }
+    Rectangle {
+        x: root.fraction * (root.width - self.width);
+        y: (parent.height - self.height) / 2;
+        width: 8px;
+        height: 12px;
+        background: touch.pressed || touch.has-hover ? Theme.ink : Theme.muted;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.pick(self.mouse-x);
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.pick(self.mouse-x);
+            }
+        }
+    }
+}
+
+export component SliderRow inherits Row {
+    in property <float> minimum <=> slider.minimum;
+    in property <float> maximum <=> slider.maximum;
+    in property <float> step <=> slider.step;
+    in-out property <float> value <=> slider.value;
+    in property <string> unit;
+    callback changed <=> slider.changed;
+    slider := Slider {
+        label: root.label;
+    }
+    Text {
+        width: 38px;
+        text: round(root.value * 100) / 100 + root.unit;
+        color: Theme.ink;
+        font-size: 12px;
+        font-family: "monospace";
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
+export component Number inherits Rectangle {
+    in-out property <int> value;
+    in property <int> minimum: 1;
+    in property <int> maximum: 100000;
+    callback changed(int);
+    function commit() {
+        root.value = clamp(input.text.to-float(), minimum, maximum);
+        input.text = root.value;
+        root.changed(root.value);
+    }
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.seam;
+    background: Theme.void;
+    input := TextInput {
+        x: 8px;
+        width: parent.width - 16px;
+        text: root.value;
+        color: Theme.ink;
+        font-size: 12px;
+        font-family: "monospace";
+        input-type: number;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        single-line: true;
+        accepted => {
+            root.commit();
+            self.clear-focus();
+        }
+        changed has-focus => {
+            if !self.has-focus {
+                root.commit();
+            }
+        }
+    }
+}
+
+export component Dropdown inherits Rectangle {
+    in property <[string]> options;
+    in-out property <string> value;
+    in property <string> label;
+    in property <bool> up;
+    callback changed(string);
+    accessible-role: combobox;
+    accessible-label: root.label;
+    accessible-value: root.value;
+    accessible-action-default => {
+        popup.show();
+    }
+    border-width: 1px;
+    border-color: touch.has-hover ? Theme.muted : Theme.seam;
+    Text {
+        x: 8px;
+        width: parent.width - 28px;
+        text: root.value;
+        color: Theme.ink;
+        font-size: 12px;
+        vertical-alignment: center;
+    }
+    Text {
+        x: parent.width - 18px;
+        text: "▾";
+        color: Theme.faint;
+        font-size: 10px;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            popup.show();
+        }
+    }
+    popup := PopupWindow {
+        y: root.up ? -root.options.length * 24px - 4px : root.height + 2px;
+        width: root.width;
+        Rectangle {
+            background: Theme.raised;
+            border-width: 1px;
+            border-color: Theme.seam;
+            VerticalLayout {
+                padding: 1px;
+                for option in root.options: Rectangle {
+                    accessible-role: list-item;
+                    accessible-label: option;
+                    accessible-action-default => {
+                        root.value = option;
+                        root.changed(option);
+                    }
+                    height: 24px;
+                    background: item.has-hover ? Theme.ghost : transparent;
+                    Text {
+                        x: 8px;
+                        text: option;
+                        color: option == root.value ? Theme.ink : Theme.muted;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    item := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.value = option;
+                            root.changed(option);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component Section inherits VerticalLayout {
+    in property <string> title;
+    // a short note next to the switch
+    in property <string> hint;
+    in property <bool> toggle: true;
+    in-out property <bool> enabled: true;
+    in-out property <bool> open: true;
+    callback toggled(bool);
+    Rectangle {
+        height: 36px;
+        background: header.has-hover ? Theme.raised : transparent;
+        header := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.open = !root.open;
+            }
+        }
+        Text {
+            x: 12px;
+            text: root.open ? "▾" : "▸";
+            color: Theme.faint;
+            font-size: 10px;
+            vertical-alignment: center;
+        }
+        Text {
+            x: 28px;
+            text: root.title;
+            color: root.enabled ? Theme.ink : Theme.muted;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+        Text {
+            x: parent.width - self.width - 56px;
+            text: root.hint;
+            color: root.enabled ? Theme.faint : Theme.accent;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+        if root.toggle: Switch {
+            x: parent.width - self.width - 12px;
+            label: root.title;
+            checked <=> root.enabled;
+            toggled(checked) => {
+                root.open = checked;
+                root.toggled(checked);
+            }
+        }
+    }
+    Rectangle {
+        height: root.open ? body.preferred-height : 0;
+        clip: true;
+        animate height { duration: Theme.quick; easing: ease-out; }
+        body := VerticalLayout {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: self.preferred-height;
+            padding-top: 6px;
+            padding-bottom: 10px;
+            opacity: root.enabled ? 1 : 0.45;
+            @children
+        }
+    }
+    Rectangle {
+        height: 1px;
+        background: Theme.seam;
+    }
+}
+
+export component Action inherits Rectangle {
+    in property <string> text;
+    in property <length> size: 11px;
+    in property <bool> active;
+    callback clicked <=> touch.clicked;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => {
+        touch.clicked();
+    }
+    HorizontalLayout {
+        Text {
+            text: root.text;
+            color: root.active ? Theme.accent : touch.has-hover ? Theme.ink : Theme.faint;
+            font-size: root.size;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+    }
+}
+
+export component Button inherits Rectangle {
+    in property <string> text;
+    in property <bool> main;
+    in property <bool> enabled: true;
+    callback clicked <=> touch.clicked;
+    width: label.preferred-width + 20px;
+    border-width: 1px;
+    border-color: root.main && root.enabled ? Theme.accent : Theme.seam;
+    background: touch.has-hover ? Theme.ghost : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => {
+        touch.clicked();
+    }
+    label := Text {
+        text: root.text;
+        color: root.enabled ? Theme.ink : Theme.faint;
+        font-size: 12px;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+    }
+}
+
+export global System {
+    in property <bool> smooth-scroll: true;
+}
+
+export component Scroll inherits Rectangle {
+    property <length> offset;
+    property <length> limit: max(0px, content.preferred-height - self.height);
+    clip: true;
+    animate offset {
+        duration: System.smooth-scroll ? 160ms : 0ms;
+        easing: ease-out;
+    }
+    TouchArea {
+        scroll-event(event) => {
+            root.offset = clamp(root.offset - event.delta-y, 0px, root.limit);
+            accept
+        }
+        content := VerticalLayout {
+            x: 0;
+            y: -min(root.offset, root.limit);
+            width: root.width;
+            height: self.preferred-height;
+            alignment: start;
+            @children
+        }
+    }
+}
+
+export component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <string> label;
+    callback accepted(string);
+    forward-focus: input;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.seam;
+    background: Theme.void;
+    Text {
+        x: 8px;
+        visible: input.text == "";
+        text: root.placeholder;
+        color: Theme.faint;
+        font-size: 12px;
+        font-italic: true;
+        vertical-alignment: center;
+    }
+    input := TextInput {
+        x: 8px;
+        width: parent.width - 16px;
+        text <=> root.text;
+        accessible-label: root.label != "" ? root.label : root.placeholder;
+        color: Theme.ink;
+        font-size: 12px;
+        vertical-alignment: center;
+        single-line: true;
+        accepted => {
+            root.accepted(self.text);
+            self.clear-focus();
+        }
+        changed has-focus => {
+            if !self.has-focus {
+                root.accepted(self.text);
+            }
+        }
+    }
+}
+
+export component Note inherits HorizontalLayout {
+    in property <string> text;
+    padding-left: 28px;
+    padding-right: 12px;
+    padding-bottom: 6px;
+    Text {
+        text: root.text;
+        color: Theme.faint;
+        font-size: 11px;
+        wrap: word-wrap;
+    }
+}
+
+export component Check inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> label;
+    callback toggled(bool);
+    accessible-role: checkbox;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => {
+        root.checked = !root.checked;
+        root.toggled(root.checked);
+    }
+    width: 16px;
+    height: 16px;
+    border-width: 1px;
+    border-color: checked ? Theme.accent : Theme.seam;
+    if root.checked: Icon {
+        width: 10px;
+        height: 10px;
+        shape: Icons.check;
+        color: Theme.accent;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+}
+
+export component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback clicked();
+    callback hovered(bool);
+    height: 26px;
+    min-width: 200px;
+    background: touch.has-hover && root.enabled ? Theme.ghost : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        root.clicked();
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 12px;
+        spacing: 8px;
+        Text {
+            width: 10px;
+            text: root.checked ? "✓" : "";
+            color: Theme.accent;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: root.enabled ? Theme.ink : Theme.faint;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.hint;
+            color: Theme.faint;
+            font-size: 11px;
+            font-family: "monospace";
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+        changed has-hover => {
+            root.hovered(self.has-hover);
+        }
+    }
+}
+
+export component MenuTitle inherits Rectangle {
+    in property <string> text;
+    callback clicked <=> touch.clicked;
+    width: label.preferred-width + 20px;
+    background: touch.has-hover ? Theme.raised : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => {
+        touch.clicked();
+    }
+    label := Text {
+        text: root.text;
+        color: touch.has-hover ? Theme.ink : Theme.muted;
+        font-size: 12px;
+    }
+    touch := TouchArea { }
+}
+
+export component MenuPanel inherits Rectangle {
+    background: Theme.raised;
+    border-width: 1px;
+    border-color: Theme.seam;
+}
+
+export component IconButton inherits Rectangle {
+    in property <string> shape;
+    in property <string> label;
+    in property <bool> filled;
+    in property <bool> active;
+    in property <bool> enabled: true;
+    callback clicked <=> touch.clicked;
+    width: 28px;
+    height: 28px;
+    background: touch.has-hover && root.enabled ? Theme.raised : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => {
+        touch.clicked();
+    }
+    Icon {
+        shape: root.shape;
+        filled: root.filled;
+        color: !root.enabled ? Theme.seam : root.active ? Theme.accent : touch.has-hover ? Theme.ink : Theme.muted;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+    }
+}

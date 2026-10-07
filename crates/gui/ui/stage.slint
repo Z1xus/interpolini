@@ -1,0 +1,148 @@
+import { Icon, Icons, Theme } from "widgets.slint";
+import { Clip } from "types.slint";
+import { Frame } from "frame.slint";
+
+export component Stage inherits Rectangle {
+    in-out property <[Clip]> clips;
+    in property <image> preview;
+    in property <bool> rendering;
+    in property <float> position;
+    in property <float> seconds;
+    // the box on the picture is on, and the clip that it moves
+    in property <bool> transform;
+    in property <int> framed;
+    callback place-start();
+    callback placed();
+    callback add-clips();
+    background: Theme.void;
+    if root.clips.length > 0: Rectangle {
+        property <float> scale: 1;
+        property <length> pan-x;
+        property <length> pan-y;
+        clip: true;
+        property <bool> panning;
+        property <length> from-x;
+        property <length> from-y;
+        property <float> ratio: root.preview.height > 0 ? root.preview.width / root.preview.height : 16 / 9;
+        property <length> wide: min(self.width, self.height * self.ratio) * self.scale;
+        property <Clip> framed: root.clips[max(0, root.framed)];
+        property <float> now: root.position * root.seconds;
+        // the middle button moves the picture, x and y are places in the window
+        function pan(event: PointerEvent, x: length, y: length) {
+            if event.button == PointerEventButton.middle {
+                self.panning = event.kind == PointerEventKind.down;
+                self.from-x = self.pan-x - x;
+                self.from-y = self.pan-y - y;
+            } else if event.kind == PointerEventKind.move && self.panning {
+                self.pan-x = self.from-x + x;
+                self.pan-y = self.from-y + y;
+            }
+        }
+        Image {
+            x: (parent.width - self.width) / 2 + parent.pan-x;
+            y: (parent.height - self.height) / 2 + parent.pan-y;
+            width: parent.width * parent.scale;
+            height: parent.height * parent.scale;
+            source: root.preview;
+            image-fit: contain;
+            accessible-role: image;
+            accessible-label: "Preview";
+        }
+        look := TouchArea {
+            scroll-event(event) => {
+                if !event.modifiers.control {
+                    return reject;
+                }
+                // the point under the pointer stays under the pointer
+                parent.pan-x = self.mouse-x - parent.width / 2 - (self.mouse-x - parent.width / 2 - parent.pan-x) * clamp(parent.scale * (event.delta-y > 0 ? 1.25 : 0.8), 0.1, 32) / parent.scale;
+                parent.pan-y = self.mouse-y - parent.height / 2 - (self.mouse-y - parent.height / 2 - parent.pan-y) * clamp(parent.scale * (event.delta-y > 0 ? 1.25 : 0.8), 0.1, 32) / parent.scale;
+                parent.scale = clamp(parent.scale * (event.delta-y > 0 ? 1.25 : 0.8), 0.1, 32);
+                accept
+            }
+            pointer-event(event) => {
+                parent.pan(event, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+            changed has-hover => {
+                if !self.has-hover {
+                    parent.panning = false;
+                }
+            }
+            double-clicked => {
+                parent.scale = 1;
+                parent.pan-x = 0;
+                parent.pan-y = 0;
+            }
+            // the box is in the touch area, so the wheel over the box still zooms the preview
+            if root.transform && root.framed >= 0 && root.framed < root.clips.length && now >= framed.at - 0.001 && now <= framed.at + framed.kept: Frame {
+                x: (parent.width - self.width) / 2 + pan-x;
+                y: (parent.height - self.height) / 2 + pan-y;
+                width: wide;
+                height: wide / ratio;
+                item: framed;
+                start => {
+                    root.place-start();
+                }
+                edit(next) => {
+                    root.clips[root.framed] = next;
+                    root.placed();
+                }
+                pass(event, x, y) => {
+                    pan(event, x, y);
+                }
+            }
+        }
+    }
+    if root.rendering: Rectangle {
+        background: Theme.void;
+        TouchArea { }
+        VerticalLayout {
+            alignment: center;
+            spacing: 10px;
+            HorizontalLayout {
+                alignment: center;
+                Icon {
+                    width: 32px;
+                    height: 32px;
+                    shape: Icons.hidden;
+                    color: Theme.faint;
+                }
+            }
+            Text {
+                text: "Preview paused while rendering";
+                color: Theme.muted;
+                font-size: 13px;
+                horizontal-alignment: center;
+            }
+        }
+    }
+    if root.clips.length == 0: VerticalLayout {
+        alignment: center;
+        spacing: 14px;
+        Text {
+            text: "Drop clips here";
+            color: Theme.muted;
+            font-size: 16px;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 108px;
+                height: 30px;
+                border-width: 1px;
+                border-color: Theme.accent;
+                background: browse.has-hover ? Theme.ghost : transparent;
+                Text {
+                    text: "Add clips";
+                    color: Theme.ink;
+                }
+                browse := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.add-clips();
+                    }
+                }
+            }
+        }
+    }
+}

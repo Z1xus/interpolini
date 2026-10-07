@@ -1,0 +1,11 @@
+[package]
+name = "interpolini-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ctrlc = "3.5.2"
+interpolini-core = { path = "../core" }

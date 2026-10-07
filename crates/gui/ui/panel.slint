@@ -1,0 +1,624 @@
+import { Action, Dropdown, Field, Label, Note, Number, Row, Scroll, Section, Segment, SliderRow, Switch, Theme } from "widgets.slint";
+import { Clip, Settings } from "types.slint";
+
+component Curve inherits Rectangle {
+    in property <[float]> weights;
+    in property <string> summary;
+    height: 76px;
+    HorizontalLayout {
+        x: 28px;
+        y: 4px;
+        width: parent.width - 40px;
+        height: 44px;
+        spacing: 1px;
+        for weight in root.weights: Rectangle {
+            Rectangle {
+                y: parent.height - self.height;
+                height: max(1px, weight * parent.height);
+                background: Theme.accent;
+            }
+        }
+    }
+    Text {
+        x: 28px;
+        y: 54px;
+        text: root.summary;
+        color: Theme.faint;
+        font-size: 11px;
+        font-family: "monospace";
+    }
+}
+
+export component Panel inherits Rectangle {
+    in property <[Clip]> clips;
+    in property <int> videos;
+    in property <int> selected;
+    in-out property <Settings> settings;
+    in-out property <string> scope;
+    in property <[string]> configs;
+    in-out property <string> config;
+    in property <bool> unsaved;
+    in property <float> repeats;
+    in property <[string]> models;
+    in property <bool> tensorrt;
+    in property <[float]> weights;
+    in property <string> summary;
+    in property <bool> lossless;
+    in property <bool> separate;
+    in property <bool> rendering;
+    in property <float> progress;
+    in property <string> status;
+    in property <bool> failed;
+    in property <string> version;
+    in property <bool> copied;
+    property <bool> naming;
+    property <bool> confirming;
+    callback changed();
+    callback choose-lut();
+    callback choose-config(string);
+    callback save-config();
+    callback new-config(string);
+    callback delete-config();
+    callback render();
+    callback cancel();
+    callback copy-details();
+
+    background: Theme.rack;
+    VerticalLayout {
+        HorizontalLayout {
+            height: 42px;
+            padding: 10px;
+            spacing: 10px;
+            if !root.naming: Dropdown {
+                horizontal-stretch: 1;
+                label: "Config";
+                options: root.configs;
+                value <=> root.config;
+                changed(name) => {
+                    root.confirming = false;
+                    root.choose-config(name);
+                }
+            }
+            if root.naming: Field {
+                horizontal-stretch: 1;
+                placeholder: "Name";
+                accepted(name) => {
+                    root.naming = false;
+                    root.new-config(name);
+                }
+            }
+            Action {
+                text: root.unsaved ? "Save*" : "Save";
+                active: root.unsaved;
+                clicked => {
+                    root.save-config();
+                }
+            }
+            Action {
+                text: root.naming ? "Cancel" : "New";
+                clicked => {
+                    root.naming = !root.naming;
+                }
+            }
+            Action {
+                text: root.confirming ? "Delete?" : "Delete";
+                active: root.confirming;
+                clicked => {
+                    if root.confirming {
+                        root.delete-config();
+                    }
+                    root.confirming = !root.confirming;
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.seam;
+        }
+
+        if root.clips.length > 0: HorizontalLayout {
+            height: 34px;
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: 3px;
+            padding-bottom: 3px;
+            spacing: 10px;
+            Label {
+                horizontal-stretch: 1;
+                text: "Settings for";
+            }
+            Segment {
+                options: root.selected < 0 ? ["all clips"] : ["all clips", "this clip"];
+                value: root.selected < 0 ? "all clips" : root.scope;
+                changed(value) => {
+                    root.scope = value;
+                    root.changed();
+                }
+            }
+        }
+        if root.clips.length > 0: Rectangle {
+            height: 1px;
+            background: Theme.seam;
+        }
+
+        Scroll {
+            vertical-stretch: 1;
+            Section {
+                title: "Dedup";
+                // a clip with repeats is the reason to turn this on
+                hint: root.repeats >= 0.05 ? "\{round(root.repeats * 100)}% repeats" : "";
+                open: false;
+                enabled <=> root.settings.dedup;
+                toggled => {
+                    root.changed();
+                }
+                SliderRow {
+                    label: "Sensitivity";
+                    minimum: 0;
+                    maximum: 5;
+                    step: 0.1;
+                    value <=> root.settings.dedup-threshold;
+                    changed => {
+                        root.changed();
+                    }
+                }
+            }
+
+            Section {
+                title: "Pre-interpolation";
+                open: false;
+                enabled <=> root.settings.pre;
+                toggled => {
+                    root.changed();
+                }
+                Note {
+                    text: "Runs RIFE before SVP. Slower.";
+                }
+                Row {
+                    label: "Frame rate";
+                    Rectangle { }
+                    Field {
+                        label: "Frame rate";
+                        width: 76px;
+                        height: 22px;
+                        y: 3px;
+                        text <=> root.settings.pre-fps;
+                        accepted => {
+                            root.changed();
+                        }
+                    }
+                }
+                if root.tensorrt || root.settings.backend == "tensorrt": Row {
+                    label: "Backend";
+                    Segment {
+                        options: ["vulkan", "tensorrt"];
+                        value <=> root.settings.backend;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                Row {
+                    label: "Model";
+                    Dropdown {
+                        height: 22px;
+                        y: 3px;
+                        label: "Model";
+                        options: root.models;
+                        value <=> root.settings.model;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+            }
+
+            Section {
+                title: "Interpolation";
+                enabled <=> root.settings.interpolate;
+                toggled => {
+                    root.changed();
+                }
+                Row {
+                    label: "Engine";
+                    Segment {
+                        options: ["svp", "rife"];
+                        value <=> root.settings.engine;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                Row {
+                    label: "Frame rate";
+                    Rectangle { }
+                    Field {
+                        label: "Frame rate";
+                        width: 76px;
+                        height: 22px;
+                        y: 3px;
+                        text <=> root.settings.interpolation-fps;
+                        accepted => {
+                            root.changed();
+                        }
+                    }
+                }
+                if root.settings.engine == "rife" && (root.tensorrt || root.settings.backend == "tensorrt"): Row {
+                    label: "Backend";
+                    Segment {
+                        options: ["vulkan", "tensorrt"];
+                        value <=> root.settings.backend;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                if root.settings.engine == "rife": Row {
+                    label: "Model";
+                    Dropdown {
+                        height: 22px;
+                        y: 3px;
+                        label: "Model";
+                        options: root.models;
+                        value <=> root.settings.model;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                if root.settings.engine == "svp": Row {
+                    label: "Speed";
+                    Segment {
+                        options: ["medium", "fast", "faster", "fastest"];
+                        value <=> root.settings.speed;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                if root.settings.engine == "svp": Row {
+                    label: "Tuning";
+                    Dropdown {
+                        height: 22px;
+                        y: 3px;
+                        label: "Tuning";
+                        options: ["weak", "smooth", "film", "animation"];
+                        value <=> root.settings.tuning;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                if root.settings.engine == "svp": Row {
+                    label: "Look";
+                    Segment {
+                        options: ["sharp", "standard", "smooth"];
+                        value <=> root.settings.algorithm;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                if root.settings.engine == "svp": Row {
+                    label: "Half-size analysis";
+                    Rectangle { }
+                    VerticalLayout {
+                        alignment: center;
+                        Switch {
+                                label: "Half-size analysis";
+                            checked <=> root.settings.half;
+                            toggled => {
+                                root.changed();
+                            }
+                        }
+                    }
+                }
+            }
+
+            Section {
+                title: "Still mask";
+                enabled <=> root.settings.mask;
+                toggled => {
+                    root.changed();
+                }
+                Note {
+                    text: "Stops static parts, like the HUD, from smearing.";
+                }
+                SliderRow {
+                    label: "Limit";
+                    minimum: 0;
+                    maximum: 20;
+                    step: 0.5;
+                    value <=> root.settings.mask-limit;
+                    changed => {
+                        root.changed();
+                    }
+                }
+                SliderRow {
+                    label: "Edge";
+                    minimum: 0;
+                    maximum: 20;
+                    step: 0.5;
+                    value <=> root.settings.mask-edge;
+                    changed => {
+                        root.changed();
+                    }
+                }
+                SliderRow {
+                    label: "Tolerance";
+                    minimum: 0;
+                    maximum: 100;
+                    step: 5;
+                    unit: "%";
+                    value <=> root.settings.mask-tolerance;
+                    changed => {
+                        root.changed();
+                    }
+                }
+            }
+
+            Section {
+                title: "Blending";
+                enabled <=> root.settings.blend;
+                toggled => {
+                    root.changed();
+                }
+                Curve {
+                    weights: root.weights;
+                    summary: root.summary;
+                }
+                Row {
+                    label: "Frame rate";
+                    Rectangle { }
+                    Number {
+                        width: 76px;
+                        height: 22px;
+                        y: 3px;
+                        minimum: 1;
+                        maximum: 1000;
+                        value <=> root.settings.blend-fps;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                SliderRow {
+                    label: "Intensity";
+                    minimum: 0;
+                    maximum: 4;
+                    step: 0.1;
+                    value <=> root.settings.intensity;
+                    changed => {
+                        root.changed();
+                    }
+                }
+                Row {
+                    label: "Weighting";
+                    Dropdown {
+                        height: 22px;
+                        y: 3px;
+                        label: "Weighting";
+                        options: ["equal", "gaussian", "gaussian_sym", "pyramid", "ascending", "descending", "vegas", "custom"];
+                        value <=> root.settings.weighting;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                if root.settings.weighting == "custom": Row {
+                    label: "Curve";
+                    Field {
+                        height: 22px;
+                        y: 3px;
+                        text <=> root.settings.custom;
+                        accepted => {
+                            root.changed();
+                        }
+                    }
+                }
+            }
+
+            Section {
+                title: "Color";
+                enabled <=> root.settings.grade;
+                toggled => {
+                    root.changed();
+                }
+                SliderRow {
+                    label: "Brightness";
+                    minimum: 0;
+                    maximum: 2;
+                    step: 0.05;
+                    value <=> root.settings.brightness;
+                    changed => {
+                        root.changed();
+                    }
+                }
+                SliderRow {
+                    label: "Contrast";
+                    minimum: 0;
+                    maximum: 2;
+                    step: 0.05;
+                    value <=> root.settings.contrast;
+                    changed => {
+                        root.changed();
+                    }
+                }
+                SliderRow {
+                    label: "Saturation";
+                    minimum: 0;
+                    maximum: 2;
+                    step: 0.05;
+                    value <=> root.settings.saturation;
+                    changed => {
+                        root.changed();
+                    }
+                }
+                SliderRow {
+                    label: "Hue";
+                    minimum: -180;
+                    maximum: 180;
+                    step: 5;
+                    unit: "°";
+                    value <=> root.settings.hue;
+                    changed => {
+                        root.changed();
+                    }
+                }
+                Row {
+                    label: "LUT";
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.settings.lut == "" ? "None" : root.settings.lut;
+                        color: root.settings.lut == "" ? Theme.faint : Theme.ink;
+                        overflow: elide;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                    Action {
+                        text: "Choose…";
+                        clicked => {
+                            root.choose-lut();
+                        }
+                    }
+                    if root.settings.lut != "": Action {
+                        text: "✕";
+                        clicked => {
+                            root.settings.lut = "";
+                            root.changed();
+                        }
+                    }
+                }
+            }
+
+            Section {
+                title: "Output";
+                toggle: false;
+                Row {
+                    label: "Codec";
+                    Segment {
+                        options: ["h264", "hevc", "av1"];
+                        value <=> root.settings.codec;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                Row {
+                    label: "Encoder";
+                    Segment {
+                        options: ["auto", "hardware", "software"];
+                        value <=> root.settings.encoder;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                SliderRow {
+                    label: "Quality";
+                    maximum: 51;
+                    step: 1;
+                    value <=> root.settings.quality;
+                    changed => {
+                        root.changed();
+                    }
+                }
+                Row {
+                    label: "Audio tracks";
+                    Segment {
+                        options: ["separate", "mix"];
+                        value <=> root.settings.audio;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                Row {
+                    label: "Options";
+                    Field {
+                        height: 22px;
+                        y: 3px;
+                        label: "Options";
+                        placeholder: "e.g. -preset p7";
+                        text <=> root.settings.options;
+                        accepted => {
+                            root.changed();
+                        }
+                    }
+                }
+                Row {
+                    label: "Container";
+                    Segment {
+                        options: ["mp4", "mkv", "mov"];
+                        value <=> root.settings.container;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+            }
+
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.seam;
+        }
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 8px;
+            Rectangle {
+                property <bool> ready: root.clips.length > 0;
+                height: 36px;
+                border-width: 1px;
+                border-color: ready ? Theme.accent : Theme.seam;
+                background: go.has-hover && ready && !root.rendering ? Theme.ghost : transparent;
+                Rectangle {
+                    x: 0;
+                    width: root.rendering ? root.progress * parent.width : 0;
+                    background: Theme.ghost;
+                }
+                Text {
+                    text: root.rendering ? "Stop" : (root.lossless && (root.separate || root.videos < 2) ? "Export" : "Render") + (root.videos > 1 && root.separate ? " \{root.videos} clips" : "");
+                    color: ready ? Theme.ink : Theme.faint;
+                    font-size: 13px;
+                }
+                go := TouchArea {
+                    mouse-cursor: pointer;
+                    enabled: ready;
+                    clicked => {
+                        if root.rendering {
+                            root.cancel();
+                        } else {
+                            root.render();
+                        }
+                    }
+                }
+            }
+            Text {
+                height: 14px;
+                text: root.status;
+                color: root.failed ? Theme.accent : Theme.faint;
+                font-size: 11px;
+                font-family: "monospace";
+                overflow: elide;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+            HorizontalLayout {
+                height: 14px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                Action {
+                    text: root.copied ? "Copied" : root.version;
+                    clicked => {
+                        root.copy-details();
+                    }
+                }
+            }
+        }
+    }
+}

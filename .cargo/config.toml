@@ -1,0 +1,9 @@
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+
+[target.'cfg(target_os = "linux")']
+# rpath, not runpath, so that the bundled ffmpeg finds its own libraries too
+rustflags = ["-C", "link-arg=-Wl,--disable-new-dtags,-rpath,$ORIGIN"]
+
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-Wl,-rpath,@loader_path"]

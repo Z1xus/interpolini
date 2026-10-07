@@ -1,0 +1,238 @@
+import { Button, Row, Segment, Tabs, Theme } from "widgets.slint";
+
+export struct Download {
+    name: string,
+    installed: bool,
+}
+
+component Group inherits VerticalLayout {
+    in property <string> title;
+    in property <[string]> tabs;
+    in-out property <string> tab;
+    Rectangle {
+        height: 36px;
+        Text {
+            x: 12px;
+            text: root.title;
+            color: Theme.ink;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+        Tabs {
+            x: parent.width - self.preferred-width - 12px;
+            width: self.preferred-width;
+            options: root.tabs;
+            value <=> root.tab;
+        }
+    }
+    @children
+    Rectangle {
+        height: 11px;
+        Rectangle {
+            y: 10px;
+            height: 1px;
+            background: Theme.seam;
+        }
+    }
+}
+
+component Hint inherits HorizontalLayout {
+    in property <string> text;
+    in property <color> color: Theme.faint;
+    height: 28px;
+    padding-left: 28px;
+    padding-right: 12px;
+    Text {
+        text: root.text;
+        color: root.color;
+        font-size: 11px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+component Item inherits Row {
+    in property <string> name;
+    in property <bool> installed;
+    in property <bool> enabled: true;
+    in property <string> get: "Download";
+    in property <string> busy;
+    in property <string> progress;
+    in property <float> fraction;
+    property <bool> loading: root.busy == root.name;
+    callback install();
+    callback remove();
+    callback cancel();
+    Rectangle {
+        horizontal-stretch: 1;
+        Text {
+            x: 0;
+            width: parent.width;
+            text: root.loading ? root.progress : root.installed ? "Installed" : "";
+            color: root.loading ? Theme.ink : root.installed ? Theme.ok : Theme.faint;
+            font-size: 11px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.loading: Rectangle {
+            y: parent.height - 3px;
+            height: 2px;
+            background: Theme.seam;
+            Rectangle {
+                x: 0;
+                width: parent.width * root.fraction;
+                background: Theme.accent;
+            }
+        }
+    }
+    // the same space over and under the button as a Segment has, so the two are in one line
+    HorizontalLayout {
+        padding-top: 3px;
+        padding-bottom: 3px;
+        Button {
+            text: root.loading ? "Cancel" : root.installed ? "Remove" : root.get;
+            main: !root.loading && !root.installed;
+            enabled: root.loading || (root.busy == "" && root.enabled);
+            clicked => {
+                if root.loading {
+                    root.cancel();
+                } else if root.installed {
+                    root.remove();
+                } else {
+                    root.install();
+                }
+            }
+        }
+    }
+}
+
+export component Components inherits Window {
+    // bundled, system or custom
+    in-out property <string> ffmpeg;
+    // this system has an ffmpeg of its own that the app can use
+    in property <bool> ffmpeg-system;
+    // there is no bundled copy, so there is nothing to switch
+    in property <bool> ffmpeg-fixed;
+    in property <bool> restart;
+    in property <bool> tensorrt;
+    // the app has its part for tensorrt on this system
+    in property <bool> tensorrt-shipped;
+    in property <[Download]> vulkan;
+    in property <[Download]> models;
+    in-out property <string> backend: "vulkan";
+    property <[Download]> shown: root.backend == "vulkan" ? root.vulkan : root.models;
+    // the name of the thing that downloads now
+    in property <string> busy;
+    in property <string> progress;
+    in property <float> fraction;
+    in property <string> note;
+    callback use-ffmpeg(string);
+    callback choose-ffmpeg();
+    callback restart-app();
+    callback install(string);
+    callback remove(string);
+    callback cancel();
+    title: "Components";
+    icon: @image-url("../../../assets/interpolini.svg");
+    background: Theme.rack;
+    default-font-size: 12px;
+    // one fixed size, so the window cannot be resized: the groups, their lines and the notes
+    width: 500px;
+    height: 2 * 47px + (root.shown.length + 1 + (root.backend == "tensorrt" ? 1 : 0) + (root.restart ? 1 : 0) + (root.note != "" ? 1 : 0)) * 28px;
+    VerticalLayout {
+        alignment: start;
+        Group {
+            title: "FFmpeg";
+            Row {
+                label: "Source";
+                Segment {
+                    options: root.ffmpeg-fixed ? ["system"] : !root.ffmpeg-system ? (root.ffmpeg == "custom" ? ["bundled", "custom"] : ["bundled"]) : root.ffmpeg == "custom" ? ["bundled", "system", "custom"] : ["bundled", "system"];
+                    value <=> root.ffmpeg;
+                    changed(choice) => {
+                        root.use-ffmpeg(choice);
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                HorizontalLayout {
+                    padding-top: 3px;
+                    padding-bottom: 3px;
+                    Button {
+                        text: "Choose folder…";
+                        enabled: !root.ffmpeg-fixed;
+                        clicked => {
+                            root.choose-ffmpeg();
+                        }
+                    }
+                }
+            }
+            if root.restart: Row {
+                label: "";
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Restart to apply.";
+                    color: Theme.accent;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+                HorizontalLayout {
+                    padding-top: 3px;
+                    padding-bottom: 3px;
+                    Button {
+                        text: "Restart";
+                        main: true;
+                        clicked => {
+                            root.restart-app();
+                        }
+                    }
+                }
+            }
+        }
+        Group {
+            title: "RIFE";
+            tabs: root.tensorrt-shipped ? ["vulkan", "tensorrt"] : [];
+            tab <=> root.backend;
+            if root.backend == "tensorrt": Item {
+                name: "tensorrt";
+                label: "TensorRT";
+                installed: root.tensorrt;
+                get: "Install (3.1 GB)";
+                busy: root.busy;
+                progress: root.progress;
+                fraction: root.fraction;
+                install => {
+                    root.install(self.name);
+                }
+                remove => {
+                    root.remove(self.name);
+                }
+                cancel => {
+                    root.cancel();
+                }
+            }
+            for model in root.shown: Item {
+                name: root.backend + "/" + model.name;
+                label: model.name;
+                installed: model.installed;
+                enabled: root.backend == "vulkan" || root.tensorrt;
+                busy: root.busy;
+                progress: root.progress;
+                fraction: root.fraction;
+                install => {
+                    root.install(self.name);
+                }
+                remove => {
+                    root.remove(self.name);
+                }
+                cancel => {
+                    root.cancel();
+                }
+            }
+        }
+        if root.note != "": Hint {
+            text: root.note;
+            color: Theme.accent;
+        }
+    }
+}

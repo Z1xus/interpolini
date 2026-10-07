@@ -1,0 +1,234 @@
+import { MenuItem, MenuPanel, MenuTitle, Theme } from "widgets.slint";
+import { Family, Clip } from "types.slint";
+
+export component Menu inherits Rectangle {
+    in property <[Clip]> clips;
+    in property <bool> rendering;
+    in property <[Family]> themes;
+    in-out property <string> theme;
+    in-out property <bool> light;
+    in property <bool> light-available;
+    in property <bool> components;
+    in-out property <bool> separate;
+    callback add-clips();
+    callback remove-clip();
+    callback mark(string);
+    callback undo();
+    callback redo();
+    callback close-gaps();
+    callback render();
+    callback cancel();
+    callback choose-theme(string);
+    callback preview-theme(string);
+    callback toggle-separate();
+    callback show-sheet(string);
+    callback show-components();
+    callback quit();
+
+    height: 26px;
+    background: Theme.rack;
+    HorizontalLayout {
+        alignment: start;
+        padding-left: 4px;
+        MenuTitle {
+            text: "File";
+            clicked => {
+                file.show();
+            }
+            file := PopupWindow {
+                y: parent.height;
+                MenuPanel {
+                    VerticalLayout {
+                        padding: 4px;
+                        MenuItem {
+                            text: "Import…";
+                            clicked => {
+                                root.add-clips();
+                            }
+                        }
+                        MenuItem {
+                            text: root.rendering ? "Stop" : "Render";
+                            enabled: root.clips.length > 0;
+                            clicked => {
+                                if root.rendering {
+                                    root.cancel();
+                                } else {
+                                    root.render();
+                                }
+                            }
+                        }
+                        MenuItem {
+                            text: "Export each clip separately";
+                            checked: root.separate;
+                            clicked => {
+                                root.separate = !root.separate;
+                                root.toggle-separate();
+                            }
+                        }
+                        if root.components: MenuItem {
+                            text: "Components…";
+                            clicked => {
+                                root.show-components();
+                            }
+                        }
+                        MenuItem {
+                            text: "Quit";
+                            clicked => {
+                                root.quit();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        MenuTitle {
+            text: "Edit";
+            clicked => {
+                edit.show();
+            }
+            edit := PopupWindow {
+                y: parent.height;
+                MenuPanel {
+                    VerticalLayout {
+                        padding: 4px;
+                        MenuItem {
+                            text: "Undo";
+                            hint: "Ctrl Z";
+                            clicked => {
+                                root.undo();
+                            }
+                        }
+                        MenuItem {
+                            text: "Redo";
+                            hint: "Ctrl Shift Z";
+                            clicked => {
+                                root.redo();
+                            }
+                        }
+                        MenuItem {
+                            text: "Split";
+                            hint: "S";
+                            enabled: root.clips.length > 0;
+                            clicked => {
+                                root.mark("split");
+                            }
+                        }
+                        MenuItem {
+                            text: "Close gaps";
+                            enabled: root.clips.length > 0;
+                            clicked => {
+                                root.close-gaps();
+                            }
+                        }
+                        MenuItem {
+                            text: "Remove clip";
+                            hint: "Delete";
+                            enabled: root.clips.length > 0 && !root.rendering;
+                            clicked => {
+                                root.remove-clip();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        MenuTitle {
+            text: "View";
+            clicked => {
+                view-menu.show();
+            }
+            view-menu := PopupWindow {
+                y: parent.height;
+                MenuPanel {
+                    VerticalLayout {
+                        padding: 4px;
+                        Text {
+                            height: 22px;
+                            text: "   THEME";
+                            color: Theme.faint;
+                            font-size: 10px;
+                            letter-spacing: 1px;
+                            vertical-alignment: center;
+                        }
+                        MenuItem {
+                            text: "Light mode";
+                            checked: root.light;
+                            enabled: root.light-available;
+                            clicked => {
+                                root.light = !root.light;
+                                root.choose-theme(root.theme);
+                            }
+                        }
+                        Rectangle {
+                            height: 9px;
+                            Rectangle {
+                                height: 1px;
+                                background: Theme.seam;
+                            }
+                        }
+                        for family in root.themes: MenuItem {
+                            min-width: 260px;
+                            text: family.name;
+                            checked: family.themes[0] == root.theme || family.themes[1] == root.theme || family.themes[2] == root.theme;
+                            clicked => {
+                                root.theme = family.themes[0];
+                                root.choose-theme(root.theme);
+                            }
+                            hovered(inside) => {
+                                root.preview-theme(inside ? family.themes[0] : root.theme);
+                            }
+                            // the kinds of one theme are on its line
+                            HorizontalLayout {
+                                x: parent.width - self.preferred-width - 12px;
+                                width: self.preferred-width;
+                                spacing: 10px;
+                                for name[index] in family.themes: Text {
+                                    visible: family.themes.length > 1;
+                                    text: family.labels[index];
+                                    color: name == root.theme ? Theme.accent : kind.has-hover ? Theme.ink : Theme.faint;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                    kind := TouchArea {
+                                        clicked => {
+                                            root.theme = name;
+                                            root.choose-theme(name);
+                                        }
+                                        changed has-hover => {
+                                            root.preview-theme(self.has-hover ? name : root.theme);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        MenuTitle {
+            text: "Help";
+            clicked => {
+                help.show();
+            }
+            help := PopupWindow {
+                y: parent.height;
+                MenuPanel {
+                    VerticalLayout {
+                        padding: 4px;
+                        MenuItem {
+                            text: "Shortcuts";
+                            clicked => {
+                                root.show-sheet("Shortcuts");
+                            }
+                        }
+                        MenuItem {
+                            text: "Credits";
+                            clicked => {
+                                root.show-sheet("Credits");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

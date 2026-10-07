@@ -1,0 +1,19 @@
+name: Bug report
+description: Something doesn't work
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what you got. A screenshot or the clip helps a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: debug
+    attributes:
+      label: Debug info
+      description: Click the version at the bottom right of the app (it says "Copied"), then paste here.
+      render: text
+    validations:
+      required: true

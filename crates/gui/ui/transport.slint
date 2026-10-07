@@ -1,0 +1,165 @@
+import { IconButton, Icons, Tabs, Theme } from "widgets.slint";
+
+export component Transport inherits Rectangle {
+    in-out property <bool> transform;
+    in-out property <string> view;
+    in property <bool> playing;
+    in property <bool> rendering;
+    in property <string> preview-note;
+    in property <string> details;
+    in property <string> timecode;
+    callback step(int, float);
+    callback play();
+    callback mark(string);
+    callback add-clips();
+    callback remove-clip();
+    callback seek();
+    height: 36px;
+    background: Theme.rack;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 12px;
+        spacing: 2px;
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                IconButton {
+                    shape: Icons.frame;
+                    label: "Transform";
+                    active: root.transform;
+                    clicked => {
+                        root.transform = !root.transform;
+                    }
+                }
+                Rectangle {
+                    width: 17px;
+                    Rectangle {
+                        width: 1px;
+                        height: 16px;
+                        background: Theme.seam;
+                    }
+                }
+                IconButton {
+                    shape: Icons.step-back;
+                    label: "Step back";
+                    clicked => {
+                        root.step(-1, 0);
+                    }
+                }
+                IconButton {
+                    shape: root.playing ? Icons.pause : Icons.play;
+                    label: root.playing ? "Pause" : "Play";
+                    active: root.playing;
+                    clicked => {
+                        root.play();
+                    }
+                }
+                IconButton {
+                    shape: Icons.step-forward;
+                    label: "Step forward";
+                    clicked => {
+                        root.step(1, 0);
+                    }
+                }
+                Rectangle {
+                    width: 17px;
+                    Rectangle {
+                        width: 1px;
+                        height: 16px;
+                        background: Theme.seam;
+                    }
+                }
+                IconButton {
+                    shape: Icons.mark-in;
+                    label: "Set start";
+                    clicked => {
+                        root.mark("start");
+                    }
+                }
+                IconButton {
+                    shape: Icons.mark-out;
+                    label: "Set end";
+                    clicked => {
+                        root.mark("end");
+                    }
+                }
+                IconButton {
+                    shape: Icons.split;
+                    label: "Split";
+                    clicked => {
+                        root.mark("split");
+                    }
+                }
+                IconButton {
+                    shape: Icons.clear;
+                    label: "Clear";
+                    clicked => {
+                        root.mark("clear");
+                    }
+                }
+                Rectangle {
+                    width: 17px;
+                    Rectangle {
+                        width: 1px;
+                        height: 16px;
+                        background: Theme.seam;
+                    }
+                }
+                IconButton {
+                    shape: Icons.plus;
+                    label: "Import";
+                    clicked => {
+                        root.add-clips();
+                    }
+                }
+                IconButton {
+                    shape: Icons.trash;
+                    label: "Remove clip";
+                    enabled: !root.rendering;
+                    clicked => {
+                        root.remove-clip();
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            spacing: 14px;
+            // a long note gets shorter, it must not make the window content wider
+            Text {
+                horizontal-stretch: 1;
+                min-width: 0;
+                text: root.preview-note;
+                color: Theme.accent;
+                font-size: 11px;
+                font-family: "monospace";
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Tabs {
+                options: ["original", "result"];
+                value <=> root.view;
+                changed => {
+                    root.seek();
+                }
+            }
+            Text {
+                min-width: 0;
+                overflow: elide;
+                text: root.details;
+                color: Theme.faint;
+                font-size: 11px;
+                font-family: "monospace";
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.timecode;
+                color: Theme.ink;
+                font-size: 11px;
+                font-family: "monospace";
+                vertical-alignment: center;
+            }
+        }
+    }
+}

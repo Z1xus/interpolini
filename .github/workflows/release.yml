@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # apparently macos ci counts each minute x10 and windows x2
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc, aarch64-apple-darwin, x86_64-apple-darwin]
+        include:
+          # the newer debian has a clang that the headers of windows accept
+          - container: rust:1.98.0-trixie@sha256:620dbcd124499c59e2406d3741574b5c5838cf9eb9656f0c3a03948f79b02959
+          # the older debian has an older glibc, so the linux app starts on more systems
+          - target: x86_64-unknown-linux-gnu
+            container: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            /usr/local/cargo/registry
+            /usr/local/cargo/git
+            target
+          key: ${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.github/build.sh', 'rife/CMakeLists.txt') }}
+      # the art of the themes is on its own branch, after the cache so the cache does not replace it
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: assets
+          path: target/art
+          persist-credentials: false
+      - name: Tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends clang clang-tools lld llvm nasm cmake ninja-build pkg-config unzip xz-utils \
+            libasound2-dev libfontconfig-dev libxkbcommon-dev libwayland-dev libx11-dev libx11-xcb-dev libxcb1-dev
+          # debian keeps some tools of llvm out of the path
+          for tool in clang-cl lld-link llvm-rc llvm-lib llvm-nm; do
+            command -v "$tool" > /dev/null || ln -s "$(ls /usr/lib/llvm-*/bin/"$tool" | head -1)" "/usr/local/bin/$tool"
+          done
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          bash .github/build.sh "$TARGET" dist
+          # an artifact drops the mark of a program from its files, a tar keeps it
+          tar -cf "$TARGET.tar" -C dist .
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ matrix.target }}.tar
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          merge-multiple: true
+      - name: Package
+        env:
+          TZ: UTC
+        run: |
+          mkdir dist
+          for part in *.tar; do tar -xf "$part" -C dist; done
+          cd dist
+          for folder in */; do
+            find "$folder" -exec touch -h -t 198001010000 {} +
+            find "$folder" -type f -print0 | sort -z | xargs -0 zip -X -q "${folder%/}.zip"
+          done
+          sha256sum ./*.zip > SHA256SUMS
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS \
+            --verify-tag --title "$GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/cli", "crates/gui"]
+
+[workspace.package]
+version = "0.1.1"
+edition = "2024"
+authors = ["z1xus"]
+license = "GPL-3.0-or-later"
+publish = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

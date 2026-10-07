@@ -1,0 +1,88 @@
+export struct Clip {
+    name: string,
+    state: string,
+    progress: float,
+    at: float,
+    track: int,
+    kept: float,
+    length: float,
+    cut-in: float,
+    cut-out: float,
+    // an audio clip sits on an audio track, and clips from one file share a link
+    audio: bool,
+    link: int,
+    // selected together with other clips
+    picked: bool,
+    thumbs: [image],
+    wave: [float],
+    still: bool,
+    // the width of the picture for a height of 1
+    ratio: float,
+    // the place of the picture on the canvas, see Place in the core
+    x: float,
+    y: float,
+    zoom-x: float,
+    zoom-y: float,
+    crop-left: float,
+    crop-top: float,
+    crop-right: float,
+    crop-bottom: float,
+}
+
+export struct Family {
+    name: string,
+    themes: [string],
+    // the short name of each theme in the family
+    labels: [string],
+}
+
+export struct Ghost {
+    at: float,
+    length: float,
+    track: int,
+    audio: bool,
+}
+
+export struct Lane {
+    name: string,
+    y: length,
+    height: length,
+    muted: bool,
+}
+
+export struct Settings {
+    dedup: bool,
+    dedup-threshold: float,
+    pre: bool,
+    pre-fps: string,
+    interpolate: bool,
+    engine: string,
+    interpolation-fps: string,
+    speed: string,
+    tuning: string,
+    algorithm: string,
+    half: bool,
+    backend: string,
+    model: string,
+    mask: bool,
+    mask-limit: float,
+    mask-edge: float,
+    mask-tolerance: float,
+    blend: bool,
+    blend-fps: int,
+    intensity: float,
+    weighting: string,
+    custom: string,
+    grade: bool,
+    brightness: float,
+    contrast: float,
+    saturation: float,
+    hue: float,
+    lut: string,
+    codec: string,
+    encoder: string,
+    quality: float,
+    container: string,
+    audio: string,
+    options: string,
+}

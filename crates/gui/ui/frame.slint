@@ -1,0 +1,169 @@
+import { Theme } from "widgets.slint";
+import { Clip } from "types.slint";
+
+component Handle inherits Rectangle {
+    in property <MouseCursor> cursor;
+    // the pointer, in the window
+    callback grabbed(length, length);
+    callback dragged(length, length, bool);
+    property <bool> shift;
+    background: Theme.ink;
+    border-width: 1px;
+    border-color: Theme.accent;
+    // the target is larger than the mark
+    touch := TouchArea {
+        x: -4px;
+        y: -4px;
+        width: parent.width + 8px;
+        height: parent.height + 8px;
+        mouse-cursor: root.cursor;
+        pointer-event(event) => {
+            root.shift = event.modifiers.shift;
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.grabbed(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.dragged(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, root.shift);
+            }
+        }
+    }
+}
+
+// a box on the preview that moves, sizes and crops a clip, it has the place and the size of the canvas
+export component Frame inherits Rectangle {
+    in property <Clip> item;
+    callback start();
+    callback edit(Clip);
+    // the other buttons of the pointer go on to the preview
+    callback pass(PointerEvent, length, length);
+    property <Clip> base;
+    property <Clip> next;
+    property <length> from-x;
+    property <length> from-y;
+    property <float> ratio: root.width / root.height;
+    // the whole clip, before the crop
+    property <length> full-width: wide(item);
+    property <length> full-height: high(item);
+    property <length> left: (0.5 + item.x) * root.width - full-width / 2;
+    property <length> top: (0.5 + item.y) * root.height - full-height / 2;
+
+    pure function wide(item: Clip) -> length {
+        (item.ratio > ratio ? 1 : item.ratio / ratio) * item.zoom-x * root.width
+    }
+    pure function high(item: Clip) -> length {
+        (item.ratio > ratio ? ratio / item.ratio : 1) * item.zoom-y * root.height
+    }
+    // an edge moves by a distance and the opposite edge stays, kept is the part that the crop leaves
+    function stretch-x(by: length, kept: float, side: float) {
+        root.next.zoom-x = clamp(base.zoom-x * (1 + by / (wide(base) * kept)), 0.05, 8);
+        root.next.x = base.x + (wide(next) - wide(base)) * side / root.width;
+    }
+    function stretch-y(by: length, kept: float, side: float) {
+        root.next.zoom-y = clamp(base.zoom-y * (1 + by / (high(base) * kept)), 0.05, 8);
+        root.next.y = base.y + (high(next) - high(base)) * side / root.height;
+    }
+    function grab(x: length, y: length) {
+        root.base = root.item;
+        root.next = root.item;
+        root.from-x = x;
+        root.from-y = y;
+        root.start();
+    }
+    pure function reach(x: length, y: length) -> float {
+        sqrt(pow((x - root.absolute-position.x - (0.5 + base.x) * root.width) / 1px, 2) + pow((y - root.absolute-position.y - (0.5 + base.y) * root.height) / 1px, 2))
+    }
+    // the middle of the canvas holds the clip when it is near
+    pure function hold(value: float) -> float {
+        abs(value) < 0.01 ? 0 : value
+    }
+
+    box := Rectangle {
+        x: left + item.crop-left * full-width;
+        y: top + item.crop-top * full-height;
+        width: full-width * (1 - item.crop-left - item.crop-right);
+        height: full-height * (1 - item.crop-top - item.crop-bottom);
+        border-width: 1px;
+        border-color: Theme.accent;
+        TouchArea {
+            mouse-cursor: move;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    root.grab(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+                root.pass(event, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+            moved => {
+                if self.pressed {
+                    root.next.x = hold(base.x + (self.absolute-position.x + self.mouse-x - from-x) / root.width);
+                    root.next.y = hold(base.y + (self.absolute-position.y + self.mouse-y - from-y) / root.height);
+                    root.edit(root.next);
+                }
+            }
+            double-clicked => {
+                root.grab(0, 0);
+                root.next.x = 0;
+                root.next.y = 0;
+                root.next.zoom-x = 1;
+                root.next.zoom-y = 1;
+                root.next.crop-left = 0;
+                root.next.crop-top = 0;
+                root.next.crop-right = 0;
+                root.next.crop-bottom = 0;
+                root.edit(root.next);
+            }
+        }
+
+        // the corners size the clip around its middle
+        for corner in 4: Handle {
+            x: (mod(corner, 2) == 0 ? 0 : parent.width) - self.width / 2;
+            y: (corner < 2 ? 0 : parent.height) - self.height / 2;
+            width: 9px;
+            height: 9px;
+            cursor: corner == 0 || corner == 3 ? nwse-resize : nesw-resize;
+            grabbed(x, y) => {
+                root.grab(x, y);
+            }
+            dragged(x, y) => {
+                root.next.zoom-x = clamp(base.zoom-x * reach(x, y) / max(1, reach(from-x, from-y)), 0.05, 8);
+                root.next.zoom-y = root.next.zoom-x * base.zoom-y / base.zoom-x;
+                root.edit(root.next);
+            }
+        }
+
+        // the edges crop the clip, and with shift they stretch it: left, top, right, bottom
+        for edge in 4: Handle {
+            property <bool> side: mod(edge, 2) == 0;
+            x: (side ? (edge == 0 ? 0 : parent.width) : parent.width / 2) - self.width / 2;
+            y: (side ? parent.height / 2 : (edge == 1 ? 0 : parent.height)) - self.height / 2;
+            width: side ? 5px : 21px;
+            height: side ? 21px : 5px;
+            cursor: side ? ew-resize : ns-resize;
+            grabbed(x, y) => {
+                root.grab(x, y);
+            }
+            dragged(x, y, shift) => {
+                root.next = root.base;
+                if shift && edge == 0 {
+                    stretch-x(from-x - x, 1 - base.crop-left - base.crop-right, base.crop-right - 0.5);
+                } else if shift && edge == 1 {
+                    stretch-y(from-y - y, 1 - base.crop-top - base.crop-bottom, base.crop-bottom - 0.5);
+                } else if shift && edge == 2 {
+                    stretch-x(x - from-x, 1 - base.crop-left - base.crop-right, 0.5 - base.crop-left);
+                } else if shift {
+                    stretch-y(y - from-y, 1 - base.crop-top - base.crop-bottom, 0.5 - base.crop-top);
+                } else if edge == 0 {
+                    root.next.crop-left = clamp(base.crop-left + (x - from-x) / full-width, 0, 0.95 - base.crop-right);
+                } else if edge == 1 {
+                    root.next.crop-top = clamp(base.crop-top + (y - from-y) / full-height, 0, 0.95 - base.crop-bottom);
+                } else if edge == 2 {
+                    root.next.crop-right = clamp(base.crop-right - (x - from-x) / full-width, 0, 0.95 - base.crop-left);
+                } else {
+                    root.next.crop-bottom = clamp(base.crop-bottom - (y - from-y) / full-height, 0, 0.95 - base.crop-top);
+                }
+                root.edit(root.next);
+            }
+        }
+    }
+}

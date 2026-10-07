@@ -1,0 +1,527 @@
+import { Button, Theme } from "widgets.slint";
+import { Clip, Family, Ghost, Lane, Settings } from "types.slint";
+import { Timeline } from "timeline.slint";
+import { Menu } from "menu.slint";
+import { Panel } from "panel.slint";
+import { Sheet } from "sheet.slint";
+import { Components } from "components.slint";
+import { Stage } from "stage.slint";
+import { Transport } from "transport.slint";
+
+export { Sheet, Components }
+export { System, Theme } from "widgets.slint";
+
+export component App inherits Window {
+    in-out property <[Clip]> clips;
+    in-out property <int> selected: -1;
+    in-out property <Settings> settings;
+    in-out property <float> position;
+    in property <[Lane]> video;
+    in property <[Lane]> audio;
+    in property <int> link: -1;
+    in property <length> content;
+    in property <float> extent;
+    in-out property <bool> playing;
+    in-out property <string> view: "result";
+    in property <float> seconds;
+    // the sizes of the two panels, 0 is the usual size
+    in property <int> videos;
+    in property <[Ghost]> ghosts;
+    // the panels stay in the window when it becomes smaller
+    changed width => {
+        root.rail = clamp(root.rail, 340px, max(340px, root.width - 770px));
+    }
+    changed height => {
+        if root.deck > 0 {
+            root.deck = clamp(root.deck, 90px, max(90px, root.height - 220px));
+        }
+    }
+    in-out property <length> rail: 340px;
+    in-out property <length> deck;
+    // the length of one frame of the clip that shows
+    in property <float> tick: 1 / 60;
+    in-out property <bool> transform;
+    in property <int> framed: -1;
+    in property <image> preview;
+    in property <string> details;
+    in property <string> timecode;
+    in property <[float]> weights;
+    in property <string> summary;
+    in property <[string]> configs;
+    in-out property <string> config;
+    in property <bool> unsaved;
+    // the part of the frames of the clip that are repeats
+    in property <float> repeats;
+    // the question before the window closes: about a render that runs, or about settings that are not saved
+    in-out property <string> closing;
+    callback close-answer(bool);
+    in property <[string]> models;
+    in property <bool> tensorrt;
+    // the window for the optional parts exists on this system
+    in property <bool> components;
+    in property <bool> rendering;
+    in property <float> progress;
+    in property <string> status;
+    in property <bool> failed;
+    in property <string> version;
+    in property <bool> copied;
+    in property <string> preview-note;
+    in property <bool> lossless;
+    in-out property <bool> separate;
+    in-out property <string> scope: "all clips";
+    in property <image> art;
+    in property <image> art-mask;
+    in property <[Family]> themes;
+    in-out property <string> theme;
+    in-out property <bool> light;
+    in property <bool> light-available;
+
+    callback add-clips();
+    callback remove-clip();
+    callback step(int, float);
+    callback mark(string);
+    callback undo();
+    callback redo();
+    callback trimmed(int, float);
+    callback trim-start();
+    callback trim-done();
+    callback place-start();
+    callback placed();
+    callback grab(int, float, bool);
+    callback drag(float, length, float);
+    callback release();
+    callback resized();
+    callback close-gaps();
+    callback changed();
+    callback seek();
+    callback play();
+    callback moved();
+    callback ended();
+    callback sounding();
+
+    // the sound stops here, and it starts with the first picture of a playback
+    changed playing => {
+        if !root.playing {
+            root.sounding();
+        }
+    }
+    callback select(int);
+    callback extend(int);
+    callback lane-height(bool, int, length);
+    callback lane-wheel(length, length);
+    callback add-lane(bool);
+    callback remove-lane(bool, int);
+    callback mute-lane(int);
+    callback choose-lut();
+    callback choose-config(string);
+    callback save-config();
+    callback new-config(string);
+    callback delete-config();
+    callback render();
+    callback cancel();
+    callback copy-details();
+    callback choose-theme(string);
+    callback preview-theme(string);
+    callback quit();
+    callback toggle-separate();
+    callback show-sheet(string);
+    callback show-components();
+
+    public function blur() {
+        keys.focus();
+    }
+
+    // the time on the timeline under a point of the window, below 0 when the point is not on it
+    public pure function drop-time(x: length, y: length) -> float {
+        root.clips.length == 0 || y < timeline.absolute-position.y ? -1 : max(0, timeline.time-at(x))
+    }
+    public pure function drop-depth(y: length) -> length {
+        timeline.depth-at(y)
+    }
+
+    public function copy(text: string) {
+        copier.text = text;
+        copier.select-all();
+        copier.copy();
+    }
+
+    copier := TextInput {
+        width: 0;
+        height: 0;
+    }
+
+    title: "interpolini";
+    icon: @image-url("../../../assets/interpolini.svg");
+    background: Theme.void;
+    preferred-width: 1280px;
+    preferred-height: 760px;
+    min-width: 1115px;
+    min-height: 560px;
+    default-font-size: 12px;
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.modifiers.control && (event.text == "y" || event.text == "Z" || (event.text == "z" && event.modifiers.shift)) {
+                root.redo();
+                return accept;
+            }
+            if event.modifiers.control && event.text == "z" {
+                root.undo();
+                return accept;
+            }
+            if event.modifiers.control && (event.text == "=" || event.text == "+" || event.text == "-") {
+                timeline.magnify(event.text == "-" ? 0.8 : 1.25);
+                return accept;
+            }
+            if root.clips.length == 0 || event.modifiers.control {
+                return reject;
+            }
+            if event.text == " " || event.text == "k" {
+                root.play();
+            } else if event.text == Key.LeftArrow {
+                root.step(event.modifiers.shift ? 0 : -1, event.modifiers.shift ? -1 : 0);
+            } else if event.text == Key.RightArrow {
+                root.step(event.modifiers.shift ? 0 : 1, event.modifiers.shift ? 1 : 0);
+            } else if event.text == "j" {
+                root.step(0, -1);
+            } else if event.text == "l" {
+                root.step(0, 1);
+            } else if event.text == Key.Home {
+                root.position = 0;
+                root.seek();
+            } else if event.text == Key.End {
+                root.position = 1;
+                root.seek();
+            } else if event.text == "i" {
+                root.mark("start");
+            } else if event.text == "o" {
+                root.mark("end");
+            } else if event.text == "x" {
+                root.mark("clear");
+            } else if event.text == "s" {
+                root.mark("split");
+            } else if event.text == Key.Delete {
+                root.remove-clip();
+            } else {
+                return reject;
+            }
+            accept
+        }
+    }
+
+    VerticalLayout {
+    Menu {
+        clips: root.clips;
+        rendering: root.rendering;
+        themes: root.themes;
+        theme <=> root.theme;
+        light <=> root.light;
+        light-available: root.light-available;
+        components: root.components;
+        show-components => {
+            root.show-components();
+        }
+        separate <=> root.separate;
+        add-clips => {
+            root.add-clips();
+        }
+        remove-clip => {
+            root.remove-clip();
+        }
+        undo => {
+            root.undo();
+        }
+        redo => {
+            root.redo();
+        }
+        close-gaps => {
+            root.close-gaps();
+        }
+        render => {
+            root.render();
+        }
+        cancel => {
+            root.cancel();
+        }
+        toggle-separate => {
+            root.toggle-separate();
+        }
+        quit => {
+            root.quit();
+        }
+        mark(name) => {
+            root.mark(name);
+        }
+        choose-theme(name) => {
+            root.choose-theme(name);
+        }
+        preview-theme(name) => {
+            root.preview-theme(name);
+        }
+        show-sheet(name) => {
+            root.show-sheet(name);
+        }
+    }
+    Rectangle {
+        height: 1px;
+        background: Theme.seam;
+    }
+    HorizontalLayout {
+        VerticalLayout {
+            horizontal-stretch: 1;
+            Stage {
+                vertical-stretch: 1;
+                clips <=> root.clips;
+                preview: root.preview;
+                rendering: root.rendering;
+                position: root.position;
+                seconds: root.seconds;
+                transform: root.transform;
+                framed: root.framed;
+                place-start => {
+                    root.place-start();
+                }
+                placed => {
+                    root.placed();
+                }
+                add-clips => {
+                    root.add-clips();
+                }
+            }
+
+            if root.clips.length > 0: Rectangle {
+                height: 5px;
+                background: grip.has-hover || grip.pressed ? Theme.accent : Theme.seam;
+                grip := TouchArea {
+                    mouse-cursor: row-resize;
+                    moved => {
+                        if self.pressed {
+                            // 42px is the transport bar and its line, between this grip and the timeline
+                            root.deck = clamp(root.height - (self.absolute-position.y + self.mouse-y) - 42px, 90px, max(90px, root.height - 220px));
+                        }
+                    }
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.up {
+                            root.resized();
+                        }
+                    }
+                }
+            }
+
+            if root.clips.length > 0: Transport {
+                transform <=> root.transform;
+                view <=> root.view;
+                playing: root.playing;
+                rendering: root.rendering;
+                preview-note: root.preview-note;
+                details: root.details;
+                timecode: root.timecode;
+                step(frames, seconds) => {
+                    root.step(frames, seconds);
+                }
+                play => {
+                    root.play();
+                }
+                mark(name) => {
+                    root.mark(name);
+                }
+                add-clips => {
+                    root.add-clips();
+                }
+                remove-clip => {
+                    root.remove-clip();
+                }
+                seek => {
+                    root.seek();
+                }
+            }
+
+            if root.clips.length > 0: Rectangle {
+                height: 1px;
+                background: Theme.seam;
+            }
+
+            timeline := Timeline {
+                visible: root.clips.length > 0;
+                height: root.clips.length == 0 ? 0px : root.deck > 0 ? max(90px, root.deck) : min(root.content + 24px, 380px);
+                clips <=> root.clips;
+                video: root.video;
+                audio: root.audio;
+                selected: root.selected;
+                link: root.link;
+                content: root.content;
+                extent: root.extent;
+                seconds: root.seconds;
+                position <=> root.position;
+                seek => {
+                    root.seek();
+                }
+                select(index) => {
+                    root.select(index);
+                }
+                extend(index) => {
+                    root.extend(index);
+                }
+                grab(index, time, alone) => {
+                    root.grab(index, time, alone);
+                }
+                drag(time, depth, slack) => {
+                    root.drag(time, depth, slack);
+                }
+                release => {
+                    root.release();
+                }
+                trim-start => {
+                    root.trim-start();
+                }
+                trimmed(index, slack) => {
+                    root.trimmed(index, slack);
+                }
+                trim-done => {
+                    root.trim-done();
+                }
+                lane-height(audio, index, height) => {
+                    root.lane-height(audio, index, height);
+                }
+                ghosts: root.ghosts;
+                art: root.art;
+                art-mask: root.art-mask;
+                light: root.light;
+                lane-wheel(depth, delta) => {
+                    root.lane-wheel(depth, delta);
+                }
+                add-lane(audio) => {
+                    root.add-lane(audio);
+                }
+                remove-lane(audio, index) => {
+                    root.remove-lane(audio, index);
+                }
+                mute-lane(index) => {
+                    root.mute-lane(index);
+                }
+            }
+        }
+
+        Rectangle {
+            width: 5px;
+            background: side.has-hover || side.pressed ? Theme.accent : Theme.seam;
+            side := TouchArea {
+                mouse-cursor: col-resize;
+                moved => {
+                    if self.pressed {
+                        root.rail = clamp(root.width - (self.absolute-position.x + self.mouse-x), 340px, max(340px, root.width - 770px));
+                    }
+                }
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.up {
+                        root.resized();
+                    }
+                }
+            }
+        }
+
+        Panel {
+            width: max(340px, root.rail);
+            clips: root.clips;
+            videos: root.videos;
+            selected: root.selected;
+            settings <=> root.settings;
+            scope <=> root.scope;
+            configs: root.configs;
+            config <=> root.config;
+            unsaved: root.unsaved;
+            repeats: root.repeats;
+            models: root.models;
+            tensorrt: root.tensorrt;
+            weights: root.weights;
+            summary: root.summary;
+            lossless: root.lossless;
+            separate: root.separate;
+            rendering: root.rendering;
+            progress: root.progress;
+            status: root.status;
+            failed: root.failed;
+            version: root.version;
+            copied: root.copied;
+            changed => {
+                root.changed();
+            }
+            choose-lut => {
+                root.choose-lut();
+            }
+            save-config => {
+                root.save-config();
+            }
+            delete-config => {
+                root.delete-config();
+            }
+            render => {
+                root.render();
+            }
+            cancel => {
+                root.cancel();
+            }
+            copy-details => {
+                root.copy-details();
+            }
+            choose-config(name) => {
+                root.choose-config(name);
+            }
+            new-config(name) => {
+                root.new-config(name);
+            }
+        }
+    }
+    }
+
+    if root.closing != "": Rectangle {
+        background: Theme.void.with-alpha(0.7);
+        TouchArea { }
+        Rectangle {
+            width: 340px;
+            height: 104px;
+            background: Theme.rack;
+            border-width: 1px;
+            border-color: Theme.seam;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 18px;
+                Text {
+                    text: root.closing == "render" ? "Stop the render and quit?" : "Save changes to \"\{root.config}\"?";
+                    color: Theme.ink;
+                    font-size: 13px;
+                    overflow: elide;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    if root.closing == "save": Button {
+                        height: 26px;
+                        text: "Don't save";
+                        clicked => {
+                            root.close-answer(false);
+                        }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+                    Button {
+                        height: 26px;
+                        text: "Cancel";
+                        clicked => {
+                            root.closing = "";
+                        }
+                    }
+                    Button {
+                        height: 26px;
+                        text: root.closing == "render" ? "Quit" : "Save";
+                        main: true;
+                        clicked => {
+                            root.close-answer(root.closing == "save");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
