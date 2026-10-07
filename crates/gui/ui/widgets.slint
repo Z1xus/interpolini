@@ -47,6 +47,30 @@ export component Icon inherits Path {
     stroke-line-join: round;
 }
 
+export component Art inherits Rectangle {
+    in property <image> picture;
+    in property <image> mask;
+    in property <bool> light;
+    out property <float> shape: root.mask.width > 0 ? root.mask.height / root.mask.width : root.picture.height / max(1, root.picture.width);
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.mask;
+        colorize: root.light ? Theme.ink : Theme.muted;
+        image-fit: contain;
+        horizontal-alignment: right;
+        vertical-alignment: bottom;
+    }
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.picture;
+        image-fit: contain;
+        horizontal-alignment: right;
+        vertical-alignment: bottom;
+    }
+}
+
 export component Label inherits Text {
     color: Theme.muted;
     font-size: 12px;

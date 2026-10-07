@@ -1,10 +1,13 @@
-import { Icon, Icons, Theme } from "widgets.slint";
+import { Art, Icon, Icons, Theme } from "widgets.slint";
 import { Clip } from "types.slint";
 import { Frame } from "frame.slint";
 
 export component Stage inherits Rectangle {
     in-out property <[Clip]> clips;
     in property <image> preview;
+    in property <image> art;
+    in property <image> art-mask;
+    in property <bool> light;
     in property <bool> rendering;
     in property <float> position;
     in property <float> seconds;
@@ -114,6 +117,15 @@ export component Stage inherits Rectangle {
                 horizontal-alignment: center;
             }
         }
+    }
+    if root.clips.length == 0: Art {
+        x: 16px;
+        y: root.height - self.height;
+        width: root.width - 32px;
+        height: min(176px, root.height / 3);
+        picture: root.art;
+        mask: root.art-mask;
+        light: root.light;
     }
     if root.clips.length == 0: VerticalLayout {
         alignment: center;

@@ -1,4 +1,4 @@
-import { Action, Theme } from "widgets.slint";
+import { Action, Art, Theme } from "widgets.slint";
 import { Clip, Ghost, Lane } from "types.slint";
 
 export component Timeline inherits Rectangle {
@@ -90,26 +90,14 @@ export component Timeline inherits Rectangle {
     background: Theme.rack;
     clip: true;
 
-    Rectangle {
-        x: root.width - 340px;
-        y: root.height - 84px;
-        width: 330px;
-        height: 76px;
-        Image {
-            width: parent.width;
-            height: 76px;
-            source: root.art-mask;
-            colorize: root.light ? Theme.ink : Theme.muted;
-            image-fit: contain;
-            horizontal-alignment: right;
-        }
-        Image {
-            width: parent.width;
-            height: 76px;
-            source: root.art;
-            image-fit: contain;
-            horizontal-alignment: right;
-        }
+    Art {
+        y: root.height - self.height;
+        width: root.width;
+        height: self.width * self.shape;
+        opacity: 0.4;
+        picture: root.art;
+        mask: root.art-mask;
+        light: root.light;
     }
 
     Rectangle {
