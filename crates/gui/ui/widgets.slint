@@ -47,27 +47,39 @@ export component Icon inherits Path {
     stroke-line-join: round;
 }
 
+export struct Piece {
+    area: string,
+    picture: image,
+    mask: image,
+    x: float,
+    y: float,
+    size: float,
+    opacity: float,
+}
+
 export component Art inherits Rectangle {
-    in property <image> picture;
-    in property <image> mask;
+    in property <[Piece]> pieces;
+    in property <string> area;
     in property <bool> light;
-    out property <float> shape: root.mask.width > 0 ? root.mask.height / root.mask.width : root.picture.height / max(1, root.picture.width);
-    Image {
-        width: parent.width;
-        height: parent.height;
-        source: root.mask;
-        colorize: root.light ? Theme.ink : Theme.muted;
-        image-fit: contain;
-        horizontal-alignment: right;
-        vertical-alignment: bottom;
-    }
-    Image {
-        width: parent.width;
-        height: parent.height;
-        source: root.picture;
-        image-fit: contain;
-        horizontal-alignment: right;
-        vertical-alignment: bottom;
+    for piece in root.pieces: Rectangle {
+        property <float> shape: piece.mask.width > 0 ? piece.mask.height / piece.mask.width : piece.picture.height / max(1, piece.picture.width);
+        x: (root.width - self.width) * piece.x;
+        y: (root.height - self.height) * piece.y;
+        width: root.width * piece.size;
+        height: self.width * self.shape;
+        opacity: piece.opacity;
+        visible: piece.area == root.area;
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: piece.mask;
+            colorize: root.light ? Theme.ink : Theme.muted;
+        }
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: piece.picture;
+        }
     }
 }
 

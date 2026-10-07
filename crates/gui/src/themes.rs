@@ -1,9 +1,45 @@
-use slint::{Color, ComponentHandle};
+use slint::{Color, ComponentHandle, ModelRc, VecModel};
 
-use crate::{App, Theme};
+use crate::{App, Piece, Theme};
 
 // void, rack, raised, seam, ink, muted, faint, accent, ok
 type Palette = [u32; 9];
+
+struct Art {
+    theme: &'static str,
+    area: &'static str,
+    mask: &'static str,
+    picture: &'static str,
+    // 0 is left or top, 1 is right or bottom
+    x: f32,
+    y: f32,
+    // as parts of the width of the area and of full opacity
+    width: f32,
+    opacity: f32,
+}
+
+const ART: [Art; 2] = [
+    Art {
+        theme: "ctt",
+        area: "timeline",
+        mask: "ctt.mask.png",
+        picture: "ctt.png",
+        x: 0.5,
+        y: 1.0,
+        width: 1.0,
+        opacity: 0.4,
+    },
+    Art {
+        theme: "ctt",
+        area: "start",
+        mask: "ctt.mask.png",
+        picture: "ctt.png",
+        x: 1.0,
+        y: 1.0,
+        width: 0.8,
+        opacity: 1.0,
+    },
+];
 
 pub const THEMES: [(&str, Palette, Option<Palette>); 12] = [
     (
@@ -146,18 +182,17 @@ pub fn paint(theme: &Theme<'_>, name: &str, light: bool) {
 pub fn apply(ui: &App, name: &str, light: bool) {
     paint(&ui.global::<Theme>(), name, light);
 
-    // optional art for a theme in themes/, named after it
-    // .mask.png is line art that takes the text color, .png or .jpg keeps its own colors
     let folder = interpolini_core::config::app_dir().join("themes");
-    let load = |kinds: &[&str]| {
-        let files = kinds
-            .iter()
-            .map(|kind| folder.join(format!("{name}.{kind}")));
-        let found = files
-            .filter(|file| file.exists())
-            .find_map(|file| slint::Image::load_from_path(&file).ok());
-        found.unwrap_or_default()
-    };
-    ui.set_art_mask(load(&["mask.png"]));
-    ui.set_art(load(&["png", "jpg"]));
+    let image = |file: &str| slint::Image::load_from_path(&folder.join(file)).unwrap_or_default();
+    let pieces = ART.iter().filter(|art| art.theme == name);
+    let pieces = pieces.map(|art| Piece {
+        area: art.area.into(),
+        mask: image(art.mask),
+        picture: image(art.picture),
+        x: art.x,
+        y: art.y,
+        size: art.width,
+        opacity: art.opacity,
+    });
+    ui.set_art(ModelRc::new(VecModel::from(pieces.collect::<Vec<_>>())));
 }

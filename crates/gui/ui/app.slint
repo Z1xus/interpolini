@@ -1,4 +1,4 @@
-import { Button, Theme } from "widgets.slint";
+import { Button, Piece, Theme } from "widgets.slint";
 import { Clip, Family, Ghost, Lane, Settings } from "types.slint";
 import { Timeline } from "timeline.slint";
 import { Menu } from "menu.slint";
@@ -9,7 +9,7 @@ import { Stage } from "stage.slint";
 import { Transport } from "transport.slint";
 
 export { Sheet, Components }
-export { System, Theme } from "widgets.slint";
+export { Piece, System, Theme } from "widgets.slint";
 
 export component App inherits Window {
     in-out property <[Clip]> clips;
@@ -69,8 +69,7 @@ export component App inherits Window {
     in property <bool> lossless;
     in-out property <bool> separate;
     in-out property <string> scope: "all clips";
-    in property <image> art;
-    in property <image> art-mask;
+    in property <[Piece]> art;
     in property <[Family]> themes;
     in-out property <string> theme;
     in-out property <bool> light;
@@ -275,7 +274,6 @@ export component App inherits Window {
                 clips <=> root.clips;
                 preview: root.preview;
                 art: root.art;
-                art-mask: root.art-mask;
                 light: root.light;
                 rendering: root.rendering;
                 position: root.position;
@@ -389,7 +387,6 @@ export component App inherits Window {
                 }
                 ghosts: root.ghosts;
                 art: root.art;
-                art-mask: root.art-mask;
                 light: root.light;
                 lane-wheel(depth, delta) => {
                     root.lane-wheel(depth, delta);

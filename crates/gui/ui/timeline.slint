@@ -1,4 +1,4 @@
-import { Action, Art, Theme } from "widgets.slint";
+import { Action, Art, Piece, Theme } from "widgets.slint";
 import { Clip, Ghost, Lane } from "types.slint";
 
 export component Timeline inherits Rectangle {
@@ -10,8 +10,7 @@ export component Timeline inherits Rectangle {
     in property <int> link;
     // the height of all tracks together
     in property <length> content;
-    in property <image> art;
-    in property <image> art-mask;
+    in property <[Piece]> art;
     in property <bool> light;
     in property <float> extent;
     in property <float> seconds;
@@ -91,12 +90,8 @@ export component Timeline inherits Rectangle {
     clip: true;
 
     Art {
-        y: root.height - self.height;
-        width: root.width;
-        height: self.width * self.shape;
-        opacity: 0.4;
-        picture: root.art;
-        mask: root.art-mask;
+        pieces: root.art;
+        area: "timeline";
         light: root.light;
     }
 
