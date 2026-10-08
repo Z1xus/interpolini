@@ -29,6 +29,7 @@ export global Icons {
     out property <string> hidden: "M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8zM8 6a2 2 0 1 0 0 4a2 2 0 1 0 0-4zM3 13.5 13 2.5";
     out property <string> check: "M3.5 8.5 6.5 11.5 12.5 4.5";
     out property <string> down: "M4 6h8l-4 5z";
+    out property <string> up: "M4 11h8l-4-5z";
     out property <string> right: "M6 4v8l5-4z";
 }
 
@@ -364,7 +365,7 @@ export component Dropdown inherits Rectangle {
         y: (parent.height - self.height) / 2;
         width: 12px;
         height: 12px;
-        shape: Icons.down;
+        shape: popup.is-open ? Icons.up : Icons.down;
         filled: true;
         color: Theme.faint;
     }
