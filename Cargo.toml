@@ -10,7 +10,5 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [profile.release]
-lto = "fat"
-codegen-units = 1
 panic = "abort"
 strip = true
