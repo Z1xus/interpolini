@@ -9,3 +9,4 @@ publish.workspace = true
 [dependencies]
 ctrlc = "3.5.2"
 interpolini-core = { path = "../core" }
+rfd = "0.17.2"

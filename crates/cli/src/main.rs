@@ -148,6 +148,12 @@ fn main() -> ExitCode {
             _ => clips.push(PathBuf::from(argument)),
         }
     }
+    let picked = clips.is_empty();
+    if picked {
+        let videos = ["mp4", "mkv", "mov", "webm", "avi", "m4v", "ts", "flv"];
+        let dialog = rfd::FileDialog::new().add_filter("Video", &videos);
+        clips = dialog.pick_files().unwrap_or_default();
+    }
     if clips.is_empty() {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
@@ -219,5 +225,10 @@ fn main() -> ExitCode {
         None => None,
     };
     run(&jobs, timeline.as_deref(), &sink, &cancel);
+    // a double click opens a console that closes with the program
+    if picked && std::io::stdin().is_terminal() {
+        eprintln!("[*] press enter to close");
+        let _ = std::io::stdin().read_line(&mut String::new());
+    }
     ExitCode::from(u8::from(failed.load(Ordering::Relaxed)))
 }

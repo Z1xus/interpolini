@@ -23,6 +23,8 @@ interpolini-cli -s interpolation.fps=480 -s output.codec=hevc clip.mp4
 
 The -s flag changes any setting from interpolini.ini for that run, and --help lists the rest.
 
+For batch processing you can either just pass multiple clips, or double click interpolini-cli which would open a file picker dialog. The config priority is the following: clip's folder > next to the app > built-in defaults.
+
 ## Why it's faster
 
 - Interpolation and blending both happen on the GPU inside [open-svpflow](https://github.com/Z1xus/open-svpflow), so only the blended frames come back to the CPU.
