@@ -563,6 +563,8 @@ export component Field inherits Rectangle {
     in-out property <string> text;
     in property <string> placeholder;
     in property <string> label;
+    // the text is also accepted when the field loses the focus
+    in property <bool> commit: true;
     callback accepted(string);
     forward-focus: input;
     border-width: 1px;
@@ -591,7 +593,7 @@ export component Field inherits Rectangle {
             self.clear-focus();
         }
         changed has-focus => {
-            if !self.has-focus {
+            if !self.has-focus && root.commit {
                 root.accepted(self.text);
             }
         }
