@@ -78,6 +78,7 @@ export component App inherits Window {
 
     callback add-clips();
     callback remove-clip();
+    callback close-clips();
     callback step(int, float);
     callback mark(string);
     callback undo();
@@ -228,6 +229,9 @@ export component App inherits Window {
         }
         remove-clip => {
             root.remove-clip();
+        }
+        close-clips => {
+            root.close-clips();
         }
         undo => {
             root.undo();

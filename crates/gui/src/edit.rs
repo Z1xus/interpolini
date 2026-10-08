@@ -121,23 +121,27 @@ pub fn wire(ui: &App, state: &Shared) {
         }
     });
 
-    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
-    ui.on_remove_clip(move || {
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
-        let mut state = lock(&shared);
-        let links = chosen(&ui, &state);
-        if links.is_empty() || ui.get_rendering() {
-            return;
+    let remove = |all: bool| {
+        let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let mut state = lock(&shared);
+            let links = chosen(&ui, &state);
+            if (links.is_empty() && !all) || ui.get_rendering() {
+                return;
+            }
+            record(&ui, &mut state, false);
+            discard(&ui, &mut state, |entry| all || links.contains(&entry.link));
+            drop(state);
+            fit(&ui, &shared);
+            select(&ui, &shared, -1);
+            refresh(&ui, &shared);
         }
-        record(&ui, &mut state, false);
-        discard(&ui, &mut state, |entry| links.contains(&entry.link));
-        drop(state);
-        fit(&ui, &shared);
-        select(&ui, &shared, -1);
-        refresh(&ui, &shared);
-    });
+    };
+    ui.on_remove_clip(remove(false));
+    ui.on_close_clips(remove(true));
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_mark(move |kind| {
