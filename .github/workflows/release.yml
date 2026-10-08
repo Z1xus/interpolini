@@ -9,58 +9,83 @@ permissions:
   contents: read
 
 jobs:
-  # apparently macos ci counts each minute x10 and windows x2
   build:
-    name: ${{ matrix.target }}
+    name: ${{ matrix.os }} ${{ matrix.part }}
     strategy:
       fail-fast: false
       matrix:
-        target: [x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc, aarch64-apple-darwin, x86_64-apple-darwin]
+        os: [linux, windows, macos, macos-intel]
+        part: [app, rife]
         include:
-          # the newer debian has a clang that the headers of windows accept
-          - container: rust:1.98.0-trixie@sha256:620dbcd124499c59e2406d3741574b5c5838cf9eb9656f0c3a03948f79b02959
-          # the older debian has an older glibc, so the linux app starts on more systems
-          - target: x86_64-unknown-linux-gnu
+          - os: linux
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
             container: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
-    runs-on: ubuntu-24.04
+          - os: windows
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - os: macos
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/cache@v6.1.0
-        with:
-          path: |
-            /usr/local/cargo/registry
-            /usr/local/cargo/git
-            target
-          key: ${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.github/build.sh', 'rife/CMakeLists.txt') }}
-      # the art of the themes is on its own branch, after the cache so the cache does not replace it
+      # the art of the themes is on its own branch
       - uses: actions/checkout@v7.0.1
+        if: matrix.part == 'app'
         with:
           ref: assets
           path: target/art
           persist-credentials: false
-      - name: Tools
+      - name: Linux tools
+        if: runner.os == 'Linux'
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends clang clang-tools lld llvm nasm cmake ninja-build pkg-config unzip xz-utils \
+          apt-get install -y --no-install-recommends clang cmake ninja-build pkg-config unzip xz-utils \
             libasound2-dev libfontconfig-dev libxkbcommon-dev libwayland-dev libx11-dev libx11-xcb-dev libxcb1-dev
-          # debian keeps some tools of llvm out of the path
-          for tool in clang-cl lld-link llvm-rc llvm-lib llvm-nm; do
-            command -v "$tool" > /dev/null || ln -s "$(ls /usr/lib/llvm-*/bin/"$tool" | head -1)" "/usr/local/bin/$tool"
-          done
+      - name: macOS tools
+        if: runner.os == 'macOS'
+        run: brew install ninja nasm pkgconf
+      - name: Windows tools
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_INSTALL=%%i"
+          if not defined VS_INSTALL exit /b 1
+          call "%VS_INSTALL%\VC\Auxiliary\Build\vcvarsall.bat" x64
+          if errorlevel 1 exit /b 1
+          echo PATH=%PATH%>> "%GITHUB_ENV%"
+          echo LIB=%LIB%>> "%GITHUB_ENV%"
+          echo INCLUDE=%INCLUDE%>> "%GITHUB_ENV%"
+          echo VCINSTALLDIR=%VCINSTALLDIR%>> "%GITHUB_ENV%"
+          echo VCToolsVersion=%VCToolsVersion%>> "%GITHUB_ENV%"
+          echo VCToolsInstallDir=%VCToolsInstallDir%>> "%GITHUB_ENV%"
+          echo WindowsSdkDir=%WindowsSdkDir%>> "%GITHUB_ENV%"
+          echo WindowsSDKVersion=%WindowsSDKVersion%>> "%GITHUB_ENV%"
+          echo LIBCLANG_PATH=%ProgramFiles%\LLVM\bin>> "%GITHUB_ENV%"
       - name: Build
         env:
           TARGET: ${{ matrix.target }}
+          PART: ${{ matrix.part }}
         run: |
-          bash .github/build.sh "$TARGET" dist
+          # open-svpflow is a download, so it goes with the app
+          [ "$PART" = app ] && PART="app svpflow"
+          bash .github/build.sh "$TARGET" dist $PART
           # an artifact drops the mark of a program from its files, a tar keeps it
-          tar -cf "$TARGET.tar" -C dist .
+          tar -cf "$TARGET-$PART.tar" -C dist .
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: ${{ matrix.target }}
-          path: ${{ matrix.target }}.tar
+          name: ${{ matrix.target }}-${{ matrix.part }}
+          path: ${{ matrix.target }}-${{ matrix.part }}.tar
           compression-level: 0
           if-no-files-found: error
           retention-days: 7

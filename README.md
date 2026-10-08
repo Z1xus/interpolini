@@ -41,9 +41,15 @@ bash .github/build.sh x86_64-pc-windows-msvc    # Windows
 bash .github/build.sh aarch64-apple-darwin      # macOS
 ```
 
-Run the line for your system. On Windows run it in Git Bash from a Visual Studio developer prompt, and on an Intel Mac use x86_64-apple-darwin. The Windows and macOS lines also work on Linux (the script then gets cargo-xwin, or zig and the macOS SDK), which is how the releases are made.
+Run the line for your system. On Windows run it in Git Bash from a Visual Studio developer prompt, and on an Intel Mac use x86_64-apple-darwin. The Windows and macOS lines also work on Linux (the script then gets cargo-xwin, or zig and the macOS SDK).
 
-The app is four things that are built in different ways (the app itself, open-svpflow, the RIFE plugins and FFmpeg), so the script fetches and builds all of them and puts them together in the dist folder. This is also how the releases are built, so they are reproducible (FFmpeg is pinned by hash and open-svpflow by commit).
+The app is four things that are made in different ways, so the script gets each of them and puts them together in the dist folder:
+
+- The app itself and the RIFE plugins are built.
+- open-svpflow is downloaded from its [nightly releases](https://github.com/Z1xus/open-svpflow/releases).
+- FFmpeg is downloaded for Linux and Windows, and built for macOS (nobody ships it there).
+
+The releases are made with the same script, each system on its own runner. Every download is pinned by hash, so the releases are reproducible.
 
 ## Credits
 
