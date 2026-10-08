@@ -33,7 +33,7 @@ The -s flag changes any setting from interpolini.ini for that run, and --help li
 
 ## Build
 
-You need Rust, clang, CMake and Ninja (on Linux also the dev packages for ALSA, fontconfig, Wayland and X11).
+You need Rust and clang (on Linux also the dev packages for ALSA, fontconfig, Wayland and X11).
 
 ```sh
 bash .github/build.sh x86_64-unknown-linux-gnu  # Linux
@@ -45,9 +45,10 @@ Run the line for your system. On Windows run it in Git Bash from a Visual Studio
 
 The app is four things that are made in different ways, so the script gets each of them and puts them together in the dist folder:
 
-- The app itself and the RIFE plugins are built.
+- The app itself is built.
 - open-svpflow is downloaded from its [nightly releases](https://github.com/Z1xus/open-svpflow/releases).
-- FFmpeg is downloaded for Linux and Windows, and built for macOS (nobody ships it there).
+- The RIFE plugins and FFmpeg for macOS (nobody ships it there) are downloaded from [precotti](https://github.com/Z1xus/precotti), which builds them.
+- FFmpeg for Linux and Windows is downloaded from [BtbN](https://github.com/BtbN/FFmpeg-Builds).
 
 The releases are made with the same script, each system on its own runner. Every download is pinned by hash, so the releases are reproducible.
 
