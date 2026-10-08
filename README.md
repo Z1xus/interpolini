@@ -4,7 +4,7 @@ Yet another [svpaghetti](https://github.com/Z1xus/open-svpflow) and [rifatoni](h
 
 ![interpolini](https://github.com/Z1xus/interpolini/blob/assets/mockup.png?raw=true)
 
-It does the same thing as [smoothie](https://github.com/couleur-tweak-tips/smoothie-rs) and [blur](https://github.com/f0e/blur) (interpolates the clip to a high frame rate and blends it back down for motion blur), just without VapourSynth or Python.
+It does the same thing as [smoothie](https://github.com/couleur-tweak-tips/smoothie-rs) and [blur](https://github.com/f0e/blur) (interpolates the clip to a high frame rate and blends it back down for motion blur), just without [VapourSynth](https://www.vapoursynth.com) or Python.
 
 It's also a wannabe NLE. There is a timeline with video and audio tracks where you can cut, split and layer clips, drop images on top, move, scale and crop things on the preview, and give each clip its own settings.
 
@@ -29,29 +29,21 @@ For batch processing you can either just pass multiple clips, or double click in
 
 - Interpolation and blending both happen on the GPU inside [open-svpflow](https://github.com/Z1xus/open-svpflow), so only the blended frames come back to the CPU.
 - There is no VapourSynth, so frames don't go through a frame server and Python between the filters.
-- FFmpeg is linked into the app instead of being piped to. The decoder writes into the buffer that the interpolator reads from, and the encoder reads the interpolator's output without a copy.
+- [FFmpeg](https://ffmpeg.org) is linked into the app instead of being piped to. The decoder writes into the buffer that the interpolator reads from, and the encoder reads the interpolator's output without a copy.
 - The motion search uses a half-size frame by default (Drawback is it costs a bit of quality).
-- Optional TensorRT support for RIFE (it uses Vulkan by default).
+- Optional [TensorRT](https://developer.nvidia.com/tensorrt) support for RIFE (it uses Vulkan by default).
 
 ## Build
 
-You need Rust and clang (on Linux also the dev packages for ALSA, fontconfig, Wayland and X11).
+You need [Rust](https://rustup.rs) and [clang](https://clang.llvm.org) (on Linux also the dev packages for ALSA, fontconfig, Wayland and X11).
 
 ```sh
 bash .github/build.sh x86_64-unknown-linux-gnu  # Linux
-bash .github/build.sh x86_64-pc-windows-msvc    # Windows
-bash .github/build.sh aarch64-apple-darwin      # macOS
+bash .github/build.sh x86_64-pc-windows-msvc    # Windows (in Git Bash from a Visual Studio developer prompt)
+bash .github/build.sh aarch64-apple-darwin      # macOS (x86_64-apple-darwin on Intel)
 ```
 
-Run the line for your system. On Windows run it in Git Bash from a Visual Studio developer prompt, and on an Intel Mac use x86_64-apple-darwin. The Windows and macOS lines also work on Linux (the script then gets cargo-xwin, or zig and the macOS SDK).
-
-The app is four things that come from different places, so the script gets each of them and puts them together in the dist folder:
-
-- The app itself is built.
-- open-svpflow is downloaded from its [nightly releases](https://github.com/Z1xus/open-svpflow/releases).
-- The RIFE plugins and FFmpeg are downloaded from [precotti](https://github.com/Z1xus/precotti). It builds the plugins, and FFmpeg for macOS (nobody ships it there), and keeps the [BtbN](https://github.com/BtbN/FFmpeg-Builds) build of FFmpeg for Linux and Windows.
-
-The releases are made with the same script, each system on its own runner. Every download is pinned by hash, so the releases are reproducible.
+The script builds the app and downloads the rest ([open-svpflow](https://github.com/Z1xus/open-svpflow/releases), and the [RIFE plugins](https://github.com/TNTwise/rife-ncnn-vulkan) and [FFmpeg](https://ffmpeg.org) from [precotti](https://github.com/Z1xus/precotti)) into the dist folder.
 
 ## Credits
 
