@@ -22,7 +22,7 @@ xwin_version=v0.23.1
 xwin_package=c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360
 sdk_version=26.1
 sdk_package=beee7212d265a6d2867d0236cc069314b38d5fb3486a6515734e76fa210c784c
-svpflow_commit=badc0de4103c9e6e554548004a1aa88e11fa2866
+svpflow_release=nightly-20261008-deadbad7009f
 
 case "$target" in
   x86_64-unknown-linux-gnu)
@@ -30,6 +30,7 @@ case "$target" in
     ffmpeg="$ffmpeg_build-linux64-gpl-shared-8.1"
     archive="$ffmpeg.tar.xz"
     hash=a6d0ea7dfef6ef85d86b8acf1c0a2d5288a05bac42c2cb16914e26830da3d344
+    svpflow_package=3f6a8096c30f78b5cb701a251ec824756ae9656332a471acbeee30b1dc08ce8a
     exe='' prefix=lib suffix=.so
     ;;
   x86_64-pc-windows-msvc)
@@ -37,11 +38,16 @@ case "$target" in
     ffmpeg="$ffmpeg_build-win64-gpl-shared-8.1"
     archive="$ffmpeg.zip"
     hash=751c56e0b63426426487ab4048031b0166281c59c0a7e33ef7dd7428495e1d8a
+    svpflow_package=edc35429323e5353d8d012034ae0b0579eeb1206180354a5f3a2e458da97fe56
     exe=.exe prefix='' suffix=.dll
     ;;
   aarch64-apple-darwin | x86_64-apple-darwin)
     name=interpolini-macos-arm64
-    [[ "$target" == x86_64-* ]] && name=interpolini-macos-x86_64
+    svpflow_package=713cc4980d8936a9ec3e3cbe59334b3d67dd9ca4c0525ea2a2d133a463cb5051
+    if [[ "$target" == x86_64-* ]]; then
+      name=interpolini-macos-x86_64
+      svpflow_package=b3b09399defe78c275297be4f6b64216472ac83c1849227447492ec7dd7b6a6a
+    fi
     ffmpeg="ffmpeg-$ffmpeg_version-$target"
     exe='' prefix=lib suffix=.dylib
     export MACOSX_DEPLOYMENT_TARGET=12.0
@@ -274,30 +280,22 @@ app() {
     echo "Commit: $(git rev-parse HEAD)"
     echo "Target: $target"
     echo "FFmpeg: $ffmpeg"
-    echo "open-svpflow: $svpflow_commit"
+    echo "open-svpflow: $svpflow_release"
     rustc -Vv
   } > "$bin/BUILD.txt"
 }
 
 svpflow() {
-  local source="$work/open-svpflow-$svpflow_commit"
-  source_at https://github.com/Z1xus/open-svpflow.git "$svpflow_commit" "$source"
-  if [[ "$target" == x86_64-pc-windows-msvc && "$(uname -s)" == Linux ]]; then
-    # yes, this copies a file to a name with a backslash in it. i am not very proud of that
-    for crate in svpflow1 svpflow2; do
-      cp "$source/crates/$crate/${crate}_vs.def" "$source/crates/$crate\\${crate}_vs.def"
-    done
+  local source="$work/open-svpflow-$svpflow_release-$target"
+  if [[ ! -d "$source" ]]; then
+    curl -fsSL "https://github.com/Z1xus/open-svpflow/releases/download/$svpflow_release/$target.zip" -o "$work/download"
+    check "$work/download" "$svpflow_package"
+    unzip -q "$work/download" -d "$source"
+    rm "$work/download"
   fi
-  (
-    cd "$source"
-    rustup target add "$target"
-    "${build[@]}" --release --locked --target "$target" --target-dir "$work/svpflow" \
-      -p svpflow1 -p svpflow2 -p svpflow-capi
-    crates "$work/svpflow-crates.txt"
-  )
-  cp "$work/svpflow/$target/release"/"$prefix"{open_svpflow,svpflow1_vs,svpflow2_vs}"$suffix" "$bin/"
+  cp "$source"/"$prefix"{open_svpflow,svpflow1_vs,svpflow2_vs}"$suffix" "$bin/"
   cp "$source/LICENSE" "$stage/licenses/open-svpflow.txt"
-  cp "$work/svpflow-crates.txt" "$stage/licenses/open-svpflow-crates.txt"
+  cp "$source/CRATES.txt" "$stage/licenses/open-svpflow-crates.txt"
 }
 
 rife() {
