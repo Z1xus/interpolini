@@ -303,19 +303,25 @@ pub fn image(picture: &frame::Video, meta: &Meta, width: u32) -> Result<Image> {
     let width = width.min(meta.width) & !1;
     let height = (u64::from(width) * u64::from(meta.height) / u64::from(meta.width)) as u32;
     let mut scaler = meta.scaler(Pixel::YUV420P, Pixel::RGBA, width, height)?;
-    let mut rgba = vec![0u8; width as usize * height as usize * 4];
+    // the scaler writes past the end of a row, and a frame has the space for that
+    let mut scaled = frame::Video::new(Pixel::RGBA, width, height);
     unsafe {
-        let source = &*picture.as_ptr();
+        let (source, target) = (&*picture.as_ptr(), &*scaled.as_mut_ptr());
         ffi::sws_scale(
             scaler.as_mut_ptr(),
             source.data.as_ptr().cast(),
             source.linesize.as_ptr(),
             0,
             meta.height as i32,
-            [rgba.as_mut_ptr(), std::ptr::null_mut()].as_ptr(),
-            [width as i32 * 4, 0].as_ptr(),
+            target.data.as_ptr(),
+            target.linesize.as_ptr(),
         );
     }
+    let rows = scaled.data(0).chunks(scaled.stride(0));
+    let rgba = rows
+        .flat_map(|row| &row[..width as usize * 4])
+        .copied()
+        .collect();
     Ok(Image {
         width,
         height,
