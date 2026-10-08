@@ -159,6 +159,47 @@ fn colors() {
     }
 }
 
+// a double click on linux gives no terminal, so the program starts again in one
+#[cfg(target_os = "linux")]
+fn terminal() -> bool {
+    let Ok(app) = std::env::current_exe() else {
+        return false;
+    };
+    let named = std::env::var("TERMINAL").map(|terminal| format!("{terminal} -e"));
+    let home = std::env::var("HOME").unwrap_or_default();
+    let kde = std::fs::read_to_string(format!("{home}/.config/kdeglobals")).unwrap_or_default();
+    let kde = kde
+        .lines()
+        .find_map(|line| line.strip_prefix("TerminalApplication="))
+        .map(|terminal| format!("{terminal} -e"));
+    // its 2026 and linux still cant tell you the default terminal, so enjoy this fucking list like every other app
+    let terminals = [
+        "xdg-terminal-exec",
+        named.as_deref().unwrap_or_default(),
+        kde.as_deref().unwrap_or_default(),
+        "konsole -e",
+        "gnome-terminal --",
+        "ptyxis --",
+        "kgx -e",
+        "xfce4-terminal -x",
+        "ghostty -e",
+        "alacritty -e",
+        "kitty",
+        "wezterm start --",
+        "foot",
+        "xterm -e",
+    ];
+    terminals.iter().any(|terminal| {
+        let mut words = terminal.split_whitespace();
+        let Some(program) = words.next() else {
+            return false;
+        };
+        let mut command = std::process::Command::new(program);
+        command.args(words).arg(&app);
+        command.args(std::env::args_os().skip(1)).spawn().is_ok()
+    })
+}
+
 fn main() -> ExitCode {
     #[cfg(windows)]
     colors();
@@ -204,6 +245,10 @@ fn main() -> ExitCode {
             }
             _ => clips.push(PathBuf::from(argument)),
         }
+    }
+    #[cfg(target_os = "linux")]
+    if clips.is_empty() && !std::io::stderr().is_terminal() && terminal() {
+        return ExitCode::SUCCESS;
     }
     let picked = clips.is_empty();
     if picked {
