@@ -7,13 +7,6 @@ target="${1:?target is required}"
 output="${2:-dist}"
 parts=("${@:3}")
 [[ ${#parts[@]} -gt 0 ]] || parts=(app svpflow rife)
-ffmpeg_version=8.1.3
-ffmpeg_source=7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
-ffmpeg_release=autobuild-2026-10-06-13-06
-ffmpeg_build=ffmpeg-n$ffmpeg_version-14-g330caae0c1
-x264_commit=b35605ace3ddf7c1a5d67a2eb553f034aef41d55
-moltenvk_version=v1.4.2
-moltenvk_package=f95765a6229cb7b915990a2890ce12ebe36a730b021545d3d52ae69ce4c4024e
 zig_version=0.15.2
 zig_package=02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239
 zigbuild_version=v0.23.4
@@ -23,32 +16,30 @@ xwin_package=c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360
 sdk_version=26.1
 sdk_package=beee7212d265a6d2867d0236cc069314b38d5fb3486a6515734e76fa210c784c
 svpflow_release=nightly-20261008-deadbad7009f
+precotti_release=nightly-20261008-deadbadb5f7f
 
 case "$target" in
   x86_64-unknown-linux-gnu)
     name=interpolini-linux-x86_64
-    ffmpeg="$ffmpeg_build-linux64-gpl-shared-8.1"
-    archive="$ffmpeg.tar.xz"
-    hash=a6d0ea7dfef6ef85d86b8acf1c0a2d5288a05bac42c2cb16914e26830da3d344
     svpflow_package=3f6a8096c30f78b5cb701a251ec824756ae9656332a471acbeee30b1dc08ce8a
+    precotti_package=b88870e389747774cc49bf45e79064834f78ab99398838ecabcdd2a2c09ca39d
     exe='' prefix=lib suffix=.so
     ;;
   x86_64-pc-windows-msvc)
     name=interpolini-windows-x86_64
-    ffmpeg="$ffmpeg_build-win64-gpl-shared-8.1"
-    archive="$ffmpeg.zip"
-    hash=751c56e0b63426426487ab4048031b0166281c59c0a7e33ef7dd7428495e1d8a
     svpflow_package=edc35429323e5353d8d012034ae0b0579eeb1206180354a5f3a2e458da97fe56
+    precotti_package=0b7a93765fd4e53421565b2795436dd20abe638e4805294cb70a98c7f05457d2
     exe=.exe prefix='' suffix=.dll
     ;;
   aarch64-apple-darwin | x86_64-apple-darwin)
     name=interpolini-macos-arm64
     svpflow_package=713cc4980d8936a9ec3e3cbe59334b3d67dd9ca4c0525ea2a2d133a463cb5051
+    precotti_package=82d18b049b9ffd8ee2a48c5c297f9543fbb11702ab314b66a92c00de3c698457
     if [[ "$target" == x86_64-* ]]; then
       name=interpolini-macos-x86_64
       svpflow_package=b3b09399defe78c275297be4f6b64216472ac83c1849227447492ec7dd7b6a6a
+      precotti_package=ceeae2403ed65264c494f9bca9137eea2da8e9abce03286b2eedbaa4d39b4d3e
     fi
-    ffmpeg="ffmpeg-$ffmpeg_version-$target"
     exe='' prefix=lib suffix=.dylib
     export MACOSX_DEPLOYMENT_TARGET=12.0
     ;;
@@ -80,13 +71,6 @@ check() {
     echo "$1 does not have the pinned hash" >&2
     exit 1
   fi
-}
-# the source of a project at one commit
-source_at() {
-  [[ ! -d "$3" ]] || return 0
-  command git init -q "$3"
-  command git -C "$3" fetch -q --depth 1 "$1" "$2"
-  command git -C "$3" checkout -q FETCH_HEAD
 }
 
 flags=("--remap-path-prefix=$root=/src" "--remap-path-prefix=$cargo_home=/cargo")
@@ -123,9 +107,6 @@ unpack() {
 
 # on linux, macos is built with zig as the compiler and the linker, and with the sdk of apple
 build=(cargo build)
-cross=(./configure)
-cmake_flags=()
-jobs="$(getconf _NPROCESSORS_ONLN)"
 if [[ "$target" == *-apple-darwin && "$(uname -s)" == Linux ]]; then
   export ZIG="$work/zig-x86_64-linux-$zig_version/zig"
   export ZIG_TARGET="${target%%-*}-macos.$MACOSX_DEPLOYMENT_TARGET"
@@ -135,32 +116,9 @@ if [[ "$target" == *-apple-darwin && "$(uname -s)" == Linux ]]; then
   [[ -d "$zigbuild" ]] || unpack "https://github.com/rust-cross/cargo-zigbuild/releases/download/$zigbuild_version/cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz" "$zigbuild_package"
   [[ -d "$SDKROOT" ]] || unpack "https://github.com/joseluisq/macosx-sdks/releases/download/$sdk_version/MacOSX$sdk_version.sdk.tar.xz" "$sdk_package"
   export PATH="${ZIG%/*}:$zigbuild:$PATH"
-  tools="$work/zig-$target"
-  mkdir -p "$tools"
-  cp .github/zig-cc "$tools/cc"
-  cp .github/zig-cc "$tools/c++"
-  for tool in ar ranlib; do
-    printf '#!/bin/sh\nexec "%s" %s "$@"\n' "$ZIG" "$tool" > "$tools/$tool"
-    chmod +x "$tools/$tool"
-  done
-  processor="${target%%-*}"
-  {
-    echo "set(CMAKE_SYSTEM_NAME Darwin)"
-    echo "set(CMAKE_SYSTEM_PROCESSOR ${processor/aarch64/arm64})"
-    echo "set(CMAKE_C_COMPILER $tools/cc)"
-    echo "set(CMAKE_CXX_COMPILER $tools/c++)"
-    echo "set(CMAKE_AR $tools/ar)"
-    echo "set(CMAKE_RANLIB $tools/ranlib)"
-    echo "set(CMAKE_OSX_SYSROOT $SDKROOT)"
-  } > "$tools/toolchain.cmake"
   # the step that reads the ffmpeg headers for rust needs the headers of the compiler and of the system
   headers="--sysroot=$SDKROOT -isystem $(clang -print-resource-dir)/include -isystem $SDKROOT/usr/include"
   build=(env "BINDGEN_EXTRA_CLANG_ARGS_$target=$headers" cargo zigbuild)
-  cmake_flags=("-DCMAKE_TOOLCHAIN_FILE=$tools/toolchain.cmake" -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF)
-  # only for the configure step of x264: a build script of rust must not get these, it runs on linux
-  cross=(env "CC=$tools/cc" "AR=$tools/ar" "RANLIB=$tools/ranlib" ./configure --host="${target%%-*}-apple-darwin")
-  ffmpeg_cross=(--enable-cross-compile --target-os=darwin --arch="${target%%-*}" "--cc=$tools/cc" "--ar=$tools/ar"
-    "--ranlib=$tools/ranlib" --nm=llvm-nm --strip=true)
 fi
 # on linux, windows is built with clang and the sdk of microsoft, which cargo-xwin gets and sets up
 if [[ "$target" == x86_64-pc-windows-msvc && "$(uname -s)" == Linux ]]; then
@@ -175,7 +133,6 @@ if [[ "$target" == x86_64-pc-windows-msvc && "$(uname -s)" == Linux ]]; then
   export PATH="$xwin:$PATH" XWIN_CACHE_DIR="$work/xwin"
   rustup target add "$target"
   eval "$(cargo xwin env --target "$target")"
-  cmake_flags=("-DCMAKE_TOOLCHAIN_FILE=$XWIN_CACHE_DIR/cmake/clang-cl/$target-toolchain.cmake")
   # the flags of cargo-xwin stay, and one variable for all flags would replace them
   export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="$CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS ${flags[*]}"
 else
@@ -213,41 +170,20 @@ crates() {
   rm -rf "$texts"
 }
 
-fetch_ffmpeg() {
-  export FFMPEG_DIR="$work/$ffmpeg"
-  [[ ! -d "$FFMPEG_DIR" ]] || return 0
-  if [[ "$target" == *-apple-darwin ]]; then
-    # nobody builds ffmpeg for macos so we do it ourselves, lovely
-    # it has the encoders of the system, and x264 inside it as the software encoder
-    local x264="$work/x264-$target"
-    source_at https://github.com/mirror/x264.git "$x264_commit" "$work/x264-$x264_commit"
-    (
-      cd "$work/x264-$x264_commit"
-      "${cross[@]}" --prefix="$x264" --enable-static --enable-pic --disable-cli
-      make -j"$jobs" install
-    )
-    unpack "https://ffmpeg.org/releases/ffmpeg-$ffmpeg_version.tar.xz" "$ffmpeg_source"
-    (
-      cd "$work/ffmpeg-$ffmpeg_version"
-      PKG_CONFIG_PATH="$x264/lib/pkgconfig" ./configure --prefix="$FFMPEG_DIR" --install-name-dir=@rpath \
-        --enable-shared --disable-static --disable-programs --disable-doc --disable-avdevice --disable-avfilter \
-        --disable-autodetect --enable-videotoolbox --enable-audiotoolbox --enable-zlib --enable-gpl --enable-libx264 \
-        ${ffmpeg_cross[@]+"${ffmpeg_cross[@]}"}
-      make -j"$jobs" install
-      cp COPYING.GPLv2 "$FFMPEG_DIR/LICENSE.txt"
-    )
-    return 0
-  fi
-  curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/$ffmpeg_release/$archive" -o "$work/$archive"
-  check "$work/$archive" "$hash"
-  case "$archive" in
-    *.zip) unzip -q "$work/$archive" -d "$work" ;;
-    *) tar -xf "$work/$archive" -C "$work" ;;
-  esac
+# the rife plugins and ffmpeg
+precotti() {
+  cooked="$work/precotti-$precotti_release-$target"
+  export FFMPEG_DIR="$cooked/ffmpeg"
+  [[ ! -d "$cooked" ]] || return 0
+  curl -fsSL "https://github.com/Z1xus/precotti/releases/download/$precotti_release/$target.tar.gz" -o "$work/download"
+  check "$work/download" "$precotti_package"
+  mkdir "$cooked"
+  tar -xf "$work/download" -C "$cooked"
+  rm "$work/download"
 }
 
 app() {
-  fetch_ffmpeg
+  precotti
   rustup target add "$target"
   "${build[@]}" --release --locked --target "$target"
   cp "target/$target/release/interpolini$exe" "target/$target/release/interpolini-cli$exe" "$bin/"
@@ -279,8 +215,8 @@ app() {
   {
     echo "Commit: $(git rev-parse HEAD)"
     echo "Target: $target"
-    echo "FFmpeg: $ffmpeg"
     echo "open-svpflow: $svpflow_release"
+    echo "precotti: $precotti_release"
     rustc -Vv
   } > "$bin/BUILD.txt"
 }
@@ -299,24 +235,9 @@ svpflow() {
 }
 
 rife() {
-  local built="$work/rife-$target"
-  cmake -S rife -B "$built" -G Ninja ${cmake_flags[@]+"${cmake_flags[@]}"}
-  cmake --build "$built"
-  mkdir -p "$bin/rife"
-  cp -r "$built/models/rife-v4.6" "$bin/rife/"
-  cp "$built/${prefix}interpolini_rife$suffix" "$bin/"
-  cp "$built/source/LICENSE" "$stage/licenses/rife-ncnn-vulkan.txt"
-  cp "$built/_deps/ncnn-src/LICENSE.txt" "$stage/licenses/ncnn.txt"
-  if [[ "$target" == *-apple-darwin ]]; then
-    # apple killed vulkan so we bring our own
-    [[ -d "$work/MoltenVK" ]] || unpack "https://github.com/KhronosGroup/MoltenVK/releases/download/$moltenvk_version/MoltenVK-macos.tar" "$moltenvk_package"
-    cp "$work/MoltenVK/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib" "$bin/"
-    cp "$work/MoltenVK/LICENSE" "$stage/licenses/moltenvk.txt"
-  else
-    # macos has no tensorrt
-    cp "$built/${prefix}interpolini_rife_trt$suffix" "$bin/"
-    cp "$built/_deps/tensorrt-src/LICENSE" "$stage/licenses/tensorrt-headers.txt"
-  fi
+  precotti
+  cp -r "$cooked/bin/." "$bin/"
+  cp "$cooked/licenses"/* "$stage/licenses/"
 }
 
 for part in "${parts[@]}"; do

@@ -43,12 +43,11 @@ bash .github/build.sh aarch64-apple-darwin      # macOS
 
 Run the line for your system. On Windows run it in Git Bash from a Visual Studio developer prompt, and on an Intel Mac use x86_64-apple-darwin. The Windows and macOS lines also work on Linux (the script then gets cargo-xwin, or zig and the macOS SDK).
 
-The app is four things that are made in different ways, so the script gets each of them and puts them together in the dist folder:
+The app is four things that come from different places, so the script gets each of them and puts them together in the dist folder:
 
 - The app itself is built.
 - open-svpflow is downloaded from its [nightly releases](https://github.com/Z1xus/open-svpflow/releases).
-- The RIFE plugins and FFmpeg for macOS (nobody ships it there) are downloaded from [precotti](https://github.com/Z1xus/precotti), which builds them.
-- FFmpeg for Linux and Windows is downloaded from [BtbN](https://github.com/BtbN/FFmpeg-Builds).
+- The RIFE plugins and FFmpeg are downloaded from [precotti](https://github.com/Z1xus/precotti). It builds the plugins, and FFmpeg for macOS (nobody ships it there), and keeps the [BtbN](https://github.com/BtbN/FFmpeg-Builds) build of FFmpeg for Linux and Windows.
 
 The releases are made with the same script, each system on its own runner. Every download is pinned by hash, so the releases are reproducible.
 

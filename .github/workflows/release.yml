@@ -10,25 +10,19 @@ permissions:
 
 jobs:
   build:
-    name: ${{ matrix.os }} ${{ matrix.part }}
+    name: ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
-        os: [linux, windows, macos, macos-intel]
-        part: [app, rife]
         include:
-          - os: linux
-            runner: ubuntu-24.04
+          - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             container: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
-          - os: windows
-            runner: windows-2025
+          - runner: windows-2025
             target: x86_64-pc-windows-msvc
-          - os: macos
-            runner: macos-15
+          - runner: macos-15
             target: aarch64-apple-darwin
-          - os: macos-intel
-            runner: macos-15-intel
+          - runner: macos-15-intel
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
@@ -41,7 +35,6 @@ jobs:
           persist-credentials: false
       # the art of the themes is on its own branch
       - uses: actions/checkout@v7.0.1
-        if: matrix.part == 'app'
         with:
           ref: assets
           path: target/art
@@ -50,11 +43,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends clang cmake ninja-build pkg-config unzip xz-utils \
+          apt-get install -y --no-install-recommends clang pkg-config unzip xz-utils \
             libasound2-dev libfontconfig-dev libxkbcommon-dev libwayland-dev libx11-dev libx11-xcb-dev libxcb1-dev
-      - name: macOS tools
-        if: runner.os == 'macOS'
-        run: brew install ninja nasm pkgconf
       - name: Windows tools
         if: runner.os == 'Windows'
         shell: cmd
@@ -75,17 +65,14 @@ jobs:
       - name: Build
         env:
           TARGET: ${{ matrix.target }}
-          PART: ${{ matrix.part }}
         run: |
-          # open-svpflow is a download, so it goes with the app
-          [ "$PART" = app ] && PART="app svpflow"
-          bash .github/build.sh "$TARGET" dist $PART
+          bash .github/build.sh "$TARGET" dist
           # an artifact drops the mark of a program from its files, a tar keeps it
-          tar -cf "$TARGET-$PART.tar" -C dist .
+          tar -cf "$TARGET.tar" -C dist .
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: ${{ matrix.target }}-${{ matrix.part }}
-          path: ${{ matrix.target }}-${{ matrix.part }}.tar
+          name: ${{ matrix.target }}
+          path: ${{ matrix.target }}.tar
           compression-level: 0
           if-no-files-found: error
           retention-days: 7
