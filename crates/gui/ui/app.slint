@@ -65,6 +65,7 @@ export component App inherits Window {
     in property <bool> failed;
     in property <string> version;
     in property <bool> copied;
+    in property <string> done;
     in property <string> preview-note;
     in property <bool> lossless;
     in-out property <bool> separate;
@@ -444,6 +445,7 @@ export component App inherits Window {
             failed: root.failed;
             version: root.version;
             copied: root.copied;
+            done: root.done;
             changed => {
                 root.changed();
             }

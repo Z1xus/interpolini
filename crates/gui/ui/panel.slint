@@ -51,6 +51,7 @@ export component Panel inherits Rectangle {
     in property <bool> failed;
     in property <string> version;
     in property <bool> copied;
+    in property <string> done;
     property <bool> naming;
     property <string> name;
     property <bool> confirming;
@@ -91,7 +92,7 @@ export component Panel inherits Rectangle {
                 }
             }
             Action {
-                text: root.unsaved ? "Save*" : "Save";
+                text: root.done == "Saved" ? "Saved" : root.unsaved ? "Save*" : "Save";
                 active: root.unsaved;
                 clicked => {
                     if root.naming {
@@ -110,7 +111,7 @@ export component Panel inherits Rectangle {
                 }
             }
             Action {
-                text: root.confirming ? "Delete?" : "Delete";
+                text: root.done == "Deleted" ? "Deleted" : root.confirming ? "Delete?" : "Delete";
                 active: root.confirming;
                 clicked => {
                     if root.confirming {

@@ -121,9 +121,17 @@ pub fn apply(settings: &Settings, config: &mut Config) {
 
 pub fn report(ui: &App, result: std::io::Result<()>, done: &str) {
     ui.set_failed(result.is_err());
-    ui.set_status(match result {
-        Ok(()) => done.into(),
-        Err(error) => format!("Couldn't save: {error}").into(),
+    if let Err(error) = result {
+        ui.set_status(format!("Couldn't save: {error}").into());
+        return;
+    }
+    ui.set_status("".into());
+    ui.set_done(done.into());
+    let weak = ui.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(1500), move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_done("".into());
+        }
     });
 }
 
