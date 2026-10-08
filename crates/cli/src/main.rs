@@ -2,7 +2,7 @@ use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use interpolini_core::{Event, Job, Place, config, run, sequence, sounds};
 
@@ -68,43 +68,100 @@ fn clock(seconds: f32) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
+fn paint(text: &str, code: &str) -> String {
+    match std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
+        true => format!("\x1b[{code}m{text}\x1b[0m"),
+        false => text.to_owned(),
+    }
+}
+
+fn line(symbol: char, text: &str) -> String {
+    let code = match symbol {
+        '!' => "1;93",
+        '+' => "1;92",
+        '-' => "1;91",
+        _ => "1;96",
+    };
+    let text = text.replace("  |  ", &paint("  |  ", "2"));
+    format!("{} {text}", paint(&format!("[{symbol}]"), code))
+}
+
 fn print(event: &Event, jobs: &[Job], live: bool) {
+    static TURN: AtomicUsize = AtomicUsize::new(0);
     let name = |index: usize| {
-        jobs[index]
-            .clip
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
+        let name = jobs[index].clip.file_name().unwrap_or_default();
+        paint(&name.to_string_lossy(), "1")
     };
     let clear = if live { "\r\x1b[2K" } else { "" };
-    match event {
-        Event::Start { clip } => {
-            eprintln!("[*] {}  |  {} of {}", name(*clip), clip + 1, jobs.len())
-        }
-        Event::Info(text) => eprintln!("[*] {text}"),
-        Event::Warning(text) => eprintln!("{clear}[!] {text}"),
+    let text = match event {
+        Event::Start { clip } => format!("{}  |  {} of {}", name(*clip), clip + 1, jobs.len()),
+        Event::Info(text) => text.clone(),
+        Event::Warning(text) => paint(text, "93"),
         Event::Progress { frame, frames, fps } if live => {
             let left = clock((frames - frame) as f32 / fps.max(0.001));
-            eprint!("{clear}[*] {frame}/{frames}  |  {fps:.0} fps  |  {left} left");
+            // the old windows console has no braille
+            let old = cfg!(windows) && std::env::var_os("WT_SESSION").is_none();
+            let spins: Vec<char> = if old {
+                "|/-\\"
+            } else {
+                "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+            }
+            .chars()
+            .collect();
+            let spin = spins[TURN.fetch_add(1, Ordering::Relaxed) % spins.len()];
+            // the pasta goes soft from the left as the frames get done
+            let cooked = (frame * 24 / frames.max(&1)).min(24) as usize;
+            let pasta = paint(&"~".repeat(cooked), "93") + &paint(&"─".repeat(24 - cooked), "2");
+            let text = format!("{pasta}  {frame}/{frames}  |  {fps:.0} fps  |  {left} left");
+            eprint!("{clear}{}", line(spin, &text));
             let _ = std::io::stderr().flush();
+            return;
         }
-        Event::Progress { .. } => {}
+        Event::Progress { .. } => return,
         Event::Done {
             output, seconds, ..
         } => {
             let name = output.file_name().unwrap_or_default().to_string_lossy();
-            eprintln!("{clear}[+] {name}  |  {}", clock(*seconds));
+            format!("{}  |  {}", paint(&name, "1;92"), clock(*seconds))
         }
-        Event::Failed { clip, error } => eprintln!("{clear}[-] {}: {error}", name(*clip)),
-    }
+        Event::Failed { clip, error } => format!("{}: {}", name(*clip), paint(error, "91")),
+    };
+    let symbol = match event {
+        Event::Warning(_) => '!',
+        Event::Done { .. } => '+',
+        Event::Failed { .. } => '-',
+        _ => '*',
+    };
+    eprintln!("{clear}{}", line(symbol, &text));
 }
 
 fn fail(message: impl std::fmt::Display) -> ExitCode {
-    eprintln!("[-] {message}");
+    eprintln!("{}", line('-', &paint(&message.to_string(), "91")));
     ExitCode::from(2)
 }
 
+// the old windows console takes colors only after it is asked to
+#[cfg(windows)]
+fn colors() {
+    use std::ffi::c_void;
+    unsafe extern "system" {
+        fn GetStdHandle(which: u32) -> *mut c_void;
+        fn GetConsoleMode(console: *mut c_void, mode: *mut u32) -> i32;
+        fn SetConsoleMode(console: *mut c_void, mode: u32) -> i32;
+    }
+    let mut mode = 0;
+    // -12 is the error stream, and 4 is the mode for escape codes
+    unsafe {
+        let console = GetStdHandle(-12i32 as u32);
+        if GetConsoleMode(console, &mut mode) != 0 {
+            SetConsoleMode(console, mode | 4);
+        }
+    }
+}
+
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    colors();
     let (mut global, mut lines, mut named) = (false, false, String::from("default"));
     let mut join = false;
     let (mut settings, mut clips, mut muted) = (String::new(), Vec::new(), Vec::new());
@@ -179,10 +236,11 @@ fn main() -> ExitCode {
             let origin = loaded
                 .entry
                 .map_or("built-in".into(), |entry| entry.path.display().to_string());
-            eprintln!("[*] {}  |  config {origin}", clip.display());
+            let clip = paint(&clip.display().to_string(), "1");
+            eprintln!("{}", line('*', &format!("{clip}  |  config {origin}")));
         }
         for warning in loaded.warnings {
-            eprintln!("[!] {warning}");
+            eprintln!("{}", line('!', &paint(&warning, "93")));
         }
         jobs.push(Job {
             clip,
@@ -227,7 +285,7 @@ fn main() -> ExitCode {
     run(&jobs, timeline.as_deref(), &sink, &cancel);
     // a double click opens a console that closes with the program
     if picked && std::io::stdin().is_terminal() {
-        eprintln!("[*] press enter to close");
+        eprintln!("{}", line('*', "press enter to close"));
         let _ = std::io::stdin().read_line(&mut String::new());
     }
     ExitCode::from(u8::from(failed.load(Ordering::Relaxed)))
