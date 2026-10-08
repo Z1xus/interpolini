@@ -178,7 +178,8 @@ precotti() {
   curl -fsSL "https://github.com/Z1xus/precotti/releases/download/$precotti_release/$target.tar.gz" -o "$work/download"
   check "$work/download" "$precotti_package"
   mkdir "$cooked"
-  tar -xf "$work/download" -C "$cooked"
+  # from a pipe: gnu tar takes a path with a drive letter for a host
+  tar -xzf - -C "$cooked" < "$work/download"
   rm "$work/download"
 }
 
