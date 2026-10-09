@@ -170,6 +170,10 @@ pub struct Decoder {
 // the scaler has no thread affinity and the host reads one frame at a time
 unsafe impl Send for Decoder {}
 
+fn full(format: Pixel) -> bool {
+    matches!(format, Pixel::YUV444P | Pixel::YUVJ444P)
+}
+
 fn rgb(format: Pixel) -> bool {
     let descriptor = unsafe { ffi::av_pix_fmt_desc_get(format.into()).as_ref() };
     descriptor.is_some_and(|descriptor| descriptor.flags & ffi::AV_PIX_FMT_FLAG_RGB as u64 != 0)
@@ -318,7 +322,7 @@ impl Decoder {
 
     fn scaler(&mut self) -> Result<Option<&mut scaling::Context>> {
         let format = self.frame.format();
-        if matches!(format, Pixel::YUV420P | Pixel::YUVJ420P) {
+        if matches!(format, Pixel::YUV420P | Pixel::YUVJ420P) || full(format) {
             return Ok(None);
         }
         if self.scaler.is_none() {
@@ -347,19 +351,36 @@ impl Decoder {
             }
             return Ok(());
         }
+        let full = full(self.frame.format());
         for plane in 0..3 {
             let (width, height) = if plane == 0 {
                 (width, height)
             } else {
                 (width / 2, height / 2)
             };
+            let line = source.linesize[plane] as isize;
             for y in 0..height as isize {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        source.data[plane].offset(y * source.linesize[plane] as isize),
-                        planes[plane].offset(y * strides[plane]),
-                        width,
-                    );
+                let target = unsafe { planes[plane].offset(y * strides[plane]) };
+                if plane == 0 || !full {
+                    let row = unsafe { source.data[plane].offset(y * line) };
+                    unsafe { std::ptr::copy_nonoverlapping(row, target, width) };
+                    continue;
+                }
+                // the scaler is many times slower here
+                let row = |y| unsafe {
+                    std::slice::from_raw_parts(source.data[plane].offset(y * line), width * 2)
+                };
+                let (above, below) = (
+                    row(y * 2).as_chunks::<2>().0,
+                    row(y * 2 + 1).as_chunks::<2>().0,
+                );
+                let target = unsafe { std::slice::from_raw_parts_mut(target, width) };
+                for (sample, (above, below)) in target.iter_mut().zip(above.iter().zip(below)) {
+                    let sum = u16::from(above[0])
+                        + u16::from(above[1])
+                        + u16::from(below[0])
+                        + u16::from(below[1]);
+                    *sample = ((sum + 2) >> 2) as u8;
                 }
             }
         }
