@@ -174,6 +174,27 @@ pub fn wire(ui: &App, state: &Shared) {
         if targets.is_empty() {
             return;
         }
+        // how far the clips can grow back at each end, before the next clip of their track
+        let mut room = (f64::MAX, f64::MAX);
+        for entry in targets.iter().map(|index| &state.entries[*index]) {
+            let (start, end) = (entry.at, entry.at + entry.kept());
+            let others = state.entries.iter().filter(|other| {
+                let same = other.audio.is_some() == entry.audio.is_some();
+                other.link != entry.link && same && other.track == entry.track
+            });
+            let ends = others.clone().map(|other| other.at + other.kept());
+            let before = ends
+                .filter(|time| *time <= start + 0.001)
+                .fold(0.0, f64::max);
+            let starts = others.map(|other| other.at);
+            let after = starts
+                .filter(|time| *time >= end - 0.001)
+                .fold(f64::MAX, f64::min);
+            let cut = (f64::from(entry.cut.0), 1.0 - f64::from(entry.cut.1));
+            room.0 = room.0.min(start - before).min(cut.0 * entry.seconds);
+            room.1 = room.1.min(after - end).min(cut.1 * entry.seconds);
+        }
+        let room = (room.0.max(0.0) as f32, room.1.max(0.0) as f32);
         record(&ui, &mut state, false);
         let first = state.ids + 1;
         for index in targets.into_iter().rev() {
@@ -208,8 +229,9 @@ pub fn wire(ui: &App, state: &Shared) {
                     state.entries.insert(index + 1, copy);
                 }
                 "clear" if !entry.still => {
-                    row.at = (row.at - row.cut_in * length).max(0.0);
-                    (row.cut_in, row.cut_out) = (0.0, 1.0);
+                    row.at -= room.0;
+                    row.cut_in -= room.0 / length;
+                    row.cut_out += room.1 / length;
                 }
                 _ => {}
             }
