@@ -10,6 +10,9 @@ use crate::{Result, Sink};
 
 pub struct Scaler(*mut ffi::SwsContext);
 
+// the scaler has no thread affinity
+unsafe impl Send for Scaler {}
+
 impl Scaler {
     pub fn new() -> Self {
         Self::with(ffi::SwsFlags::SWS_BILINEAR)
@@ -210,6 +213,7 @@ fn paste(canvas: &mut frame::Video, picture: &frame::Video, left: u32, top: u32)
 pub struct Canvas {
     meta: Meta,
     scalers: Vec<Scaler>,
+    shown: Scaler,
 }
 
 impl Canvas {
@@ -221,6 +225,7 @@ impl Canvas {
         Self {
             meta,
             scalers: Vec::new(),
+            shown: Scaler::new(),
         }
     }
 
@@ -293,6 +298,7 @@ impl Canvas {
     }
 
     pub fn preview(&mut self, layers: Vec<(Picture, Place)>, width: u32) -> Result<Image> {
-        image(&self.compose(layers)?, &self.meta, width)
+        let picture = self.compose(layers)?;
+        image(&self.shown, &picture, width)
     }
 }

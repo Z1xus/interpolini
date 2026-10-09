@@ -7,6 +7,7 @@ use ffmpeg_next::{ffi, frame};
 
 use crate::blend::Blend;
 use crate::color::Grade;
+use crate::compose::Scaler;
 use crate::config::{self, Config, Engine};
 use crate::decode::{Decoder, Meta};
 use crate::dedup::{Dedup, Pick};
@@ -297,33 +298,21 @@ impl Graph {
 
     pub fn preview(&self, n: i32, width: u32) -> Result<Image> {
         let picture = self.frame(n.clamp(0, self.info.frames - 1))?;
-        image(&picture, &self.meta, width)
+        image(&Scaler::new(), &picture, width)
     }
 }
 
-pub fn image(picture: &frame::Video, meta: &Meta, width: u32) -> Result<Image> {
-    let width = width.min(meta.width) & !1;
-    let height = (u64::from(width) * u64::from(meta.height) / u64::from(meta.width)) as u32;
-    let mut scaler = meta.scaler(Pixel::YUV420P, Pixel::RGBA, width, height)?;
+pub fn image(scaler: &Scaler, picture: &frame::Video, width: u32) -> Result<Image> {
+    let width = width.min(picture.width()) & !1;
+    let height =
+        (u64::from(width) * u64::from(picture.height()) / u64::from(picture.width())) as u32;
     // the scaler writes past the end of a row, and a frame has the space for that
     let mut scaled = frame::Video::new(Pixel::RGBA, width, height);
-    unsafe {
-        let (source, target) = (&*picture.as_ptr(), &*scaled.as_mut_ptr());
-        ffi::sws_scale(
-            scaler.as_mut_ptr(),
-            source.data.as_ptr().cast(),
-            source.linesize.as_ptr(),
-            0,
-            meta.height as i32,
-            target.data.as_ptr(),
-            target.linesize.as_ptr(),
-        );
+    scaler.run(&mut scaled, picture)?;
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for row in scaled.data(0).chunks(scaled.stride(0)) {
+        rgba.extend_from_slice(&row[..width as usize * 4]);
     }
-    let rows = scaled.data(0).chunks(scaled.stride(0));
-    let rgba = rows
-        .flat_map(|row| &row[..width as usize * 4])
-        .copied()
-        .collect();
     Ok(Image {
         width,
         height,
