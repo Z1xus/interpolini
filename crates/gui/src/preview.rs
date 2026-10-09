@@ -28,6 +28,8 @@ pub struct Request {
     pub layers: Vec<Layer>,
     pub canvas: PathBuf,
     pub play: bool,
+    pub original: bool,
+    pub width: u32,
     // the time on the timeline, the time where other clips take over, and the length of it all
     pub time: f64,
     pub end: f64,
@@ -50,10 +52,44 @@ fn picture(image: Image) -> slint::Image {
     slint::Image::from_rgba8(pixels)
 }
 
+type Held = (PathBuf, Config, Source);
+
+fn plain(layer: &Layer) -> Config {
+    match layer.still {
+        true => layer.config.clone(),
+        false => source(&layer.config),
+    }
+}
+
+fn compose(
+    open: &mut [Held],
+    canvas: &mut Canvas,
+    layers: &[Layer],
+    original: bool,
+    moved: f64,
+    width: u32,
+) -> interpolini_core::Result<Image> {
+    let mut pictures = Vec::new();
+    for layer in layers {
+        let config = if original {
+            plain(layer)
+        } else {
+            layer.config.clone()
+        };
+        let source = open
+            .iter_mut()
+            .find(|held| held.0 == layer.clip && held.1 == config);
+        if let Some(Ok(picture)) = source.map(|held| held.2.at(layer.start + moved)) {
+            pictures.push((picture, layer.place));
+        }
+    }
+    canvas.preview(pictures, width)
+}
+
 pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
     let (sender, receiver) = channel::<Request>();
     let thread = std::thread::spawn(move || {
-        let mut open: Vec<(PathBuf, Config, Source)> = Vec::new();
+        let mut open: Vec<Held> = Vec::new();
         let mut canvas: Option<(PathBuf, Canvas)> = None;
         let mut waiting = None;
         while let Some(mut request) = waiting.take().or_else(|| receiver.recv().ok()) {
@@ -64,6 +100,8 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
                 layers,
                 canvas: base,
                 play,
+                original,
+                width,
                 time,
                 end,
                 total,
@@ -85,23 +123,28 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
                 continue;
             }
             note("Rendering…".into());
-            let same = |held: &(PathBuf, Config, Source), layer: &Layer| {
-                held.0 == layer.clip && held.1 == layer.config
+            let wanted: Vec<(&Layer, Config)> = layers
+                .iter()
+                .flat_map(|layer| [(layer, layer.config.clone()), (layer, plain(layer))])
+                .collect();
+            let same = |held: &Held, wanted: &(&Layer, Config)| {
+                held.0 == wanted.0.clip && held.1 == wanted.1
             };
             // the old graphs must free the gpu first
-            open.retain(|held| layers.iter().any(|layer| same(held, layer)));
+            open.retain(|held| wanted.iter().any(|wanted| same(held, wanted)));
             let warn = |event| {
                 if let Event::Warning(text) = event {
                     note(text);
                 }
             };
             let mut failed = None;
-            for layer in &layers {
-                if open.iter().any(|held| same(held, layer)) {
+            for wanted in &wanted {
+                if open.iter().any(|held| same(held, wanted)) {
                     continue;
                 }
-                match Source::open(&layer.clip, &layer.config, layer.still, &warn) {
-                    Ok(source) => open.push((layer.clip.clone(), layer.config.clone(), source)),
+                let (layer, config) = wanted;
+                match Source::open(&layer.clip, config, layer.still, &warn) {
+                    Ok(source) => open.push((layer.clip.clone(), config.clone(), source)),
                     Err(error) => failed = Some(error),
                 }
             }
@@ -120,7 +163,9 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
             };
             // the video on top gives the details and the speed
             let graphs = layers.iter().rev().filter_map(|layer| {
-                let held = open.iter().find(|held| same(held, layer))?;
+                let held = open
+                    .iter()
+                    .find(|held| held.0 == layer.clip && held.1 == layer.config)?;
                 held.2.graph()
             });
             let (mut details, mut fps) = (String::new(), 30.0);
@@ -135,21 +180,14 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
                 );
             }
             let step = (fps / SHOWN_FPS).round().max(1.0) / fps;
+            let width = if play { WIDTH } else { width };
             let mut started = None;
             let mut shown = 0;
             let mut moved = 0.0;
-            loop {
-                let mut pictures = Vec::new();
-                for layer in &layers {
-                    let source = open.iter_mut().find(|held| same(held, layer));
-                    let picture = source.map(|held| held.2.at(layer.start + moved));
-                    if let Some(Ok(picture)) = picture {
-                        pictures.push((picture, layer.place));
-                    }
-                }
-                let Ok(image) = canvas.preview(pictures, WIDTH) else {
-                    break;
-                };
+            while let Ok(image) = compose(&mut open, canvas, &layers, false, moved, width) {
+                let before = original
+                    .then(|| compose(&mut open, canvas, &layers, true, moved, width).ok())
+                    .flatten();
                 // the sound starts with the first picture, and the clock of the pictures too
                 let first = started.is_none();
                 let started: Instant = *started.get_or_insert_with(Instant::now);
@@ -162,6 +200,9 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
                 };
                 let _ = ui.upgrade_in_event_loop(move |ui| {
                     ui.set_preview(picture(image));
+                    if let Some(before) = before {
+                        ui.set_original(picture(before));
+                    }
                     ui.set_details(details.into());
                     ui.set_tick((1.0 / fps) as f32);
                     ui.set_preview_note(text.into());

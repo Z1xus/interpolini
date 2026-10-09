@@ -180,6 +180,15 @@ pub fn repeats(ui: &App, state: &State) -> f32 {
     }
 }
 
+pub fn wanted(ui: &App) -> (bool, i32) {
+    let original = !ui.get_playing() || ui.get_view() != "result" || ui.get_held();
+    let shown = ui.get_drawn() * ui.window().scale_factor();
+    // in steps, so not each zoom makes a new picture
+    let steps = [1280, 1920, 2560, 3840];
+    let width = steps.into_iter().find(|step| *step as f32 >= shown);
+    (original, width.unwrap_or(i32::MAX))
+}
+
 pub fn refresh(ui: &App, shared: &Shared) {
     timecode(ui, shared);
     let mut state = lock(shared);
@@ -193,6 +202,8 @@ pub fn refresh(ui: &App, shared: &Shared) {
                 layers: Vec::new(),
                 canvas: Default::default(),
                 play: false,
+                original: false,
+                width: 0,
                 time: 0.0,
                 end: 0.0,
                 total: 0.0,
@@ -204,6 +215,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
     let Some((time, part)) = shown.filter(|shown| !shown.1.clips.is_empty()) else {
         // no clip is here, so the picture is empty and playback walks on by the clock
         ui.set_preview(slint::Image::default());
+        ui.set_original(slint::Image::default());
         ui.set_preview_note("".into());
         let walk = ui.get_playing() && !state.entries.is_empty();
         drop(state);
@@ -220,24 +232,25 @@ pub fn refresh(ui: &App, shared: &Shared) {
         !entry.still && entry.place.covers(base.size, entry.size)
     };
     let shown = &part.clips[part.clips.iter().rposition(fills).unwrap_or(0)..];
-    let original = ui.get_view() == "original";
     let layer = |index: &usize| {
         let entry = &state.entries[*index];
         preview::Layer {
             clip: entry.clip.clone(),
-            config: match original {
-                true => preview::source(&entry.config),
-                false => entry.config.clone(),
-            },
+            config: entry.config.clone(),
             still: entry.still,
             place: entry.place,
             start: f64::from(entry.cut.0) * entry.seconds + time - entry.at,
         }
     };
+    let (original, width) = wanted(ui);
+    ui.set_compared(original);
+    ui.set_sharp(width);
     let request = preview::Request {
         layers: shown.iter().map(layer).collect(),
         canvas: base.clip.clone(),
         play: ui.get_playing(),
+        original,
+        width: width as u32,
         time,
         end: part.end,
         total: state.seconds(),

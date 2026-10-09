@@ -1,8 +1,7 @@
-import { IconButton, Icons, Tabs, Theme } from "widgets.slint";
+import { IconButton, Icons, Theme } from "widgets.slint";
 
 export component Transport inherits Rectangle {
     in-out property <bool> transform;
-    in-out property <string> view;
     in property <bool> playing;
     in property <bool> rendering;
     in property <string> preview-note;
@@ -13,7 +12,6 @@ export component Transport inherits Rectangle {
     callback mark(string);
     callback add-clips();
     callback remove-clip();
-    callback seek();
     height: 36px;
     background: Theme.rack;
     HorizontalLayout {
@@ -136,13 +134,6 @@ export component Transport inherits Rectangle {
                 horizontal-alignment: right;
                 vertical-alignment: center;
                 overflow: elide;
-            }
-            Tabs {
-                options: ["original", "result"];
-                value <=> root.view;
-                changed => {
-                    root.seek();
-                }
             }
             Text {
                 min-width: 0;

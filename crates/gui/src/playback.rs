@@ -4,7 +4,7 @@ use std::sync::Arc;
 use slint::ComponentHandle;
 
 use crate::state::{Shared, lock, sounds};
-use crate::view::{refresh, timecode};
+use crate::view::{refresh, timecode, wanted};
 use crate::{App, sound};
 
 thread_local! {
@@ -71,6 +71,19 @@ pub fn wire(ui: &App, state: &Shared) {
     ui.on_seek(move || {
         if let Some(ui) = weak.upgrade() {
             ui.set_playing(false);
+            refresh(&ui, &shared);
+        }
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_viewed(move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let (original, width) = wanted(&ui);
+        let enough =
+            (ui.get_compared() || !original) && (ui.get_playing() || ui.get_sharp() >= width);
+        if !enough {
             refresh(&ui, &shared);
         }
     });

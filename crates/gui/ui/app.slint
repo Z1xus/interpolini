@@ -44,6 +44,12 @@ export component App inherits Window {
     in-out property <bool> transform;
     in property <int> framed: -1;
     in property <image> preview;
+    in property <image> original;
+    in-out property <bool> held;
+    out property <length> drawn: stage.drawn;
+    in-out property <bool> compared;
+    in-out property <int> sharp;
+    callback viewed();
     in property <string> details;
     in property <string> timecode;
     in property <[float]> weights;
@@ -183,7 +189,10 @@ export component App inherits Window {
             if root.clips.length == 0 || event.modifiers.control {
                 return reject;
             }
-            if event.text == " " || event.text == "k" {
+            if event.text == "`" {
+                root.held = true;
+                root.viewed();
+            } else if event.text == " " || event.text == "k" {
                 root.play();
             } else if event.text == Key.LeftArrow {
                 root.step(event.modifiers.shift ? 0 : -1, event.modifiers.shift ? -1 : 0);
@@ -212,6 +221,14 @@ export component App inherits Window {
             } else {
                 return reject;
             }
+            accept
+        }
+        key-released(event) => {
+            if event.text != "`" {
+                return reject;
+            }
+            root.held = false;
+            root.viewed();
             accept
         }
     }
@@ -280,10 +297,16 @@ export component App inherits Window {
     HorizontalLayout {
         VerticalLayout {
             horizontal-stretch: 1;
-            Stage {
+            stage := Stage {
                 vertical-stretch: 1;
                 clips <=> root.clips;
                 preview: root.preview;
+                original: root.original;
+                view <=> root.view;
+                held: root.held;
+                viewed => {
+                    root.viewed();
+                }
                 art: root.art;
                 light: root.light;
                 rendering: root.rendering;
@@ -323,7 +346,6 @@ export component App inherits Window {
 
             if root.clips.length > 0: Transport {
                 transform <=> root.transform;
-                view <=> root.view;
                 playing: root.playing;
                 rendering: root.rendering;
                 preview-note: root.preview-note;
@@ -343,9 +365,6 @@ export component App inherits Window {
                 }
                 remove-clip => {
                     root.remove-clip();
-                }
-                seek => {
-                    root.seek();
                 }
             }
 

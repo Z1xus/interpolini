@@ -100,7 +100,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_light_available(themes::has_light(theme));
     themes::apply(&ui, theme, ui.get_light());
 
-    const SHORTCUTS: [(&str, &str); 19] = [
+    const SHORTCUTS: [(&str, &str); 21] = [
         ("Play or pause", "Space, K"),
         ("Back or forward 1 second", "J, L"),
         ("Step 1 frame", "Left, Right"),
@@ -113,8 +113,10 @@ fn main() -> Result<(), slint::PlatformError> {
         ("Zoom the timeline", "Ctrl wheel, Ctrl + and -"),
         ("Scroll the timeline", "Shift wheel"),
         ("Track height", "Alt wheel"),
-        ("Zoom the preview", "Ctrl wheel"),
-        ("Move the preview", "Middle button"),
+        ("Zoom the preview", "Wheel"),
+        ("Move the preview", "Drag"),
+        ("Reset the preview", "Double click"),
+        ("Show the original", "Hold `"),
         ("Stretch", "Shift, drag an edge"),
         ("Reset the transform", "Double click"),
         ("Separate video and audio", "Alt, drag"),

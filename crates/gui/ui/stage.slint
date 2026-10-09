@@ -1,10 +1,48 @@
-import { Art, Icon, Icons, Piece, Theme } from "widgets.slint";
+import { Action, Art, Icon, Icons, Piece, Tabs, Theme } from "widgets.slint";
 import { Clip } from "types.slint";
 import { Frame } from "frame.slint";
+
+component Pane inherits Rectangle {
+    in property <image> source;
+    in property <float> scale;
+    in property <length> pan-x;
+    in property <length> pan-y;
+    clip: true;
+    Image {
+        x: (parent.width - self.width) / 2 + root.pan-x;
+        y: (parent.height - self.height) / 2 + root.pan-y;
+        width: parent.width * root.scale;
+        height: parent.height * root.scale;
+        source: root.source;
+        image-fit: contain;
+        image-rendering: min(self.width, self.height * self.source.width / max(1, self.source.height)) > self.source.width * 1px ? pixelated : smooth;
+        accessible-role: image;
+        accessible-label: "Preview";
+    }
+}
+
+component Tag inherits Rectangle {
+    in property <string> text;
+    width: label.preferred-width + 12px;
+    height: 18px;
+    background: Theme.rack.with-alpha(0.85);
+    label := Text {
+        text: root.text;
+        color: Theme.muted;
+        font-size: 11px;
+        font-family: "monospace";
+    }
+}
 
 export component Stage inherits Rectangle {
     in-out property <[Clip]> clips;
     in property <image> preview;
+    in property <image> original;
+    in-out property <string> view;
+    in property <bool> held;
+    property <float> scale: 1;
+    property <length> pan-x;
+    property <length> pan-y;
     in property <[Piece]> art;
     in property <bool> light;
     in property <bool> rendering;
@@ -13,56 +51,96 @@ export component Stage inherits Rectangle {
     // the box on the picture is on, and the clip that it moves
     in property <bool> transform;
     in property <int> framed;
+    property <string> shown: root.held ? "original" : root.view;
+    property <length> pane: shown == "side" ? (root.width - 1px) / 2 : root.width;
+    property <float> ratio: root.preview.height > 0 ? root.preview.width / root.preview.height : 16 / 9;
+    property <length> wide: min(pane, root.height * ratio) * root.scale;
+    property <float> divide: 0.5;
+    property <float> next;
+    out property <length> drawn: wide;
     callback place-start();
     callback placed();
     callback add-clips();
+    callback viewed();
     background: Theme.void;
     if root.clips.length > 0: Rectangle {
-        property <float> scale: 1;
-        property <length> pan-x;
-        property <length> pan-y;
         clip: true;
         property <bool> panning;
         property <length> from-x;
         property <length> from-y;
-        property <float> ratio: root.preview.height > 0 ? root.preview.width / root.preview.height : 16 / 9;
-        property <length> wide: min(self.width, self.height * self.ratio) * self.scale;
+        property <length> line: root.divide * self.width;
         property <Clip> framed: root.clips[max(0, root.framed)];
         property <float> now: root.position * root.seconds;
-        // the middle button moves the picture, x and y are places in the window
-        function pan(event: PointerEvent, x: length, y: length) {
-            if event.button == PointerEventButton.middle {
+        // a button moves the picture, x and y are places in the window
+        function pan(event: PointerEvent, x: length, y: length, own: bool) {
+            if event.button == PointerEventButton.middle || (own && event.button == PointerEventButton.left) {
                 self.panning = event.kind == PointerEventKind.down;
-                self.from-x = self.pan-x - x;
-                self.from-y = self.pan-y - y;
+                self.from-x = root.pan-x - x;
+                self.from-y = root.pan-y - y;
             } else if event.kind == PointerEventKind.move && self.panning {
-                self.pan-x = self.from-x + x;
-                self.pan-y = self.from-y + y;
+                root.pan-x = self.from-x + x;
+                root.pan-y = self.from-y + y;
             }
         }
-        Image {
-            x: (parent.width - self.width) / 2 + parent.pan-x;
-            y: (parent.height - self.height) / 2 + parent.pan-y;
-            width: parent.width * parent.scale;
-            height: parent.height * parent.scale;
+        // the point under the pointer stays under the pointer
+        function zoom(x: length, y: length, closer: bool) {
+            root.next = clamp(root.scale * (closer ? 1.25 : 0.8), 0.1, 32);
+            root.pan-x = x - (x - root.pan-x) * root.next / root.scale;
+            root.pan-y = y - (y - root.pan-y) * root.next / root.scale;
+            root.scale = root.next;
+            root.viewed();
+        }
+        Pane {
+            x: 0;
+            width: root.pane;
+            source: root.shown == "result" ? root.preview : root.original;
+            scale: root.scale;
+            pan-x: root.pan-x;
+            pan-y: root.pan-y;
+        }
+        if root.shown == "split": Rectangle {
+            x: line;
+            width: parent.width - line;
+            clip: true;
+            Pane {
+                x: -line;
+                width: root.width;
+                source: root.preview;
+                scale: root.scale;
+                pan-x: root.pan-x;
+                pan-y: root.pan-y;
+            }
+        }
+        if root.shown == "side": Rectangle {
+            x: root.pane;
+            width: 1px;
+            background: Theme.seam;
+        }
+        if root.shown == "side": Pane {
+            x: root.pane + 1px;
+            width: root.pane;
             source: root.preview;
-            image-fit: contain;
-            accessible-role: image;
-            accessible-label: "Preview";
+            scale: root.scale;
+            pan-x: root.pan-x;
+            pan-y: root.pan-y;
+        }
+        if root.held || root.shown == "split" || root.shown == "side": Tag {
+            x: 8px;
+            y: parent.height - self.height - 8px;
+            text: "original";
+        }
+        if root.shown == "split" || root.shown == "side": Tag {
+            x: root.shown == "side" ? root.pane + 9px : parent.width - self.width - 8px;
+            y: parent.height - self.height - 8px;
+            text: "result";
         }
         look := TouchArea {
             scroll-event(event) => {
-                if !event.modifiers.control {
-                    return reject;
-                }
-                // the point under the pointer stays under the pointer
-                parent.pan-x = self.mouse-x - parent.width / 2 - (self.mouse-x - parent.width / 2 - parent.pan-x) * clamp(parent.scale * (event.delta-y > 0 ? 1.25 : 0.8), 0.1, 32) / parent.scale;
-                parent.pan-y = self.mouse-y - parent.height / 2 - (self.mouse-y - parent.height / 2 - parent.pan-y) * clamp(parent.scale * (event.delta-y > 0 ? 1.25 : 0.8), 0.1, 32) / parent.scale;
-                parent.scale = clamp(parent.scale * (event.delta-y > 0 ? 1.25 : 0.8), 0.1, 32);
+                parent.zoom(mod(self.mouse-x, root.pane + 1px) - root.pane / 2, self.mouse-y - parent.height / 2, event.delta-y > 0);
                 accept
             }
             pointer-event(event) => {
-                parent.pan(event, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                parent.pan(event, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, true);
             }
             changed has-hover => {
                 if !self.has-hover {
@@ -70,14 +148,38 @@ export component Stage inherits Rectangle {
                 }
             }
             double-clicked => {
-                parent.scale = 1;
-                parent.pan-x = 0;
-                parent.pan-y = 0;
+                root.scale = 1;
+                root.pan-x = 0;
+                root.pan-y = 0;
+                root.viewed();
             }
-            // the box is in the touch area, so the wheel over the box still zooms the preview
-            if root.transform && root.framed >= 0 && root.framed < root.clips.length && now >= framed.at - 0.001 && now <= framed.at + framed.kept: Frame {
-                x: (parent.width - self.width) / 2 + pan-x;
-                y: (parent.height - self.height) / 2 + pan-y;
+            // the line and the box are in the touch area, so the wheel over them still zooms the preview
+            if root.shown == "split": Rectangle {
+                x: line - 5px;
+                width: 11px;
+                Rectangle {
+                    width: 1px;
+                    background: Theme.accent;
+                }
+                Rectangle {
+                    width: 5px;
+                    height: 21px;
+                    background: Theme.ink;
+                    border-width: 1px;
+                    border-color: Theme.accent;
+                }
+                TouchArea {
+                    mouse-cursor: ew-resize;
+                    moved => {
+                        if self.pressed {
+                            root.divide = clamp((self.absolute-position.x + self.mouse-x - root.absolute-position.x) / root.width, 0, 1);
+                        }
+                    }
+                }
+            }
+            if root.transform && root.shown != "side" && root.framed >= 0 && root.framed < root.clips.length && now >= framed.at - 0.001 && now <= framed.at + framed.kept: Frame {
+                x: (parent.width - self.width) / 2 + root.pan-x;
+                y: (parent.height - self.height) / 2 + root.pan-y;
                 width: wide;
                 height: wide / ratio;
                 item: framed;
@@ -89,7 +191,37 @@ export component Stage inherits Rectangle {
                     root.placed();
                 }
                 pass(event, x, y) => {
-                    pan(event, x, y);
+                    pan(event, x, y, false);
+                }
+            }
+        }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: 8px;
+            width: strip.preferred-width;
+            height: 32px;
+            background: Theme.rack.with-alpha(0.85);
+            TouchArea { }
+            strip := HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 14px;
+                Tabs {
+                    options: ["original", "result", "split", "side"];
+                    value <=> root.view;
+                    changed => {
+                        root.viewed();
+                    }
+                }
+                Action {
+                    width: 30px;
+                    text: root.scale == 1 && root.pan-x == 0 && root.pan-y == 0 ? "Fit" : "\{round(root.scale * 10) / 10}×";
+                    clicked => {
+                        root.scale = 1;
+                        root.pan-x = 0;
+                        root.pan-y = 0;
+                        root.viewed();
+                    }
                 }
             }
         }
