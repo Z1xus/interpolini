@@ -74,6 +74,7 @@ export component Panel inherits Rectangle {
     in property <string> status;
     in property <bool> failed;
     in property <string> version;
+    in property <string> update;
     in property <bool> copied;
     in property <string> done;
     property <bool> naming;
@@ -89,6 +90,7 @@ export component Panel inherits Rectangle {
     callback cancel();
     callback copy-details();
     callback show-components();
+    callback show-update();
 
     background: Theme.rack;
     VerticalLayout {
@@ -692,8 +694,16 @@ export component Panel inherits Rectangle {
             }
             HorizontalLayout {
                 height: 14px;
+                spacing: 12px;
                 Rectangle {
                     horizontal-stretch: 1;
+                }
+                if root.update != "": Action {
+                    text: "Update to \{root.update}";
+                    active: true;
+                    clicked => {
+                        root.show-update();
+                    }
                 }
                 Action {
                     text: root.copied ? "Copied" : root.version;

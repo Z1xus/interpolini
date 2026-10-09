@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const STEM: &str = "interpolini";
 
@@ -475,11 +476,14 @@ impl Config {
     }
 }
 
+// the path is read once, an update moves the files of the running app
+pub fn exe() -> &'static Path {
+    static EXE: OnceLock<PathBuf> = OnceLock::new();
+    EXE.get_or_init(|| std::env::current_exe().unwrap_or_default())
+}
+
 pub fn app_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_owned))
-        .unwrap_or_default()
+    exe().parent().map(Path::to_owned).unwrap_or_default()
 }
 
 #[derive(Clone, Debug, PartialEq)]

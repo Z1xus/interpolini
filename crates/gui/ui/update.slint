@@ -1,0 +1,87 @@
+import { Button, Theme } from "widgets.slint";
+
+export component Update inherits Window {
+    in property <string> version;
+    in property <string> current;
+    in-out property <bool> busy;
+    in-out property <bool> done;
+    in-out property <string> progress;
+    in-out property <float> fraction;
+    in-out property <string> note;
+    property <bool> status: root.busy || root.done || root.note != "";
+    callback install();
+    callback cancel();
+    callback restart();
+    title: "Update";
+    icon: @image-url("../../../assets/interpolini.svg");
+    background: Theme.rack;
+    default-font-size: 12px;
+    width: 420px;
+    height: root.status ? 136px : 108px;
+    VerticalLayout {
+        padding: 16px;
+        HorizontalLayout {
+            spacing: 12px;
+            Image {
+                width: 36px;
+                height: 36px;
+                source: @image-url("../../../assets/interpolini.svg");
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                Text {
+                    text: "interpolini \{root.version}";
+                    color: Theme.ink;
+                    font-size: 13px;
+                }
+                Text {
+                    text: "You have \{root.current}";
+                    color: Theme.faint;
+                    font-size: 11px;
+                }
+            }
+        }
+        if root.status: VerticalLayout {
+            padding-top: 10px;
+            Text {
+                height: 16px;
+                text: root.busy ? root.progress : root.note != "" ? root.note : "Installed";
+                color: root.busy ? Theme.ink : root.note != "" ? Theme.accent : Theme.ok;
+                font-size: 11px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Rectangle {
+                height: 2px;
+                background: root.busy ? Theme.seam : transparent;
+                Rectangle {
+                    x: 0;
+                    width: root.busy ? parent.width * root.fraction : 0;
+                    background: Theme.accent;
+                }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+        }
+        HorizontalLayout {
+            alignment: end;
+            Button {
+                height: 26px;
+                text: root.busy ? "Cancel" : root.done ? "Restart" : root.note != "" ? "Try Again" : "Update";
+                main: !root.busy;
+                enabled: !root.busy || root.fraction < 1;
+                clicked => {
+                    if root.busy {
+                        root.cancel();
+                    } else if root.done {
+                        root.restart();
+                    } else {
+                        root.install();
+                    }
+                }
+            }
+        }
+    }
+}

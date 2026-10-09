@@ -133,13 +133,13 @@ const WHEELS: &[Wheel] = &[
 const WHEELS: &[Wheel] = &[];
 pub type Outcome = Result<(), String>;
 // how much of a download is done, from 0 to 1, and a line about it
-type Report<'a> = &'a dyn Fn(f32, String);
+pub type Report<'a> = &'a dyn Fn(f32, String);
 
 pub fn text(error: impl ToString) -> String {
     error.to_string()
 }
 
-fn download(url: &str, sha: &str, to: &Path, report: Report, stop: &AtomicBool) -> Outcome {
+pub fn download(url: &str, sha: &str, to: &Path, report: Report, stop: &AtomicBool) -> Outcome {
     let part = to.with_extension("part");
     let mut response = ureq::get(url).call().map_err(text)?;
     let length = response.headers().get("content-length");
@@ -176,11 +176,7 @@ fn download(url: &str, sha: &str, to: &Path, report: Report, stop: &AtomicBool) 
             report(done as f32 / total.max(1) as f32, line);
         }
     }
-    let hash: String = hash
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    let hash = hex(&hash.finalize());
     if stop.load(Ordering::Relaxed) || hash != sha {
         let _ = fs::remove_file(&part);
         return Err(match stop.load(Ordering::Relaxed) {
@@ -189,6 +185,10 @@ fn download(url: &str, sha: &str, to: &Path, report: Report, stop: &AtomicBool) 
         });
     }
     fs::rename(part, to).map_err(text)
+}
+
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn install_model(name: &str, report: Report, stop: &AtomicBool) -> Outcome {
@@ -335,17 +335,29 @@ pub fn wire(ui: &App) {
         };
         refresh(&ui, window);
         themes::paint(&window.global::<Theme>(), &ui.get_theme(), ui.get_light());
-        let _ = window.show();
-        #[cfg(target_os = "linux")]
-        {
-            let shown = window.as_weak();
-            slint::Timer::single_shot(Duration::from_millis(200), move || {
-                shown
-                    .upgrade()
-                    .and_then(|window| icon::set(window.window()));
-            });
-        }
+        present(window);
     });
+}
+
+pub fn present(window: &(impl ComponentHandle + 'static)) {
+    let _ = window.show();
+    #[cfg(target_os = "linux")]
+    {
+        let shown = window.as_weak();
+        slint::Timer::single_shot(Duration::from_millis(200), move || {
+            shown
+                .upgrade()
+                .and_then(|window| icon::set(window.window()));
+        });
+    }
+}
+
+// with settings that are not saved the app only asks about them, and does not start again
+pub fn restart(ui: &App) {
+    if !ui.get_unsaved() {
+        let _ = std::process::Command::new(config::exe()).spawn();
+    }
+    ui.invoke_quit();
 }
 
 // the things that the window can do

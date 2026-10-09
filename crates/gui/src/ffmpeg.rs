@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use interpolini_core::config;
 use slint::ComponentHandle;
 
-use crate::components::{Outcome, finish, text};
+use crate::components::{Outcome, finish, restart, text};
 use crate::{App, Components};
 
 const FFMPEG: [&str; 5] = ["avcodec", "avformat", "avutil", "swscale", "swresample"];
@@ -131,16 +131,9 @@ pub fn show(window: &Components) {
 pub fn wire(ui: &App, window: &Components) {
     let weak = ui.as_weak();
     window.on_restart_app(move || {
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
-        // with settings that are not saved the app only asks about them, and does not start again
-        if !ui.get_unsaved()
-            && let Ok(app) = std::env::current_exe()
-        {
-            let _ = Command::new(app).spawn();
+        if let Some(ui) = weak.upgrade() {
+            restart(&ui);
         }
-        ui.invoke_quit();
     });
 
     let (weak, shown) = (ui.as_weak(), window.as_weak());

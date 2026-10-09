@@ -5,10 +5,11 @@ import { Menu } from "menu.slint";
 import { Panel } from "panel.slint";
 import { Sheet } from "sheet.slint";
 import { Components } from "components.slint";
+import { Update } from "update.slint";
 import { Stage } from "stage.slint";
 import { Transport } from "transport.slint";
 
-export { Sheet, Components }
+export { Sheet, Components, Update }
 export { Piece, System, Theme } from "widgets.slint";
 
 export component App inherits Window {
@@ -60,6 +61,9 @@ export component App inherits Window {
     in property <bool> tensorrt-fixable;
     // the window for the optional parts exists on this system
     in property <bool> components;
+    in-out property <bool> updates: true;
+    in-out property <string> update;
+    callback show-update();
     in property <bool> rendering;
     in property <float> progress;
     in property <string> status;
@@ -125,7 +129,7 @@ export component App inherits Window {
     callback choose-theme(string);
     callback preview-theme(string);
     callback quit();
-    callback toggle-separate();
+    callback save-preferences();
     callback show-sheet(string);
     callback show-components();
 
@@ -221,6 +225,7 @@ export component App inherits Window {
         light <=> root.light;
         light-available: root.light-available;
         components: root.components;
+        updates <=> root.updates;
         show-components => {
             root.show-components();
         }
@@ -249,8 +254,8 @@ export component App inherits Window {
         cancel => {
             root.cancel();
         }
-        toggle-separate => {
-            root.toggle-separate();
+        save-preferences => {
+            root.save-preferences();
         }
         quit => {
             root.quit();
@@ -450,6 +455,7 @@ export component App inherits Window {
             status: root.status;
             failed: root.failed;
             version: root.version;
+            update: root.update;
             copied: root.copied;
             done: root.done;
             changed => {
@@ -475,6 +481,9 @@ export component App inherits Window {
             }
             show-components => {
                 root.show-components();
+            }
+            show-update => {
+                root.show-update();
             }
             choose-config(name) => {
                 root.choose-config(name);

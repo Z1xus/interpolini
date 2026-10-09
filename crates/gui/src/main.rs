@@ -17,6 +17,7 @@ mod sound;
 mod state;
 mod themes;
 mod tracks;
+mod update;
 mod view;
 
 use std::path::PathBuf;
@@ -42,6 +43,13 @@ fn details(ui: &App, state: &Shared) -> String {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    let arguments: Vec<String> = std::env::args().collect();
+    if arguments
+        .get(1)
+        .is_some_and(|argument| argument == "--update")
+    {
+        update::helper(&arguments[2..]);
+    }
     config::create();
     let _ = slint::set_xdg_app_id("interpolini");
     let ui = App::new()?;
@@ -85,6 +93,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_theme(theme.into());
     ui.set_light(value("light: ") == Some("yes"));
     ui.set_separate(value("separate: ") == Some("yes"));
+    ui.set_updates(value("updates: ") != Some("no"));
     let size = |key: &str| value(key).and_then(|size| size.parse::<f32>().ok());
     ui.set_rail(size("rail: ").unwrap_or(340.0));
     ui.set_deck(size("deck: ").unwrap_or(0.0));
@@ -211,6 +220,7 @@ fn main() -> Result<(), slint::PlatformError> {
     clips::wire(&ui, &state);
     edit::wire(&ui, &state);
     components::wire(&ui);
+    update::wire(&ui);
     tracks::wire(&ui, &state);
     playback::wire(&ui, &state);
     settings::wire(&ui, &state);
