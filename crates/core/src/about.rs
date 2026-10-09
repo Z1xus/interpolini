@@ -183,7 +183,7 @@ pub fn about() -> String {
         ),
         (
             "tensorrt libraries",
-            installed(directory.join("tensorrt").is_dir()).into(),
+            installed(crate::tensorrt::libraries()).into(),
         ),
         (
             "tensorrt models",

@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -272,16 +271,14 @@ fn remove(name: &str) -> Outcome {
     Ok(())
 }
 
-// the plugin for tensorrt comes with the app on the systems that have tensorrt
-fn plugin() -> bool {
-    let name = format!("{DLL_PREFIX}interpolini_rife_trt{DLL_SUFFIX}");
-    config::app_dir().join(name).exists()
+fn installed() -> bool {
+    interpolini_core::plugin() && interpolini_core::libraries()
 }
 
-fn installed() -> bool {
-    let library = WHEELS.first().and_then(|wheel| wheel.2.first());
-    let library = library.and_then(|file| Path::new(file).file_name());
-    plugin() && library.is_some_and(|name| config::app_dir().join("tensorrt").join(name).exists())
+fn show(ui: &App) {
+    let support = interpolini_core::support();
+    ui.set_tensorrt_need(support.need().into());
+    ui.set_tensorrt_fixable(support.fixable());
 }
 
 fn refresh(ui: &App, window: &Components) {
@@ -298,9 +295,12 @@ fn refresh(ui: &App, window: &Components) {
     let tensorrt = MODELS.iter().map(|model| model.0).collect();
     window.set_models(list(Backend::Tensorrt, tensorrt));
     window.set_tensorrt(installed());
-    window.set_tensorrt_shipped(plugin());
+    window.set_tensorrt_shipped(interpolini_core::plugin());
+    let support = interpolini_core::support();
+    let blocked = !support.fixable() && support != interpolini_core::Support::Ready;
+    window.set_tensorrt_need(if blocked { support.need() } else { "" }.into());
     ffmpeg::show(window);
-    ui.set_tensorrt(installed());
+    show(ui);
     // the model list of the settings follows what is installed
     ui.invoke_select(ui.get_selected());
 }
@@ -314,7 +314,11 @@ pub fn finish(ui: &App, window: &Components, outcome: Outcome) {
 pub fn wire(ui: &App) {
     ffmpeg::clean();
     ui.set_components(true);
-    ui.set_tensorrt(installed());
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        interpolini_core::support();
+        let _ = weak.upgrade_in_event_loop(|ui| show(&ui));
+    });
     // the window is made when it first shows: a window that waits hidden is in the task bar of the desktop
     let made: Rc<RefCell<Option<Components>>> = Rc::default();
     let weak = ui.as_weak();

@@ -29,6 +29,29 @@ component Curve inherits Rectangle {
     }
 }
 
+component Need inherits HorizontalLayout {
+    in property <string> text;
+    in property <bool> fixable;
+    callback install();
+    padding-left: 28px;
+    padding-right: 12px;
+    padding-bottom: 6px;
+    spacing: 8px;
+    Text {
+        horizontal-stretch: 1;
+        text: root.text;
+        color: Theme.accent;
+        font-size: 11px;
+        wrap: word-wrap;
+    }
+    if root.fixable: Action {
+        text: "Install…";
+        clicked => {
+            root.install();
+        }
+    }
+}
+
 export component Panel inherits Rectangle {
     in property <[Clip]> clips;
     in property <int> videos;
@@ -40,7 +63,8 @@ export component Panel inherits Rectangle {
     in property <bool> unsaved;
     in property <float> repeats;
     in property <[string]> models;
-    in property <bool> tensorrt;
+    in property <string> tensorrt-need;
+    in property <bool> tensorrt-fixable;
     in property <[float]> weights;
     in property <string> summary;
     in property <bool> lossless;
@@ -64,6 +88,7 @@ export component Panel inherits Rectangle {
     callback render();
     callback cancel();
     callback copy-details();
+    callback show-components();
 
     background: Theme.rack;
     VerticalLayout {
@@ -199,7 +224,7 @@ export component Panel inherits Rectangle {
                         }
                     }
                 }
-                if root.tensorrt || root.settings.backend == "tensorrt": Row {
+                Row {
                     label: "Backend";
                     Segment {
                         options: ["vulkan", "tensorrt"];
@@ -207,6 +232,13 @@ export component Panel inherits Rectangle {
                         changed => {
                             root.changed();
                         }
+                    }
+                }
+                if root.settings.backend == "tensorrt" && root.tensorrt-need != "": Need {
+                    text: root.tensorrt-need;
+                    fixable: root.tensorrt-fixable;
+                    install => {
+                        root.show-components();
                     }
                 }
                 Row {
@@ -254,7 +286,7 @@ export component Panel inherits Rectangle {
                         }
                     }
                 }
-                if root.settings.engine == "rife" && (root.tensorrt || root.settings.backend == "tensorrt"): Row {
+                if root.settings.engine == "rife": Row {
                     label: "Backend";
                     Segment {
                         options: ["vulkan", "tensorrt"];
@@ -262,6 +294,13 @@ export component Panel inherits Rectangle {
                         changed => {
                             root.changed();
                         }
+                    }
+                }
+                if root.settings.engine == "rife" && root.settings.backend == "tensorrt" && root.tensorrt-need != "": Need {
+                    text: root.tensorrt-need;
+                    fixable: root.tensorrt-fixable;
+                    install => {
+                        root.show-components();
                     }
                 }
                 if root.settings.engine == "rife": Row {

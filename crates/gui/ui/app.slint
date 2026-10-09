@@ -56,7 +56,8 @@ export component App inherits Window {
     in-out property <string> closing;
     callback close-answer(bool);
     in property <[string]> models;
-    in property <bool> tensorrt;
+    in property <string> tensorrt-need;
+    in property <bool> tensorrt-fixable;
     // the window for the optional parts exists on this system
     in property <bool> components;
     in property <bool> rendering;
@@ -438,7 +439,8 @@ export component App inherits Window {
             unsaved: root.unsaved;
             repeats: root.repeats;
             models: root.models;
-            tensorrt: root.tensorrt;
+            tensorrt-need: root.tensorrt-need;
+            tensorrt-fixable: root.tensorrt-fixable;
             weights: root.weights;
             summary: root.summary;
             lossless: root.lossless;
@@ -470,6 +472,9 @@ export component App inherits Window {
             }
             copy-details => {
                 root.copy-details();
+            }
+            show-components => {
+                root.show-components();
             }
             choose-config(name) => {
                 root.choose-config(name);

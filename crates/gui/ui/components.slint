@@ -117,6 +117,7 @@ export component Components inherits Window {
     in property <bool> tensorrt;
     // the app has its part for tensorrt on this system
     in property <bool> tensorrt-shipped;
+    in property <string> tensorrt-need;
     in property <[Download]> vulkan;
     in property <[Download]> models;
     in-out property <string> backend: "vulkan";
@@ -138,7 +139,7 @@ export component Components inherits Window {
     default-font-size: 12px;
     // one fixed size, so the window cannot be resized: the groups, their lines and the notes
     width: 500px;
-    height: 2 * 47px + (root.shown.length + 1 + (root.backend == "tensorrt" ? 1 : 0) + (root.restart ? 1 : 0) + (root.note != "" ? 1 : 0)) * 28px;
+    height: 2 * 47px + (root.shown.length + 1 + (root.backend == "tensorrt" ? (root.tensorrt-need != "" ? 2 : 1) : 0) + (root.restart ? 1 : 0) + (root.note != "" ? 1 : 0)) * 28px;
     VerticalLayout {
         alignment: start;
         Group {
@@ -197,6 +198,7 @@ export component Components inherits Window {
                 name: "tensorrt";
                 label: "TensorRT";
                 installed: root.tensorrt;
+                enabled: root.tensorrt-need == "";
                 get: "Install (3.1 GB)";
                 busy: root.busy;
                 progress: root.progress;
@@ -210,6 +212,10 @@ export component Components inherits Window {
                 cancel => {
                     root.cancel();
                 }
+            }
+            if root.backend == "tensorrt" && root.tensorrt-need != "": Hint {
+                text: root.tensorrt-need;
+                color: Theme.accent;
             }
             for model in root.shown: Item {
                 name: root.backend + "/" + model.name;

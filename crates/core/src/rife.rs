@@ -7,9 +7,11 @@ use ffmpeg_next::frame;
 use libloading::Library;
 
 use crate::compose::Scaler;
+use crate::config::{self, Backend};
 use crate::decode::Meta;
 use crate::svp::{Clip, Raw, Reader, Shape, Svp};
-use crate::{Result, Sink, config};
+use crate::tensorrt::{Support, support};
+use crate::{Event, Result, Sink};
 
 api! {
     create: b"rife_create\0" fn(*const c_char) -> Raw;
@@ -24,7 +26,7 @@ type Report = unsafe extern "C" fn(Raw, f32);
 unsafe extern "C" fn report(sink: Raw, done: f32) {
     let sink = unsafe { *sink.cast::<Sink>() };
     let text = format!("Preparing TensorRT, {:.0}%", done * 100.0);
-    sink(crate::Event::Warning(text));
+    sink(Event::Warning(text));
 }
 
 // the libraries keep gpu state, so they stay loaded
@@ -64,9 +66,15 @@ impl Rife {
         sink: crate::Sink,
     ) -> Result<Clip> {
         let directory = config::app_dir();
-        let (model, tensorrt) = (&rife.model, rife.backend == config::Backend::Tensorrt);
+        let mut backend = rife.backend;
+        let support = support();
+        if backend == Backend::Tensorrt && support != Support::Ready {
+            sink(Event::Warning(format!("{} Using vulkan.", support.need())));
+            backend = Backend::Vulkan;
+        }
+        let (model, tensorrt) = (&rife.model, backend == Backend::Tensorrt);
         let models = directory.join("rife").join(model);
-        if !models.join(rife.backend.model()).exists() {
+        if !models.join(backend.model()).exists() {
             return Err(format!("there is no rife model \"{model}\"").into());
         }
         let (api, name) = match tensorrt {
