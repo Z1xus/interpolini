@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{Sender, channel, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -11,6 +11,9 @@ use crate::App;
 
 const WIDTH: u32 = 1280;
 const SHOWN_FPS: f64 = 60.0;
+const AHEAD: usize = 8;
+const LEAD: Duration = Duration::from_millis(50);
+const LATE: Duration = Duration::from_millis(100);
 pub const THUMBS: usize = 8;
 const WAVE: usize = 120;
 
@@ -181,53 +184,69 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
             }
             let step = (fps / SHOWN_FPS).round().max(1.0) / fps;
             let width = if play { WIDTH } else { width };
-            let mut started = None;
-            let mut shown = 0;
-            let mut moved = 0.0;
-            while let Ok(image) = compose(&mut open, canvas, &layers, false, moved, width) {
-                let before = original
-                    .then(|| compose(&mut open, canvas, &layers, true, moved, width).ok())
-                    .flatten();
-                // the sound starts with the first picture, and the clock of the pictures too
-                let first = started.is_none();
-                let started: Instant = *started.get_or_insert_with(Instant::now);
-                let details = details.clone();
-                let position = play.then_some(((time + moved) / total) as f32);
-                let speed = f64::from(shown) / started.elapsed().as_secs_f64().max(0.001);
-                let text = match play && shown > 0 {
-                    true => format!("{:.0} of {:.0} fps", speed.min(1.0 / step), 1.0 / step),
-                    false => String::new(),
-                };
-                let _ = ui.upgrade_in_event_loop(move |ui| {
-                    ui.set_preview(picture(image));
-                    if let Some(before) = before {
-                        ui.set_original(picture(before));
-                    }
-                    ui.set_details(details.into());
-                    ui.set_tick((1.0 / fps) as f32);
-                    ui.set_preview_note(text.into());
-                    if let Some(position) = position.filter(|_| ui.get_playing()) {
-                        ui.set_position(position);
-                        ui.invoke_moved();
-                        if first {
-                            ui.invoke_sounding();
+            let (pictures, queue) = sync_channel(AHEAD);
+            std::thread::scope(|scope| {
+                // in order: the host is slow after a picture that is left out
+                scope.spawn(|| {
+                    for moved in (0..).map(|index| f64::from(index) * step) {
+                        let Ok(image) = compose(&mut open, canvas, &layers, false, moved, width)
+                        else {
+                            break;
+                        };
+                        let before = original
+                            .then(|| compose(&mut open, canvas, &layers, true, moved, width).ok())
+                            .flatten();
+                        let sent = pictures.send((moved, image, before));
+                        if sent.is_err() || !play || time + moved + step >= end {
+                            break;
                         }
                     }
+                    drop(pictures);
                 });
-                shown += 1;
-                // a preview that is too slow leaves pictures out, so it stays with the sound
-                let due = (started.elapsed().as_secs_f64() / step).ceil();
-                moved = due.max((moved / step).round() + 1.0) * step;
-                if !play || time + moved >= end {
-                    break;
+                let mut clock: Option<(Instant, f64)> = None;
+                let mut started = None;
+                for (shown, (moved, image, before)) in queue.into_iter().enumerate() {
+                    let due = clock.map(|(at, from)| at + Duration::from_secs_f64(moved - from));
+                    // the sound starts with the first picture, and again after pictures that are too late
+                    let first = due.is_none_or(|due| due + LATE < Instant::now());
+                    let due = match first {
+                        true => Instant::now() + if play { LEAD } else { Duration::ZERO },
+                        false => due.unwrap_or_else(Instant::now),
+                    };
+                    if first {
+                        clock = Some((due, moved));
+                    }
+                    std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                    if play && let Ok(newer) = receiver.try_recv() {
+                        waiting = Some(newer);
+                        break;
+                    }
+                    let started: Instant = *started.get_or_insert_with(Instant::now);
+                    let details = details.clone();
+                    let position = play.then_some(((time + moved) / total) as f32);
+                    let speed = shown as f64 / started.elapsed().as_secs_f64().max(0.001);
+                    let text = match play && shown > 0 {
+                        true => format!("{:.0} of {:.0} fps", speed.min(1.0 / step), 1.0 / step),
+                        false => String::new(),
+                    };
+                    let _ = ui.upgrade_in_event_loop(move |ui| {
+                        ui.set_preview(picture(image));
+                        if let Some(before) = before {
+                            ui.set_original(picture(before));
+                        }
+                        ui.set_details(details.into());
+                        ui.set_tick((1.0 / fps) as f32);
+                        ui.set_preview_note(text.into());
+                        if let Some(position) = position.filter(|_| ui.get_playing()) {
+                            ui.set_position(position);
+                            ui.invoke_moved();
+                            if first {
+                                ui.invoke_sounding();
+                            }
+                        }
+                    });
                 }
-                let wait = Duration::from_secs_f64(moved).saturating_sub(started.elapsed());
-                std::thread::sleep(wait);
-                if let Ok(newer) = receiver.try_recv() {
-                    waiting = Some(newer);
-                    break;
-                }
-            }
+            });
             if play && waiting.is_none() {
                 let _ = ui.upgrade_in_event_loop(|ui| {
                     ui.set_preview_note("".into());
