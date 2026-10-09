@@ -1,4 +1,4 @@
-import { Button, Piece, Theme } from "widgets.slint";
+import { Button, Piece, Theme, Tip } from "widgets.slint";
 import { Clip, Family, Ghost, Lane, Settings } from "types.slint";
 import { Timeline } from "timeline.slint";
 import { Menu } from "menu.slint";
@@ -514,7 +514,45 @@ export component App inherits Window {
     }
     }
 
+    if Tip.text != "": Rectangle {
+        x: clamp(Tip.x - self.width / 2, 4px, root.width - self.width - 4px);
+        y: Tip.y - self.height - 6px;
+        width: tip.preferred-width;
+        height: 24px;
+        background: Theme.raised;
+        border-width: 1px;
+        border-color: Theme.seam;
+        tip := HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 6px;
+            Text {
+                text: Tip.text;
+                color: Theme.ink;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+            for key in Tip.keys: VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: cap.preferred-width + 8px;
+                    height: 16px;
+                    border-width: 1px;
+                    border-color: Theme.seam;
+                    background: Theme.rack;
+                    cap := Text {
+                        text: key;
+                        color: Theme.muted;
+                        font-size: 10px;
+                        font-family: "monospace";
+                    }
+                }
+            }
+        }
+    }
+
     if root.closing != "": Rectangle {
+
         background: Theme.void.with-alpha(0.7);
         TouchArea { }
         Rectangle {

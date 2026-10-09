@@ -723,9 +723,17 @@ export component MenuPanel inherits Rectangle {
     border-color: Theme.seam;
 }
 
+export global Tip {
+    in-out property <string> text;
+    in-out property <[string]> keys;
+    in-out property <length> x;
+    in-out property <length> y;
+}
+
 export component IconButton inherits Rectangle {
     in property <string> shape;
     in property <string> label;
+    in property <[string]> keys;
     in property <bool> filled;
     in property <bool> active;
     in property <bool> enabled: true;
@@ -746,5 +754,23 @@ export component IconButton inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
+        changed has-hover => {
+            if !self.has-hover {
+                Tip.text = "";
+            }
+        }
+        changed pressed => {
+            Tip.text = "";
+        }
+    }
+    Timer {
+        interval: 500ms;
+        running: touch.has-hover && !touch.pressed;
+        triggered => {
+            Tip.keys = root.keys;
+            Tip.x = root.absolute-position.x + root.width / 2;
+            Tip.y = root.absolute-position.y;
+            Tip.text = root.label;
+        }
     }
 }

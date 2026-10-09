@@ -106,7 +106,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ("Step 1 frame", "Left, Right"),
         ("Move 1 second", "Shift Left, Right"),
         ("Set start or end", "I, O"),
-        ("Clear start and end", "X"),
+        ("Restore full length", "X"),
         ("Split", "S"),
         ("Remove clip", "Delete"),
         ("Undo, redo", "Ctrl Z, Ctrl Y"),

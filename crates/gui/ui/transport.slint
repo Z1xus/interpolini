@@ -40,6 +40,7 @@ export component Transport inherits Rectangle {
                 IconButton {
                     shape: Icons.step-back;
                     label: "Step back";
+                    keys: ["Left"];
                     clicked => {
                         root.step(-1, 0);
                     }
@@ -47,6 +48,7 @@ export component Transport inherits Rectangle {
                 IconButton {
                     shape: root.playing ? Icons.pause : Icons.play;
                     label: root.playing ? "Pause" : "Play";
+                    keys: ["Space", "K"];
                     active: root.playing;
                     clicked => {
                         root.play();
@@ -55,6 +57,7 @@ export component Transport inherits Rectangle {
                 IconButton {
                     shape: Icons.step-forward;
                     label: "Step forward";
+                    keys: ["Right"];
                     clicked => {
                         root.step(1, 0);
                     }
@@ -70,6 +73,7 @@ export component Transport inherits Rectangle {
                 IconButton {
                     shape: Icons.mark-in;
                     label: "Set start";
+                    keys: ["I"];
                     clicked => {
                         root.mark("start");
                     }
@@ -77,6 +81,7 @@ export component Transport inherits Rectangle {
                 IconButton {
                     shape: Icons.mark-out;
                     label: "Set end";
+                    keys: ["O"];
                     clicked => {
                         root.mark("end");
                     }
@@ -84,13 +89,15 @@ export component Transport inherits Rectangle {
                 IconButton {
                     shape: Icons.split;
                     label: "Split";
+                    keys: ["S"];
                     clicked => {
                         root.mark("split");
                     }
                 }
                 IconButton {
                     shape: Icons.clear;
-                    label: "Clear";
+                    label: "Restore full length";
+                    keys: ["X"];
                     clicked => {
                         root.mark("clear");
                     }
@@ -113,6 +120,7 @@ export component Transport inherits Rectangle {
                 IconButton {
                     shape: Icons.trash;
                     label: "Remove clip";
+                    keys: ["Delete"];
                     enabled: !root.rendering;
                     clicked => {
                         root.remove-clip();
