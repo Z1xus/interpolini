@@ -503,6 +503,40 @@ export component Panel inherits Rectangle {
             }
 
             Section {
+                title: "Upscale";
+                enabled <=> root.settings.upscale;
+                toggled => {
+                    root.changed();
+                }
+                Note {
+                    text: "Mostly used for YouTube, where a higher resolution gets a higher bitrate and looks less compressed.";
+                }
+                Row {
+                    label: "Resolution";
+                    Segment {
+                        options: ["1080p", "1440p", "2160p"];
+                        value <=> root.settings.resolution;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                Row {
+                    label: "Method";
+                    Dropdown {
+                        height: 22px;
+                        y: 3px;
+                        label: "Method";
+                        options: ["nearest", "bilinear", "bicubic", "lanczos"];
+                        value <=> root.settings.method;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+            }
+
+            Section {
                 title: "Output";
                 toggle: false;
                 Row {

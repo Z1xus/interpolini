@@ -56,6 +56,8 @@ named!(Weighting {
     Vegas = "vegas",
     Custom = "custom"
 });
+named!(Resolution { P1080 = "1080p", P1440 = "1440p", P2160 = "2160p" });
+named!(Method { Nearest = "nearest", Bilinear = "bilinear", Bicubic = "bicubic", Lanczos = "lanczos" });
 named!(Codec { H264 = "h264", Hevc = "hevc", Av1 = "av1" });
 named!(Encoder { Auto = "auto", Hardware = "hardware", Software = "software" });
 named!(Container { Mp4 = "mp4", Mkv = "mkv", Mov = "mov" });
@@ -248,6 +250,13 @@ pub struct Color {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Upscale {
+    pub enabled: bool,
+    pub resolution: Resolution,
+    pub method: Method,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Output {
     pub codec: Codec,
     pub encoder: Encoder,
@@ -266,6 +275,7 @@ pub struct Config {
     pub mask: Mask,
     pub blending: Blending,
     pub color: Color,
+    pub upscale: Upscale,
     pub output: Output,
 }
 
@@ -315,6 +325,11 @@ impl Default for Config {
                 hue: 0.0,
                 lut: String::new(),
             },
+            upscale: Upscale {
+                enabled: false,
+                resolution: Resolution::P2160,
+                method: Method::Nearest,
+            },
             output: Output {
                 codec: Codec::H264,
                 encoder: Encoder::Auto,
@@ -346,6 +361,7 @@ impl Config {
             mask,
             blending,
             color,
+            upscale,
             output,
         } = self;
         vec![
@@ -396,6 +412,9 @@ impl Config {
             ),
             field("color", "hue", Within(&mut color.hue, -360.0, 360.0)),
             field("color", "lut", &mut color.lut),
+            field("upscale", "enabled", &mut upscale.enabled),
+            field("upscale", "resolution", &mut upscale.resolution),
+            field("upscale", "method", &mut upscale.method),
             field("output", "codec", &mut output.codec),
             field("output", "encoder", &mut output.encoder),
             field("output", "quality", Within(&mut output.quality, 0, 51)),
@@ -539,6 +558,16 @@ pub fn load(clip: &Path, global: bool, name: &str) -> Loaded {
             entry: None,
             warnings: Vec::new(),
         },
+    }
+}
+
+impl Resolution {
+    pub fn side(self) -> u32 {
+        match self {
+            Self::P1080 => 1080,
+            Self::P1440 => 1440,
+            Self::P2160 => 2160,
+        }
     }
 }
 

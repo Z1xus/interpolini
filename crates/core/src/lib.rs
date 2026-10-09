@@ -34,6 +34,7 @@ mod queue;
 mod rife;
 mod svp;
 mod timeline;
+mod upscale;
 mod weights;
 
 pub use about::about;

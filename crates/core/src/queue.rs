@@ -7,10 +7,11 @@ use crate::audio::{Mixer, Sound};
 use crate::compose::{Canvas, Place, Source};
 use crate::config::{Audio, Config};
 use crate::copy::copy;
-use crate::decode::probe;
+use crate::decode::{Meta, probe};
 use crate::encode::{Encoder, Plan};
 use crate::graph::lossless;
 use crate::timeline::{Part, Placed, parts};
+use crate::upscale::Upscaler;
 use crate::{Event, Result, Sink};
 
 pub struct Job {
@@ -150,7 +151,16 @@ fn encode(
             muted: &job.muted,
         },
     };
-    let mut encoder = Encoder::open(output, &meta, fps, config, plan)?;
+    let upscaler = Upscaler::new(&meta, &job.config.upscale);
+    if let Some(upscaler) = &upscaler {
+        let Meta { width, height, .. } = upscaler.meta;
+        let method = job.config.upscale.method.name();
+        sink(Event::Info(format!(
+            "upscaling to {width}x{height}, {method}"
+        )));
+    }
+    let encoded = upscaler.as_ref().map_or(meta, |upscaler| upscaler.meta);
+    let mut encoder = Encoder::open(output, &encoded, fps, config, plan)?;
     sink(Event::Info(format!("encoding with {}", encoder.name)));
     if timeline.is_none() {
         encoder.begin(&job.clip, start, &job.muted)?;
@@ -190,7 +200,12 @@ fn encode(
                     layers.push((source.at(inside)?, job.place));
                 }
             }
-            encoder.write(canvas.compose(layers)?, written)?;
+            let picture = canvas.compose(layers)?;
+            let picture = match &upscaler {
+                Some(upscaler) => upscaler.run(&picture)?,
+                None => picture,
+            };
+            encoder.write(picture, written)?;
             written += 1;
             if reported.elapsed() >= Duration::from_millis(100) || written == frames {
                 reported = Instant::now();

@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use interpolini_core::config::{
-    self, Algorithm, Backend, Codec, Config, Container, Encoder, Engine, Rate, Speed, Tuning,
-    Weighting,
+    self, Algorithm, Backend, Codec, Config, Container, Encoder, Engine, Method, Rate, Resolution,
+    Speed, Tuning, Weighting,
 };
 use slint::ComponentHandle;
 
@@ -28,6 +28,7 @@ pub fn settings(config: &Config) -> Settings {
         mask,
         blending,
         color,
+        upscale,
         output,
     } = config;
     let look = LOOKS.iter().find(|look| look.0 == interpolation.algorithm);
@@ -60,6 +61,9 @@ pub fn settings(config: &Config) -> Settings {
         saturation: color.saturation,
         hue: color.hue,
         lut: color.lut.as_str().into(),
+        upscale: upscale.enabled,
+        resolution: upscale.resolution.name().into(),
+        method: upscale.method.name().into(),
         codec: output.codec.name().into(),
         encoder: output.encoder.name().into(),
         quality: output.quality as f32,
@@ -78,6 +82,7 @@ pub fn apply(settings: &Settings, config: &mut Config) {
         mask,
         blending,
         color,
+        upscale,
         output,
     } = config;
     let look = LOOKS.iter().find(|look| settings.algorithm == look.1);
@@ -111,6 +116,9 @@ pub fn apply(settings: &Settings, config: &mut Config) {
     color.saturation = settings.saturation;
     color.hue = settings.hue;
     color.lut = settings.lut.to_string();
+    upscale.enabled = settings.upscale;
+    upscale.resolution = Resolution::parse(&settings.resolution).unwrap_or(upscale.resolution);
+    upscale.method = Method::parse(&settings.method).unwrap_or(upscale.method);
     output.codec = Codec::parse(&settings.codec).unwrap_or(output.codec);
     output.encoder = Encoder::parse(&settings.encoder).unwrap_or(output.encoder);
     output.quality = settings.quality as u32;

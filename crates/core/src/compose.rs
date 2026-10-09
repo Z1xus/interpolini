@@ -12,10 +12,14 @@ pub struct Scaler(*mut ffi::SwsContext);
 
 impl Scaler {
     pub fn new() -> Self {
+        Self::with(ffi::SwsFlags::SWS_BILINEAR)
+    }
+
+    pub fn with(flags: ffi::SwsFlags) -> Self {
         let scaler = unsafe { ffi::sws_alloc_context() };
         unsafe {
             (*scaler).threads = 0;
-            (*scaler).flags = ffi::SwsFlags::SWS_BILINEAR as u32;
+            (*scaler).flags = flags as u32;
         }
         Self(scaler)
     }

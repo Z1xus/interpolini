@@ -77,7 +77,7 @@ pub fn lossless(source_fps: f64, config: &Config) -> bool {
     let plan = Plan::new(source_fps, config);
     let untouched = !plan.interpolate && !plan.blended && plan.pre.is_none();
     let plain = config.output.options.is_empty() && config.output.audio == config::Audio::Separate;
-    untouched && plain && !config.dedup.enabled && !config.color.enabled
+    untouched && plain && !config.dedup.enabled && !config.color.enabled && !config.upscale.enabled
 }
 
 pub struct Image {
