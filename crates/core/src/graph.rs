@@ -191,7 +191,7 @@ impl Graph {
         } = Plan::new(source_fps, config);
         if let Some(fps) = pre {
             svp = host()?;
-            let clip = Rife::open(&svp, Arc::clone(&input), &meta, fps, rife, sink)?;
+            let clip = Rife::open(&svp, Arc::clone(&input), &meta, fps, rife, None, sink)?;
             input = Arc::new(clip);
             sink(Event::Info(format!("rife to {fps} fps first")));
         }
@@ -200,7 +200,9 @@ impl Graph {
             _ if !interpolate => None,
             Engine::Rife => {
                 svp = host()?;
-                let clip = Rife::open(&svp, Arc::clone(&input), &meta, target, rife, sink)?;
+                let radius = (weights.len() / 2) as i64;
+                let blend = blended.then_some((radius, i64::from(target), i64::from(blending.fps)));
+                let clip = Rife::open(&svp, Arc::clone(&input), &meta, target, rife, blend, sink)?;
                 sink(Event::Info(format!("rife to {target} fps")));
                 Some(match mask {
                     Some(mask) => {

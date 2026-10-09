@@ -43,6 +43,8 @@ pub struct Rife {
     frames: [(i32, Vec<u8>); 2],
     output: Vec<u8>,
     step: (i64, i64),
+    // the radius of the blend that reads this clip, and the frame rates around it
+    blend: Option<(i64, i64, i64)>,
     last: i32,
     width: usize,
     height: usize,
@@ -63,6 +65,7 @@ impl Rife {
         meta: &Meta,
         fps: u32,
         rife: &config::Rife,
+        blend: Option<(i64, i64, i64)>,
         sink: crate::Sink,
     ) -> Result<Clip> {
         let directory = config::app_dir();
@@ -129,6 +132,7 @@ impl Rife {
             frames: [(-1, vec![0; size]), (-1, vec![0; size])],
             output: vec![0; size],
             step,
+            blend,
             last: from.frames - 1,
             width: width as usize,
             height: height as usize,
@@ -162,6 +166,15 @@ impl Rife {
         self.wrap(Pixel::RGB24, planes, [self.width as i32 * 3, 0, 0])
     }
 
+    fn used(&self, n: i32) -> bool {
+        let Some((radius, from, to)) = self.blend else {
+            return true;
+        };
+        let n = i64::from(n);
+        let nearest = n * to / from;
+        (nearest - 1..=nearest + 1).any(|output| (n - output * from / to).abs() <= radius)
+    }
+
     fn load(&mut self, index: i32) -> Result<()> {
         if self.frames[index as usize % 2].0 == index {
             return Ok(());
@@ -182,7 +195,7 @@ impl Reader for Rife {
         let position = i64::from(n) * self.step.0;
         let index = ((position / self.step.1) as i32).min(self.last);
         let time = (position % self.step.1) as f32 / self.step.1 as f32;
-        if time == 0.0 || index == self.last {
+        if time == 0.0 || index == self.last || !self.used(n) {
             // a source frame goes through as it is
             let frame = self.source.frame(index)?;
             frame.copy(planes, strides, self.width, self.height);
