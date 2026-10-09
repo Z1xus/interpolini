@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::Path;
 
 use ffmpeg_next::codec::{self, threading};
@@ -155,6 +156,8 @@ pub fn origin(input: &format::context::Input) -> i64 {
     start.unwrap_or(unsafe { (*input.as_ptr()).start_time }.max(0))
 }
 
+const PAST: usize = 16;
+
 pub struct Decoder {
     input: format::context::Input,
     decoder: codec::decoder::Video,
@@ -163,6 +166,7 @@ pub struct Decoder {
     // the picture that shows now and its number, and the one after it when it is decoded
     frame: frame::Video,
     at: i32,
+    past: VecDeque<(i32, frame::Video)>,
     ahead: frame::Video,
     after: Option<i32>,
     meta: Meta,
@@ -258,6 +262,7 @@ impl Decoder {
             packet: Packet::empty(),
             frame: frame::Video::empty(),
             at: -1,
+            past: VecDeque::new(),
             ahead: frame::Video::empty(),
             after: None,
             meta,
@@ -321,6 +326,7 @@ impl Decoder {
         self.decoder.flush();
         self.drained = false;
         self.at = -1;
+        self.past.clear();
         self.after = None;
         Ok(())
     }
@@ -397,7 +403,16 @@ impl Reader for Decoder {
     fn read(&mut self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
         // the host reads short gaps in order, so a longer jump is a seek
         // a file can end before its frame count says so, and then the last picture stays
-        if n < self.at || (n > self.at + 64 && !self.drained) {
+        if n < self.at {
+            // after a jump the host reads some pictures back, and a seek for each one is slow
+            if let Some(index) = self.past.iter().rposition(|past| past.0 <= n) {
+                std::mem::swap(&mut self.frame, &mut self.past[index].1);
+                let stored = self.store(planes, strides);
+                std::mem::swap(&mut self.frame, &mut self.past[index].1);
+                return stored;
+            }
+            self.seek(n)?;
+        } else if n > self.at + 64 && !self.drained {
             self.seek(n)?;
         }
         // the picture for a number is the last one at or before its time: a lost one shows the one before it again
@@ -408,6 +423,13 @@ impl Reader for Decoder {
             match self.after {
                 Some(number) if number <= n || self.at < 0 => {
                     std::mem::swap(&mut self.frame, &mut self.ahead);
+                    let last = std::mem::replace(&mut self.ahead, frame::Video::empty());
+                    if self.at >= 0 {
+                        self.past.push_back((self.at, last));
+                    }
+                    if self.past.len() > PAST {
+                        self.past.pop_front();
+                    }
                     self.at = number;
                     self.after = None;
                 }
