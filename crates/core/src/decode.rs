@@ -95,7 +95,6 @@ pub struct Probe {
 // a file with sound only has a frame rate of 0
 pub fn probe(path: &Path) -> Result<Probe> {
     ffmpeg_next::init()?;
-    let input = format::input(path)?;
     let audio = |stream: &format::stream::Stream| {
         let parameters = stream.parameters();
         (parameters.medium() == media::Type::Audio).then(|| {
@@ -103,16 +102,22 @@ pub fn probe(path: &Path) -> Result<Probe> {
             format!("{}, {channels} ch", parameters.id().name())
         })
     };
-    let tracks: Vec<String> = input
-        .streams()
-        .filter_map(|stream| audio(&stream))
-        .collect();
-    let length = input.duration() as f64 / f64::from(ffi::AV_TIME_BASE);
-    drop(input);
-    let meta = match Decoder::open(path) {
-        Ok(decoder) => Some(decoder.meta),
-        Err(error) if tracks.is_empty() => return Err(error),
-        Err(_) => None,
+    let read = |input: &format::context::Input| {
+        let tracks: Vec<String> = input
+            .streams()
+            .filter_map(|stream| audio(&stream))
+            .collect();
+        (
+            tracks,
+            input.duration() as f64 / f64::from(ffi::AV_TIME_BASE),
+        )
+    };
+    let (meta, (tracks, length)) = match Decoder::open(path) {
+        Ok(decoder) => (Some(decoder.meta), read(&decoder.input)),
+        Err(error) => match read(&format::input(path)?) {
+            (tracks, _) if tracks.is_empty() => return Err(error),
+            sound => (None, sound),
+        },
     };
     let video = meta.filter(|meta| !meta.still);
     let fps = video.map_or(0.0, |meta| meta.fps.0 as f64 / meta.fps.1 as f64);

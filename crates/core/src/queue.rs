@@ -7,7 +7,7 @@ use crate::audio::{Mixer, Sound};
 use crate::compose::{Canvas, Place, Source};
 use crate::config::{Audio, Config};
 use crate::copy::copy;
-use crate::decode::{Meta, probe};
+use crate::decode::{Meta, Probe, probe};
 use crate::encode::{Encoder, Plan};
 use crate::graph::lossless;
 use crate::timeline::{Part, Placed, parts};
@@ -40,31 +40,30 @@ pub fn sequence(jobs: &mut [Job]) -> Result<()> {
     let mut at = 0.0;
     for job in jobs {
         (job.at, job.track) = (at, 0);
-        at += kept(job)?;
+        at += kept(job, &probe(&job.clip)?);
     }
     Ok(())
 }
 
-fn kept(job: &Job) -> Result<f64> {
-    let probe = probe(&job.clip)?;
-    Ok(match job.cut {
+fn kept(job: &Job, probe: &Probe) -> f64 {
+    match job.cut {
         // an image is as long as its clip
         Some((start, end)) if probe.still => end - start,
         Some((start, end)) => end.min(probe.seconds) - start,
         None => probe.seconds,
-    })
+    }
 }
 
 pub fn sounds(jobs: &[Job]) -> Result<Vec<Sound>> {
     let mut sounds = Vec::new();
     for job in jobs {
-        let tracks = probe(&job.clip)?.tracks.len();
-        for stream in (0..tracks).filter(|track| !job.muted.contains(track)) {
+        let probe = probe(&job.clip)?;
+        for stream in (0..probe.tracks.len()).filter(|track| !job.muted.contains(track)) {
             sounds.push(Sound {
                 clip: job.clip.clone(),
                 stream,
                 start: job.cut.map_or(0.0, |cut| cut.0),
-                length: kept(job)?,
+                length: kept(job, &probe),
                 at: job.at,
                 track: stream,
             });
@@ -106,7 +105,7 @@ fn encode(
         most = most.max((0..probe.tracks.len()).filter(heard).count());
         placed.push(Placed {
             at: job.at,
-            length: kept(job)?,
+            length: kept(job, &probe),
             track: job.track,
         });
         probes.push(probe);
