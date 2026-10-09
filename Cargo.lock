@@ -2433,7 +2433,7 @@ checksum = "36eee07d8e02bd95bf52b2e642cf13d33701b94c6e4b04fbf1d1fb07e9cb19e7"
 
 [[package]]
 name = "interpolini"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "cpal",
  "interpolini-core",
@@ -2452,7 +2452,7 @@ dependencies = [
 
 [[package]]
 name = "interpolini-cli"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "ctrlc",
  "interpolini-core",
@@ -2461,7 +2461,7 @@ dependencies = [
 
 [[package]]
 name = "interpolini-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "ffmpeg-next",
  "libloading 0.9.0",
