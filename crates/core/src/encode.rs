@@ -54,7 +54,9 @@ fn pairs(text: &str) -> impl Iterator<Item = (&str, &str)> {
 }
 
 fn options(name: &str, quality: u32, custom: &str) -> Dictionary<'static> {
-    let quality = quality.to_string();
+    // these av1 encoders count the quantizer to 255, the others to 51 or 63
+    let wide = name.starts_with("av1_") && !name.ends_with("_nvenc");
+    let quality = (quality * if wide { 4 } else { 1 }).to_string();
     let mut options = Dictionary::new();
     let pairs: &[(&str, &str)] = match name.rsplit('_').next() {
         Some("nvenc") => &[
