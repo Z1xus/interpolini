@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use ffmpeg_next::format::{self, Pixel};
+use ffmpeg_next::log::Level;
 use ffmpeg_next::software::scaling;
 use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, ffi, frame, media};
 
@@ -12,14 +13,31 @@ use crate::decode::Meta;
 fn candidates(output: &Output) -> impl Iterator<Item = &'static str> {
     let (hardware, software): (&[_], _) = match output.codec {
         Codec::H264 => (
-            &["h264_nvenc", "h264_amf", "h264_qsv", "h264_videotoolbox"],
+            &[
+                "h264_nvenc",
+                "h264_amf",
+                "h264_qsv",
+                "h264_vaapi",
+                "h264_vulkan",
+                "h264_videotoolbox",
+            ],
             "libx264",
         ),
         Codec::Hevc => (
-            &["hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_videotoolbox"],
+            &[
+                "hevc_nvenc",
+                "hevc_amf",
+                "hevc_qsv",
+                "hevc_vaapi",
+                "hevc_vulkan",
+                "hevc_videotoolbox",
+            ],
             "libx265",
         ),
-        Codec::Av1 => (&["av1_nvenc", "av1_amf", "av1_qsv"], "libsvtav1"),
+        Codec::Av1 => (
+            &["av1_nvenc", "av1_amf", "av1_qsv", "av1_vaapi"],
+            "libsvtav1",
+        ),
     };
     let (hardware, software) = match output.encoder {
         config::Encoder::Auto => (hardware, Some(software)),
@@ -53,6 +71,8 @@ fn options(name: &str, quality: u32, custom: &str) -> Dictionary<'static> {
             ("qp_b", &quality),
         ],
         Some("qsv") => &[("global_quality", &quality)],
+        Some("vaapi") => &[("rc_mode", "CQP"), ("global_quality", &quality)],
+        Some("vulkan") => &[("qp", &quality)],
         Some("videotoolbox") => &[("flags", "+qscale"), ("global_quality", &quality)],
         _ if name == "libsvtav1" => &[("crf", &quality), ("preset", "10")],
         _ => &[("crf", &quality), ("preset", "veryfast")],
@@ -63,6 +83,42 @@ fn options(name: &str, quality: u32, custom: &str) -> Dictionary<'static> {
         }
     }
     options
+}
+
+// vaapi and vulkan encode from surfaces on the gpu, not from memory
+fn surfaces(video: &mut encoder::video::Video, meta: &Meta, format: Pixel) -> Result<()> {
+    let kind = if format == Pixel::VAAPI {
+        ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI
+    } else {
+        ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN
+    };
+    unsafe {
+        let mut device = std::ptr::null_mut();
+        let code = ffi::av_hwdevice_ctx_create(
+            &mut device,
+            kind,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            0,
+        );
+        if code < 0 {
+            return Err(ffmpeg_next::Error::from(code).into());
+        }
+        let mut frames = ffi::av_hwframe_ctx_alloc(device);
+        ffi::av_buffer_unref(&mut device);
+        let context = (*frames).data.cast::<ffi::AVHWFramesContext>();
+        (*context).format = format.into();
+        (*context).sw_format = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+        (*context).width = meta.width as i32;
+        (*context).height = meta.height as i32;
+        let code = ffi::av_hwframe_ctx_init(frames);
+        if code < 0 {
+            ffi::av_buffer_unref(&mut frames);
+            return Err(ffmpeg_next::Error::from(code).into());
+        }
+        (*video.as_mut_ptr()).hw_frames_ctx = frames;
+    }
+    Ok(())
 }
 
 struct Audio {
@@ -207,36 +263,50 @@ impl Encoder {
             Some(pair) => vec![pair.1],
             None => candidates(config).collect(),
         };
-        let opened = names.into_iter().find_map(|name| {
-            let codec = encoder::find_by_name(name)?;
-            let mut video = codec::Context::new_with_codec(codec)
-                .encoder()
-                .video()
-                .ok()?;
-            video.set_width(meta.width);
-            video.set_height(meta.height);
-            video.set_format(if name.ends_with("_qsv") {
-                Pixel::NV12
-            } else {
-                Pixel::YUV420P
-            });
-            video.set_time_base(base);
-            video.set_frame_rate(Some(base.invert()));
-            video.set_colorspace(meta.space);
-            video.set_color_range(meta.range);
-            video.set_color_primaries(meta.primaries);
-            video.set_color_transfer_characteristic(meta.transfer);
-            if header {
-                video.set_flags(codec::Flags::GLOBAL_HEADER);
-            }
-            match video.open_with(options(name, config.quality, &config.options)) {
-                Ok(encoder) => Some((name, encoder)),
-                Err(error) => {
+        // the encoders that do not fit this computer fail without a word
+        let mut open = |level| {
+            ffmpeg_next::log::set_level(level);
+            names.iter().find_map(|&name| {
+                let codec = encoder::find_by_name(name)?;
+                let mut video = codec::Context::new_with_codec(codec)
+                    .encoder()
+                    .video()
+                    .ok()?;
+                video.set_width(meta.width);
+                video.set_height(meta.height);
+                let format = match name.rsplit('_').next() {
+                    Some("qsv") => Pixel::NV12,
+                    Some("vaapi") => Pixel::VAAPI,
+                    Some("vulkan") => Pixel::VULKAN,
+                    _ => Pixel::YUV420P,
+                };
+                video.set_format(format);
+                if matches!(format, Pixel::VAAPI | Pixel::VULKAN)
+                    && let Err(error) = surfaces(&mut video, meta, format)
+                {
                     failure = format!("{name}: {error}");
-                    None
+                    return None;
                 }
-            }
-        });
+                video.set_time_base(base);
+                video.set_frame_rate(Some(base.invert()));
+                video.set_colorspace(meta.space);
+                video.set_color_range(meta.range);
+                video.set_color_primaries(meta.primaries);
+                video.set_color_transfer_characteristic(meta.transfer);
+                if header {
+                    video.set_flags(codec::Flags::GLOBAL_HEADER);
+                }
+                match video.open_with(options(name, config.quality, &config.options)) {
+                    Ok(encoder) => Some((name, encoder)),
+                    Err(error) => {
+                        failure = format!("{name}: {error}");
+                        None
+                    }
+                }
+            })
+        };
+        let opened = open(Level::Quiet).or_else(|| open(Level::Error));
+        ffmpeg_next::log::set_level(Level::Error);
         let (name, encoder) = opened.ok_or(failure)?;
         output
             .add_stream(encoder::find_by_name(name))?
@@ -260,7 +330,7 @@ impl Encoder {
             }
         };
         output.write_header()?;
-        let nv12 = if encoder.format() == Pixel::NV12 {
+        let nv12 = if encoder.format() != Pixel::YUV420P {
             let (width, height) = (meta.width, meta.height);
             let flags = scaling::Flags::BILINEAR;
             Some(scaling::Context::get(
@@ -334,6 +404,20 @@ impl Encoder {
             let mut converted = frame::Video::empty();
             scaler.run(&picture, &mut converted)?;
             picture = converted;
+        }
+        let frames = unsafe { (*self.encoder.as_ptr()).hw_frames_ctx };
+        if !frames.is_null() {
+            let mut surface = frame::Video::empty();
+            let code = unsafe {
+                match ffi::av_hwframe_get_buffer(frames, surface.as_mut_ptr(), 0) {
+                    0 => ffi::av_hwframe_transfer_data(surface.as_mut_ptr(), picture.as_ptr(), 0),
+                    code => code,
+                }
+            };
+            if code < 0 {
+                return Err(ffmpeg_next::Error::from(code).into());
+            }
+            picture = surface;
         }
         picture.set_pts(Some(i64::from(n)));
         self.encoder.send_frame(&picture)?;

@@ -4,7 +4,7 @@ use ffmpeg_next::encoder;
 
 use crate::config::{self, Backend};
 
-const ENCODERS: [&str; 14] = [
+const ENCODERS: [&str; 19] = [
     "h264_nvenc",
     "hevc_nvenc",
     "av1_nvenc",
@@ -14,6 +14,11 @@ const ENCODERS: [&str; 14] = [
     "h264_qsv",
     "hevc_qsv",
     "av1_qsv",
+    "h264_vaapi",
+    "hevc_vaapi",
+    "av1_vaapi",
+    "h264_vulkan",
+    "hevc_vulkan",
     "h264_videotoolbox",
     "hevc_videotoolbox",
     "libx264",
