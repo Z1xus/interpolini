@@ -25,6 +25,8 @@ The -s flag changes any setting from interpolini.ini for that run, and --help li
 
 For batch processing you can either just pass multiple clips, or double click interpolini-cli which would open a file picker dialog. The config priority is the following: clip's folder > next to the app > built-in defaults.
 
+On Linux you can also [add it to the app menu](docs/linux.md).
+
 ## Why it's faster
 
 - Interpolation and blending both happen on the GPU inside [open-svpflow](https://github.com/Z1xus/open-svpflow), so only the blended frames come back to the CPU.
