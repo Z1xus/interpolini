@@ -112,7 +112,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ("Set start or end", "I, O"),
         ("Restore full length", "X"),
         ("Split", "S"),
-        ("Remove clip", "Delete"),
+        ("Remove clip", "Delete, Backspace"),
         ("Undo, redo", "Ctrl Z, Ctrl Y"),
         ("Zoom the timeline", "Ctrl wheel, Ctrl + and -"),
         ("Scroll the timeline", "Shift wheel"),

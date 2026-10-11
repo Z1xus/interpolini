@@ -229,7 +229,7 @@ export component App inherits Window {
                 root.mark("clear");
             } else if event.text == "s" {
                 root.mark("split");
-            } else if event.text == Key.Delete {
+            } else if event.text == Key.Delete || event.text == Key.Backspace {
                 root.remove-clip();
             } else {
                 return reject;
