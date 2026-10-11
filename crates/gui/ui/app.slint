@@ -138,6 +138,7 @@ export component App inherits Window {
     callback render();
     callback cancel();
     callback copy-details();
+    callback open(string);
     callback choose-theme(string);
     callback preview-theme(string);
     callback quit();
@@ -323,6 +324,9 @@ export component App inherits Window {
                 art: root.art;
                 light: root.light;
                 rendering: root.rendering;
+                open(url) => {
+                    root.open(url);
+                }
                 position: root.position;
                 seconds: root.seconds;
                 transform: root.transform;

@@ -285,6 +285,17 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = slint::quit_event_loop();
     });
 
+    ui.on_open(|url| {
+        let program = match std::env::consts::OS {
+            "windows" => "explorer",
+            "macos" => "open",
+            _ => "xdg-open",
+        };
+        let _ = std::process::Command::new(program)
+            .arg(url.as_str())
+            .spawn();
+    });
+
     let (weak, shared) = (ui.as_weak(), Arc::clone(&state));
     ui.on_copy_details(move || {
         if let Some(ui) = weak.upgrade() {

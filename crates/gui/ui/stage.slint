@@ -2,6 +2,13 @@ import { Action, Art, Icon, Icons, Piece, Tabs, Theme } from "widgets.slint";
 import { Clip } from "types.slint";
 import { Frame } from "frame.slint";
 
+struct Tip {
+    text: string,
+    // a word after the text that opens a page
+    link: string,
+    url: string,
+}
+
 component Pane inherits Rectangle {
     in property <image> source;
     in property <float> scale;
@@ -46,6 +53,45 @@ export component Stage inherits Rectangle {
     in property <[Piece]> art;
     in property <bool> light;
     in property <bool> rendering;
+    property <[Tip]> tips: [
+        { text: "Hold ` to compare with the original" },
+        { text: "Right click between two clips for a crossfade" },
+        { text: "Alt right click changes only one clip" },
+        { text: "Alt drag separates video and audio" },
+        { text: "Alt drag an edge to trim one clip and not the next" },
+        { text: "Alt wheel changes the height of a track" },
+        { text: "Shift drag an edge of the transform box to stretch" },
+        { text: "Close gaps in the Edit menu joins the clips" },
+        { text: "A config in the folder of a clip is used for that clip" },
+        { text: "Drop an image on the timeline to put it over the video" },
+        { text: "Export each clip separately is in the File menu" },
+        { text: "Gamma in Blending keeps bright things bright in the blur" },
+        { text: "\"this clip\" in Settings for changes one clip only" },
+        { text: "interpolini-cli renders without the window" },
+        { text: "Also try ", link: "Tuck", url: "https://github.com/aechXIII/Tuck" },
+    ];
+    property <int> tip: -1;
+    // a tip shows after a moment, so a short render has none
+    property <bool> lit;
+    changed rendering => {
+        root.lit = false;
+    }
+    Timer {
+        interval: 1.2s;
+        running: root.rendering && !root.lit;
+        triggered => {
+            // the text changes while it does not show, and the first tip of a session comes from the clock
+            root.tip = mod(root.tip < 0 ? animation-tick() / 1ms : root.tip + 1, root.tips.length);
+            root.lit = true;
+        }
+    }
+    Timer {
+        interval: 20s;
+        running: root.rendering && root.lit;
+        triggered => {
+            root.lit = false;
+        }
+    }
     in property <float> position;
     in property <float> seconds;
     // the box on the picture is on, and the clip that it moves
@@ -58,6 +104,7 @@ export component Stage inherits Rectangle {
     property <float> divide: 0.5;
     property <float> next;
     out property <length> drawn: wide;
+    callback open(string);
     callback place-start();
     callback placed();
     callback add-clips();
@@ -246,6 +293,47 @@ export component Stage inherits Rectangle {
                 color: Theme.muted;
                 font-size: 13px;
                 horizontal-alignment: center;
+            }
+        }
+        // at the foot of the screen, apart from the message
+        Rectangle {
+            property <Tip> tip: root.tips[root.tip];
+            y: parent.height - 44px;
+            height: 16px;
+            opacity: root.lit ? 1 : 0;
+            animate opacity {
+                duration: 600ms;
+                easing: ease-in-out;
+            }
+            HorizontalLayout {
+                alignment: center;
+                Text {
+                    text: tip.text;
+                    color: Theme.faint.with-alpha(0.6);
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+                if tip.link != "": Rectangle {
+                    width: word.preferred-width;
+                    word := Text {
+                        height: 100%;
+                        text: tip.link;
+                        color: link.has-hover ? Theme.ink : Theme.faint;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: word.color.with-alpha(0.5);
+                    }
+                    link := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.open(tip.url);
+                        }
+                    }
+                }
             }
         }
     }
