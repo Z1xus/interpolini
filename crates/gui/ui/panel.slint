@@ -368,15 +368,38 @@ export component Panel inherits Rectangle {
             }
 
             Section {
-                title: "Still mask";
+                title: "Masking";
                 enabled <=> root.settings.mask;
                 toggled => {
                     root.changed();
                 }
-                Note {
+                Row {
+                    label: "Method";
+                    Segment {
+                        options: ["peel", "still"];
+                        value <=> root.settings.mask-method;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                if root.settings.mask-method == "peel": Note {
+                    text: "An advanced algorithm that learns the HUD and draws it back after interpolation.";
+                }
+                if root.settings.mask-method == "peel": SliderRow {
+                    label: "Limit";
+                    minimum: 1;
+                    maximum: 20;
+                    step: 0.5;
+                    value <=> root.settings.mask-peel;
+                    changed => {
+                        root.changed();
+                    }
+                }
+                if root.settings.mask-method == "still": Note {
                     text: "Stops static parts, like the HUD, from smearing.";
                 }
-                SliderRow {
+                if root.settings.mask-method == "still": SliderRow {
                     label: "Limit";
                     minimum: 0;
                     maximum: 20;
@@ -386,7 +409,7 @@ export component Panel inherits Rectangle {
                         root.changed();
                     }
                 }
-                SliderRow {
+                if root.settings.mask-method == "still": SliderRow {
                     label: "Edge";
                     minimum: 0;
                     maximum: 20;
@@ -396,7 +419,7 @@ export component Panel inherits Rectangle {
                         root.changed();
                     }
                 }
-                SliderRow {
+                if root.settings.mask-method == "still": SliderRow {
                     label: "Tolerance";
                     minimum: 0;
                     maximum: 100;

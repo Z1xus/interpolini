@@ -44,6 +44,7 @@ macro_rules! named {
 
 named!(Engine { Svp = "svp", Rife = "rife" });
 named!(Backend { Vulkan = "vulkan", Tensorrt = "tensorrt" });
+named!(Masking { Peel = "peel", Still = "still" });
 named!(Speed { Medium = "medium", Fast = "fast", Faster = "faster", Fastest = "fastest" });
 named!(Tuning { Weak = "weak", Smooth = "smooth", Film = "film", Animation = "animation" });
 named!(Algorithm { Sharp = "2", Standard = "13", Smooth = "23" });
@@ -227,6 +228,8 @@ pub struct Rife {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mask {
     pub enabled: bool,
+    pub method: Masking,
+    pub peel: f32,
     pub limit: f32,
     pub edge: f32,
     pub tolerance: f32,
@@ -309,6 +312,8 @@ impl Default for Config {
             // the defaults of open-svpflow
             mask: Mask {
                 enabled: true,
+                method: Masking::Peel,
+                peel: 6.0,
                 limit: 4.5,
                 edge: 5.0,
                 tolerance: 30.0,
@@ -387,6 +392,8 @@ impl Config {
             field("rife", "backend", &mut rife.backend),
             field("rife", "model", &mut rife.model),
             field("mask", "enabled", &mut mask.enabled),
+            field("mask", "method", &mut mask.method),
+            field("mask", "peel limit", Within(&mut mask.peel, 0.0, 255.0)),
             field("mask", "limit", Within(&mut mask.limit, 0.0, 255.0)),
             field("mask", "edge", Within(&mut mask.edge, 0.0, 255.0)),
             field("mask", "tolerance", Within(&mut mask.tolerance, 0.0, 100.0)),

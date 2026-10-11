@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use interpolini_core::config::{
-    self, Algorithm, Backend, Codec, Config, Container, Encoder, Engine, Method, Rate, Resolution,
-    Speed, Tuning, Weighting,
+    self, Algorithm, Backend, Codec, Config, Container, Encoder, Engine, Masking, Method, Rate,
+    Resolution, Speed, Tuning, Weighting,
 };
 use slint::ComponentHandle;
 
@@ -47,6 +47,8 @@ pub fn settings(config: &Config) -> Settings {
         backend: rife.backend.name().into(),
         model: rife.model.as_str().into(),
         mask: mask.enabled,
+        mask_method: mask.method.name().into(),
+        mask_peel: mask.peel,
         mask_limit: mask.limit,
         mask_edge: mask.edge,
         mask_tolerance: mask.tolerance,
@@ -101,6 +103,8 @@ pub fn apply(settings: &Settings, config: &mut Config) {
     rife.backend = Backend::parse(&settings.backend).unwrap_or(rife.backend);
     rife.model = settings.model.to_string();
     mask.enabled = settings.mask;
+    mask.method = Masking::parse(&settings.mask_method).unwrap_or(mask.method);
+    mask.peel = settings.mask_peel;
     mask.limit = settings.mask_limit;
     mask.edge = settings.mask_edge;
     mask.tolerance = settings.mask_tolerance;

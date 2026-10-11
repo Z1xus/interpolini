@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use libloading::Library;
 
-use crate::config::{Algorithm, Blending, Interpolation, Mask, Speed, Tuning};
+use crate::config::{Algorithm, Blending, Interpolation, Mask, Masking, Speed, Tuning};
 use crate::{Error, Result};
 
 const YUV420P8: i32 = 0;
@@ -346,7 +346,12 @@ impl Options {
             Algorithm::Standard => 13,
             Algorithm::Smooth => 23,
         };
-        let still = match mask {
+        let masking = match mask {
+            Some(Mask {
+                method: Masking::Peel,
+                peel,
+                ..
+            }) if gpu => format!(",peel:{{limit:{peel}}}"),
             Some(Mask {
                 limit,
                 edge,
@@ -363,7 +368,7 @@ impl Options {
             "blend:false,mode:0"
         };
         let smooth = format!(
-            "{{rate:{{{rate}}},algo:{algorithm},mask:{{cover:80,area:0,area_sharp:1.2{still}}},scene:{{{scene}}}}}"
+            "{{rate:{{{rate}}},algo:{algorithm},mask:{{cover:80,area:0,area_sharp:1.2{masking}}},scene:{{{scene}}}}}"
         );
 
         let text = |text: String| CString::new(text).unwrap_or_default();
