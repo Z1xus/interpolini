@@ -236,6 +236,7 @@ pub struct Blending {
     pub enabled: bool,
     pub fps: u32,
     pub intensity: f32,
+    pub gamma: f32,
     pub weighting: Weighting,
     pub custom: Vec<f32>,
 }
@@ -315,6 +316,7 @@ impl Default for Config {
                 enabled: true,
                 fps: 60,
                 intensity: 1.0,
+                gamma: 1.0,
                 weighting: Weighting::Equal,
                 custom: vec![1.0, 2.0, 5.0],
             },
@@ -394,6 +396,7 @@ impl Config {
                 "intensity",
                 Within(&mut blending.intensity, 0.0, 10.0),
             ),
+            field("blending", "gamma", Within(&mut blending.gamma, 1.0, 10.0)),
             field(
                 "blending",
                 "weighting",

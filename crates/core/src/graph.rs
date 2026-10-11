@@ -224,7 +224,7 @@ impl Graph {
                 let rate = format!("num:{target},den:1,abs:true");
                 let options = |gpu| Options::new(interpolation, &rate, mask, gpu, half);
                 let made = match blended {
-                    true => svp.smooth_blend(&input, &options(true), &weights, blending.fps),
+                    true => svp.smooth_blend(&input, &options(true), &weights, blending),
                     false => svp.smooth(&input, &options(true)),
                 };
                 fused = blended && made.is_ok();
@@ -246,8 +246,8 @@ impl Graph {
         };
 
         let shape = derived.as_ref().unwrap_or(&*input).shape();
-        let blend = (blended && !fused)
-            .then(|| Blend::new(&weights, shape.fps, blending.fps, shape.frames));
+        let blend =
+            (blended && !fused).then(|| Blend::new(&weights, shape.fps, blending, shape.frames));
         if blended {
             let fused = if fused { " on the gpu" } else { "" };
             sink(Event::Info(format!(

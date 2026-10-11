@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use libloading::Library;
 
-use crate::config::{Algorithm, Interpolation, Mask, Speed, Tuning};
+use crate::config::{Algorithm, Blending, Interpolation, Mask, Speed, Tuning};
 use crate::{Error, Result};
 
 const YUV420P8: i32 = 0;
@@ -32,7 +32,7 @@ api! {
     source: b"osvp_source\0" fn(Raw, *const VideoInfo, ReadFn, ReleaseFn, Raw) -> Raw;
     smooth_fps: b"osvp_smooth_fps\0" fn(Raw, Raw, Text, Text, Text, i32) -> Raw;
     smooth_fps_blend: b"osvp_smooth_fps_blend\0"
-        fn(Raw, Raw, Text, Text, Text, i32, *const f64, i32, i64, i64) -> Raw;
+        fn(Raw, Raw, Text, Text, Text, i32, *const f64, i32, i64, i64, f64) -> Raw;
     still: b"osvp_still\0" fn(Raw, Raw, Raw, f64, f64, f64) -> Raw;
     clip_info: b"osvp_clip_info\0" fn(Raw, *mut VideoInfo);
     clip_free: b"osvp_clip_free\0" fn(Raw);
@@ -218,7 +218,7 @@ impl Svp {
         source: &Clip,
         options: &Options,
         weights: &[f64],
-        fps: u32,
+        blending: &Blending,
     ) -> Result<Clip> {
         let Options {
             supers,
@@ -236,8 +236,9 @@ impl Svp {
                 i32::from(*half),
                 weights.as_ptr(),
                 weights.len() as i32,
-                i64::from(fps),
+                i64::from(blending.fps),
                 1,
+                f64::from(blending.gamma),
             )
         })
     }

@@ -53,6 +53,7 @@ pub fn settings(config: &Config) -> Settings {
         blend: blending.enabled,
         blend_fps: blending.fps as i32,
         intensity: blending.intensity,
+        gamma: blending.gamma,
         weighting: blending.weighting.name().into(),
         custom: config::list(&blending.custom).into(),
         grade: color.enabled,
@@ -106,6 +107,7 @@ pub fn apply(settings: &Settings, config: &mut Config) {
     blending.enabled = settings.blend;
     blending.fps = settings.blend_fps as u32;
     blending.intensity = settings.intensity;
+    blending.gamma = settings.gamma;
     blending.weighting = Weighting::parse(&settings.weighting).unwrap_or(blending.weighting);
     if let Some(custom) = config::curve(&settings.custom) {
         blending.custom = custom;
