@@ -4,7 +4,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use interpolini_core::config::Config;
-use interpolini_core::{Canvas, Event, Graph, Image, Place, Source, peaks};
+use interpolini_core::{Canvas, Event, Fade, Graph, Image, Place, Source, peaks};
 use slint::{Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel, Weak};
 
 use crate::App;
@@ -24,6 +24,9 @@ pub struct Layer {
     pub place: Place,
     // the time in the source that shows first
     pub start: f64,
+    pub inside: f64,
+    pub length: f64,
+    pub fade: Fade,
 }
 
 pub struct Request {
@@ -83,7 +86,8 @@ fn compose(
             .iter_mut()
             .find(|held| held.0 == layer.clip && held.1 == config);
         if let Some(Ok(picture)) = source.map(|held| held.2.at(layer.start + moved)) {
-            pictures.push((picture, layer.place));
+            let level = layer.fade.level(layer.inside + moved, layer.length);
+            pictures.push((picture, layer.place, level as f32));
         }
     }
     canvas.preview(pictures, width)

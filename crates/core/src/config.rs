@@ -63,6 +63,7 @@ named!(Codec { H264 = "h264", Hevc = "hevc", Av1 = "av1" });
 named!(Encoder { Auto = "auto", Hardware = "hardware", Software = "software" });
 named!(Container { Mp4 = "mp4", Mkv = "mkv", Mov = "mov" });
 named!(Audio { Separate = "separate", Mix = "mix" });
+named!(Ease { Linear = "linear", Smooth = "smooth", EaseIn = "ease in", EaseOut = "ease out" });
 
 impl Value for &mut bool {
     fn read(&mut self, text: &str) -> bool {
@@ -565,6 +566,17 @@ pub fn load(clip: &Path, global: bool, name: &str) -> Loaded {
             entry: None,
             warnings: Vec::new(),
         },
+    }
+}
+
+impl Ease {
+    pub fn shape(self, part: f64) -> f64 {
+        match self {
+            Self::Linear => part,
+            Self::Smooth => part * part * (3.0 - 2.0 * part),
+            Self::EaseIn => part * part,
+            Self::EaseOut => 1.0 - (1.0 - part) * (1.0 - part),
+        }
     }
 }
 

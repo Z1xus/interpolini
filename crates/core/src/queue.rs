@@ -10,7 +10,7 @@ use crate::copy::copy;
 use crate::decode::{Meta, Probe, probe};
 use crate::encode::{Encoder, Plan};
 use crate::graph::lossless;
-use crate::timeline::{Part, Placed, parts};
+use crate::timeline::{Fade, Part, Placed, parts};
 use crate::upscale::Upscaler;
 use crate::{Event, Result, Sink};
 
@@ -23,6 +23,9 @@ pub struct Job {
     pub at: f64,
     pub track: usize,
     pub place: Place,
+    pub fade: Fade,
+    // the seconds that the last picture stays after the end
+    pub hold: f64,
 }
 
 fn target(clip: &Path, extension: &str) -> PathBuf {
@@ -46,12 +49,13 @@ pub fn sequence(jobs: &mut [Job]) -> Result<()> {
 }
 
 fn kept(job: &Job, probe: &Probe) -> f64 {
-    match job.cut {
+    let length = match job.cut {
         // an image is as long as its clip
         Some((start, end)) if probe.still => end - start,
         Some((start, end)) => end.min(probe.seconds) - start,
         None => probe.seconds,
-    }
+    };
+    length + job.hold
 }
 
 pub fn sounds(jobs: &[Job]) -> Result<Vec<Sound>> {
@@ -66,6 +70,8 @@ pub fn sounds(jobs: &[Job]) -> Result<Vec<Sound>> {
                 length: kept(job, &probe),
                 at: job.at,
                 track: stream,
+                gain: 1.0,
+                fade: Fade::default(),
             });
         }
     }
@@ -179,7 +185,8 @@ fn encode(
             let size = (size, (probes[*clip].width, probes[*clip].height));
             !probes[*clip].still && jobs[*clip].1.place.covers(size.0, size.1)
         };
-        let shown = &part.clips[part.clips.iter().rposition(fills).unwrap_or(0)..];
+        let solid = |clip: &usize| fills(clip) && jobs[*clip].1.fade.none();
+        let shown = &part.clips[part.clips.iter().rposition(solid).unwrap_or(0)..];
         for clip in shown {
             if !sources.contains_key(clip) {
                 sources.insert(*clip, open(*clip)?);
@@ -192,11 +199,18 @@ fn encode(
         while written < last && !cancel.load(Ordering::Relaxed) {
             let time = f64::from(written) / rate;
             let mut layers = Vec::new();
-            for clip in shown {
+            let level = |clip: &usize| {
+                let Placed { at, length, .. } = placed[*clip];
+                jobs[*clip].1.fade.level(time - at, length)
+            };
+            let top = shown
+                .iter()
+                .rposition(|clip| fills(clip) && level(clip) >= 1.0);
+            for clip in &shown[top.unwrap_or(0)..] {
                 let job = jobs[*clip].1;
                 let inside = job.cut.map_or(0.0, |cut| cut.0) + time - job.at;
                 if let Some(source) = sources.get_mut(clip) {
-                    layers.push((source.at(inside)?, job.place));
+                    layers.push((source.at(inside)?, job.place, level(clip) as f32));
                 }
             }
             let picture = canvas.compose(layers)?;

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use interpolini_core::{Event, Job, run};
+use interpolini_core::{Event, Fade, Job, run};
 use slint::{ComponentHandle, Model};
 
 use crate::App;
@@ -76,7 +76,10 @@ fn render(ui: &App, shared: &Shared) {
         rows.retain(|index| !separate || !state.entries[*index].still);
         let job = |index: &usize| {
             let entry = &state.entries[*index];
-            let (start, end) = entry.cut;
+            // the fades are for the timeline, a clip in a file of its own has none
+            let span = state.span(*index);
+            let (start, end) = (span.start, span.start + span.length);
+            let faded = !separate && span.length != entry.kept();
             // a clip on its own takes the audio tracks of its file that are still on the timeline
             let kept = |stream: &usize| {
                 heard
@@ -86,14 +89,27 @@ fn render(ui: &App, shared: &Shared) {
             Job {
                 clip: entry.clip.clone(),
                 config: entry.config.clone(),
-                cut: (entry.cut != (0.0, 1.0)).then_some((
-                    f64::from(start) * entry.seconds,
-                    f64::from(end) * entry.seconds,
-                )),
+                cut: match faded {
+                    true => Some((start, end.min(entry.seconds))),
+                    false => (entry.cut != (0.0, 1.0)).then_some((
+                        f64::from(entry.cut.0) * entry.seconds,
+                        f64::from(entry.cut.1) * entry.seconds,
+                    )),
+                },
                 muted: (0..entry.streams).filter(|stream| !kept(stream)).collect(),
-                at: entry.at,
+                at: if faded { span.at } else { entry.at },
                 track: entry.track,
                 place: entry.place,
+                fade: if separate {
+                    Fade::default()
+                } else {
+                    span.picture()
+                },
+                hold: if faded {
+                    (end - entry.seconds).max(0.0)
+                } else {
+                    0.0
+                },
             }
         };
         let jobs: Vec<Job> = rows.iter().map(job).collect();

@@ -180,8 +180,9 @@ fn window(picture: &frame::Video, part: [u32; 4]) -> frame::Video {
     view
 }
 
-fn paste(canvas: &mut frame::Video, picture: &frame::Video, left: u32, top: u32) {
+fn paste(canvas: &mut frame::Video, picture: &frame::Video, left: u32, top: u32, opacity: f32) {
     let clear = picture.format() == Pixel::YUVA420P;
+    let level = (opacity * 255.0).round() as u32;
     for plane in 0..3 {
         let shift = usize::from(plane > 0);
         let (width, height) = (
@@ -196,13 +197,14 @@ fn paste(canvas: &mut frame::Video, picture: &frame::Video, left: u32, top: u32)
         for row in 0..height {
             let target = &mut to[(top + row) * stride + left..][..width];
             let source = &from[row * wide..][..width];
-            let Some((cover, wide)) = cover else {
+            if cover.is_none() && level == 255 {
                 target.copy_from_slice(source);
                 continue;
-            };
-            let cover = &cover[(row << shift) * wide..];
+            }
+            let cover = cover.map(|(cover, wide)| &cover[(row << shift) * wide..]);
             for (index, (to, from)) in target.iter_mut().zip(source).enumerate() {
-                let cover = u32::from(cover[index << shift]);
+                let cover = cover.map_or(255, |cover| u32::from(cover[index << shift]));
+                let cover = cover * level / 255;
                 *to =
                     ((u32::from(*from) * cover + u32::from(*to) * (255 - cover) + 127) / 255) as u8;
             }
@@ -246,7 +248,10 @@ impl Canvas {
     }
 
     // the layers go on a black canvas, the lowest one first
-    pub(crate) fn compose(&mut self, mut layers: Vec<(Picture, Place)>) -> Result<frame::Video> {
+    pub(crate) fn compose(
+        &mut self,
+        mut layers: Vec<(Picture, Place, f32)>,
+    ) -> Result<frame::Video> {
         let size = self.size();
         let mut canvas = self.black();
         let like = |picture: &frame::Video| unsafe {
@@ -256,11 +261,13 @@ impl Canvas {
                 && (one.colorspace, one.color_range) == (other.colorspace, other.color_range)
         };
         // a clip that is the canvas goes through as it is
-        if matches!(&layers[..], [(picture, place)] if *place == Place::default() && like(&picture.0))
-        {
+        let whole = |layer: &(Picture, Place, f32)| {
+            layer.1 == Place::default() && layer.2 >= 1.0 && like(&layer.0.0)
+        };
+        if matches!(&layers[..], [layer] if whole(layer)) {
             return Ok(layers.remove(0).0.0);
         }
-        for (index, (Picture(picture), place)) in layers.iter().enumerate() {
+        for (index, (Picture(picture), place, opacity)) in layers.iter().enumerate() {
             if self.scalers.len() <= index {
                 self.scalers.push(Scaler::new());
             }
@@ -292,12 +299,12 @@ impl Canvas {
             let mut scaled = frame::Video::new(picture.format(), right - left, bottom - top);
             self.meta.tag(&mut scaled);
             self.scalers[index].run(&mut scaled, &window(picture, part))?;
-            paste(&mut canvas, &scaled, left, top);
+            paste(&mut canvas, &scaled, left, top, *opacity);
         }
         Ok(canvas)
     }
 
-    pub fn preview(&mut self, layers: Vec<(Picture, Place)>, width: u32) -> Result<Image> {
+    pub fn preview(&mut self, layers: Vec<(Picture, Place, f32)>, width: u32) -> Result<Image> {
         let picture = self.compose(layers)?;
         image(&self.shown, &picture, width)
     }

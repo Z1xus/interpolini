@@ -44,6 +44,7 @@ pub fn overwrite(ui: &App, state: &mut State, link: u64) {
                     let mut rest = row.clone();
                     (rest.cut_in, rest.at) = (place(to), to as f32);
                     row.cut_out = place(from);
+                    (row.fade_out, rest.fade_in, rest.cross) = (0.0, 0.0, 0.0);
                     // the second piece is a clip of its own, it does not move with the first
                     state.ids += 2;
                     rest.link = state.ids as i32;
@@ -84,6 +85,21 @@ pub fn chosen(ui: &App, state: &State) -> Vec<u64> {
     let mut links: Vec<u64> = places.map(|index| state.entries[index].link).collect();
     links.dedup();
     links
+}
+
+// the rows that a change in the menu of a clip is for: its file with the other selected clips, or it alone
+fn aimed(ui: &App, state: &State, index: usize, alone: bool) -> Vec<usize> {
+    let Some(entry) = state.entries.get(index).filter(|_| !alone) else {
+        return vec![index];
+    };
+    let mut group = chosen(ui, state);
+    if !group.contains(&entry.link) {
+        group = vec![entry.link];
+    }
+    let places = 0..state.entries.len();
+    places
+        .filter(|place| group.contains(&state.entries[*place].link))
+        .collect()
 }
 
 pub fn wire(ui: &App, state: &Shared) {
@@ -219,6 +235,7 @@ pub fn wire(ui: &App, state: &Shared) {
                     second.cut_in = local;
                     second.link = (first + entry.link) as i32;
                     row.cut_out = local;
+                    (row.fade_out, second.fade_in, second.cross) = (0.0, 0.0, 0.0);
                     model.insert(index + 1, second);
                     state.ids += 1;
                     let copy = Entry {
@@ -402,7 +419,7 @@ pub fn wire(ui: &App, state: &Shared) {
     });
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
-    ui.on_trimmed(move |index, slack| {
+    ui.on_trimmed(move |index, slack, alone| {
         let Some(ui) = weak.upgrade() else {
             return;
         };
@@ -422,6 +439,26 @@ pub fn wire(ui: &App, state: &Shared) {
             true => row.at,
             false => row.at + (row.cut_out - row.cut_in) * row.length,
         };
+        let was = if head {
+            entry.at
+        } else {
+            entry.at + entry.kept()
+        };
+        let joined = |other: &&Entry| {
+            let same = other.audio.is_some() == entry.audio.is_some() && other.track == entry.track;
+            let meets = if head {
+                other.at + other.kept()
+            } else {
+                other.at
+            };
+            other.link != link && same && (meets - was).abs() < 0.001
+        };
+        let next = state
+            .entries
+            .iter()
+            .find(joined)
+            .filter(|_| !alone)
+            .cloned();
         let playhead = f64::from(ui.get_position()) * state.seconds();
         let others = state.entries.iter().filter(|other| other.link != link);
         let edges = others.flat_map(|other| [other.at, other.at + other.kept()]);
@@ -449,7 +486,118 @@ pub fn wire(ui: &App, state: &Shared) {
             (linked.at, linked.cut_in, linked.cut_out) = (row.at, row.cut_in, row.cut_out);
             rows.set_row_data(other, linked);
         }
+        // the clip that touched this edge follows it as far as its source goes
+        if let Some(next) = next {
+            let edge = match head {
+                true => row.at,
+                false => row.at + (row.cut_out - row.cut_in) * row.length,
+            };
+            let moved = ((f64::from(edge) - was) / next.seconds) as f32;
+            let least = (0.1 / next.seconds) as f32;
+            let (from, to) = match head {
+                true => (
+                    next.cut.0,
+                    (next.cut.1 + moved).clamp(next.cut.0 + least, 1.0),
+                ),
+                false => (
+                    (next.cut.0 + moved).clamp(0.0, next.cut.1 - least),
+                    next.cut.1,
+                ),
+            };
+            let at = next.at + f64::from(from - next.cut.0) * next.seconds;
+            for (other, entry) in state.entries.iter().enumerate() {
+                let Some(mut near) = rows.row_data(other).filter(|_| entry.link == next.link)
+                else {
+                    continue;
+                };
+                (near.at, near.cut_in, near.cut_out) = (at as f32, from, to);
+                rows.set_row_data(other, near);
+            }
+        }
         layout(&ui, &mut state);
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_tune(move |index, name, value, alone| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let rows = ui.get_clips();
+        let mut state = lock(&shared);
+        let index = index as usize;
+        let Some(clicked) = state.entries.get(index).cloned() else {
+            return;
+        };
+        record(&ui, &mut state, true);
+        for place in aimed(&ui, &state, index, alone) {
+            let Some(mut row) = rows.row_data(place) else {
+                continue;
+            };
+            // the gain is for one sound of a file, and for the sounds of the other selected files on its track
+            let entry = &state.entries[place];
+            let sound = entry.link != clicked.link && entry.audio.is_some();
+            match name.as_str() {
+                "gain" if place == index || (sound && entry.track == clicked.track) => {
+                    row.gain = value
+                }
+                "gain" => continue,
+                "fade in" => row.fade_in = value,
+                "fade out" => row.fade_out = value,
+                "crossfade" => row.cross = value,
+                _ => continue,
+            }
+            rows.set_row_data(place, row);
+        }
+        drop(state);
+        refresh(&ui, &shared);
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_curve(move |index, fade, curve, alone| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let rows = ui.get_clips();
+        let mut state = lock(&shared);
+        record(&ui, &mut state, false);
+        for place in aimed(&ui, &state, index as usize, alone) {
+            if let Some(mut row) = rows.row_data(place) {
+                match fade.as_str() {
+                    "fade in" => row.ease_in = curve.clone(),
+                    "fade out" => row.ease_out = curve.clone(),
+                    _ => row.ease_cross = curve.clone(),
+                }
+                rows.set_row_data(place, row);
+            }
+        }
+        drop(state);
+        refresh(&ui, &shared);
+    });
+
+    let shared = Arc::clone(state);
+    ui.on_joint(move |index, head| {
+        let state = lock(&shared);
+        let Some(entry) = state.entries.get(index as usize) else {
+            return -1;
+        };
+        let edge = if head {
+            entry.at
+        } else {
+            entry.at + entry.kept()
+        };
+        let touches = |other: &Entry| {
+            let same = other.audio.is_some() == entry.audio.is_some() && other.track == entry.track;
+            let meets = if head {
+                other.at + other.kept()
+            } else {
+                other.at
+            };
+            other.id != entry.id && same && (meets - edge).abs() < 0.001
+        };
+        let Some(other) = state.entries.iter().position(touches) else {
+            return -1;
+        };
+        if head { index } else { other as i32 }
     });
 
     for start in [true, false] {

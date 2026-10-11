@@ -4,8 +4,8 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
-use interpolini_core::config::{self, Config};
-use interpolini_core::{Part, Place, Placed, Sound, parts};
+use interpolini_core::config::{self, Config, Ease};
+use interpolini_core::{Fade, Part, Place, Placed, Sound, parts};
 
 use crate::view::selected;
 use crate::{App, preview};
@@ -36,6 +36,37 @@ pub struct Entry {
     pub measured: Option<(f32, f32)>,
     pub size: (u32, u32),
     pub place: Place,
+    // decibels
+    pub gain: f32,
+    // seconds, in and out
+    pub fade: (f32, f32),
+    // the seconds of the crossfade with the clip before this one
+    pub cross: f32,
+    // the curves of the fade in, of the fade out and of the crossfade
+    pub eases: [Ease; 3],
+}
+
+// where a clip plays, a crossfade makes it start early and end late
+pub struct Span {
+    pub at: f64,
+    pub start: f64,
+    pub length: f64,
+    pub fade: Fade,
+    pub cross: (f64, f64),
+}
+
+impl Span {
+    // a picture does not fade out under the clip that fades in over it
+    pub fn picture(&self) -> Fade {
+        Fade {
+            fall: if self.cross.1 > 0.0 {
+                0.0
+            } else {
+                self.fade.fall
+            },
+            ..self.fade
+        }
+    }
 }
 
 // the heights of the tracks, and for an audio track if it is muted
@@ -84,6 +115,52 @@ impl State {
         ends.fold(0.0, f64::max)
     }
 
+    pub fn span(&self, index: usize) -> Span {
+        let entry = &self.entries[index];
+        let (start, end) = (entry.at, entry.at + entry.kept());
+        let same = |other: &&Entry| {
+            let kind = other.audio.is_some() == entry.audio.is_some();
+            other.id != entry.id && kind && other.track == entry.track
+        };
+        let mut others = self.entries.iter().filter(same);
+        let before = others
+            .clone()
+            .find(|other| (other.at + other.kept() - start).abs() < 0.001);
+        let after = others.find(|other| (other.at - end).abs() < 0.001);
+        // a crossfade has the cut in its middle, so each of the two clips plays half of it more
+        let half = |first: &Entry, second: &Entry| {
+            (f64::from(second.cross) / 2.0)
+                .min(first.kept())
+                .min(second.kept())
+        };
+        let lead = before.map_or(0.0, |other| half(other, entry));
+        let tail = after.map_or(0.0, |other| half(entry, other));
+        let next = after.filter(|_| tail > 0.0);
+        Span {
+            at: start - lead,
+            start: f64::from(entry.cut.0) * entry.seconds - lead,
+            length: entry.kept() + lead + tail,
+            // a crossfade takes the place of the fade at its end of the clip
+            fade: Fade {
+                rise: if lead > 0.0 {
+                    lead * 2.0
+                } else {
+                    f64::from(entry.fade.0)
+                },
+                fall: if tail > 0.0 {
+                    tail * 2.0
+                } else {
+                    f64::from(entry.fade.1)
+                },
+                curves: (
+                    entry.eases[if lead > 0.0 { 2 } else { 0 }],
+                    next.map_or(entry.eases[1], |next| next.eases[2]),
+                ),
+            },
+            cross: (lead * 2.0, tail * 2.0),
+        }
+    }
+
     pub fn videos(&self) -> Vec<usize> {
         let video = |index: &usize| self.entries[*index].audio.is_none();
         (0..self.entries.len()).filter(video).collect()
@@ -93,8 +170,8 @@ impl State {
     pub fn parts(&self) -> Vec<Part> {
         let videos = self.videos();
         let placed = |index: &usize| Placed {
-            at: self.entries[*index].at,
-            length: self.entries[*index].kept(),
+            at: self.span(*index).at,
+            length: self.span(*index).length,
             track: self.entries[*index].track,
         };
         let parts = parts(&videos.iter().map(placed).collect::<Vec<_>>());
@@ -225,21 +302,27 @@ pub fn lock(state: &Shared) -> MutexGuard<'_, State> {
 }
 
 pub fn sounds(state: &State) -> Vec<Sound> {
-    let heard = |entry: &&Entry| {
+    let heard = |entry: &Entry| {
         !state
             .tracks
             .audio
             .get(entry.track)
             .is_some_and(|track| track.1)
     };
-    let audio = state.entries.iter().filter(|entry| entry.audio.is_some());
-    let sound = |entry: &Entry| Sound {
-        clip: entry.clip.clone(),
-        stream: entry.audio.unwrap_or(0),
-        start: f64::from(entry.cut.0) * entry.seconds,
-        length: entry.kept(),
-        at: entry.at,
-        track: entry.track,
+    let audio = |(_, entry): &(usize, &Entry)| entry.audio.is_some() && heard(entry);
+    let sound = |(index, entry): (usize, &Entry)| {
+        let span = state.span(index);
+        Sound {
+            clip: entry.clip.clone(),
+            stream: entry.audio.unwrap_or(0),
+            start: span.start,
+            length: span.length,
+            at: span.at,
+            track: entry.track,
+            gain: 10f32.powf(entry.gain / 20.0),
+            fade: span.fade,
+        }
     };
-    audio.filter(heard).map(sound).collect()
+    let entries = state.entries.iter().enumerate();
+    entries.filter(audio).map(sound).collect()
 }

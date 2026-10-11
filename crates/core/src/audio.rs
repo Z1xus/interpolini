@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::f64::consts::FRAC_PI_2;
 use std::path::{Path, PathBuf};
 
 use ffmpeg_next::format::sample::Type;
@@ -7,6 +8,7 @@ use ffmpeg_next::software::resampling;
 use ffmpeg_next::{ChannelLayout, Packet, Rational, codec, encoder, ffi, frame, media};
 
 use crate::Result;
+use crate::timeline::Fade;
 
 pub const RATE: u32 = 48_000;
 const FORMAT: Sample = Sample::F32(Type::Planar);
@@ -182,6 +184,8 @@ pub struct Sound {
     pub length: f64,
     pub at: f64,
     pub track: usize,
+    pub gain: f32,
+    pub fade: Fade,
 }
 
 struct Playing {
@@ -244,10 +248,16 @@ impl Mixer {
                 }
             };
             let samples = source.take(None, (to - from) as usize)?;
+            let level = |index: usize| {
+                let inside = (from - first + index as i64) as f64 / rate;
+                // a sine keeps the loudness even in a crossfade
+                let faded = (sound.fade.level(inside, sound.length) * FRAC_PI_2).sin();
+                faded as f32 * sound.gain
+            };
             for (sums, samples) in output.iter_mut().zip(&samples) {
                 let sums = &mut sums[(from - position) as usize..];
-                for (sum, sample) in sums.iter_mut().zip(samples) {
-                    *sum = (*sum + sample).clamp(-1.0, 1.0);
+                for (index, (sum, sample)) in sums.iter_mut().zip(samples).enumerate() {
+                    *sum = (*sum + sample * level(index)).clamp(-1.0, 1.0);
                 }
             }
         }

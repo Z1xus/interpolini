@@ -48,4 +48,4 @@ pub use event::{Event, Sink};
 pub use graph::{Graph, Image, Info, Plan, lossless};
 pub use queue::{Job, run, sequence, sounds};
 pub use tensorrt::{Support, libraries, plugin, support};
-pub use timeline::{Part, Placed, parts};
+pub use timeline::{Fade, Part, Placed, parts};

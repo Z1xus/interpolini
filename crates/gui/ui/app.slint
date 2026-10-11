@@ -96,7 +96,10 @@ export component App inherits Window {
     callback mark(string);
     callback undo();
     callback redo();
-    callback trimmed(int, float);
+    callback trimmed(int, float, bool);
+    callback tune(int, string, float, bool);
+    callback curve(int, string, string, bool);
+    callback joint(int, bool) -> int;
     callback trim-start();
     callback trim-done();
     callback place-start();
@@ -421,8 +424,23 @@ export component App inherits Window {
                 trim-start => {
                     root.trim-start();
                 }
-                trimmed(index, slack) => {
-                    root.trimmed(index, slack);
+                trimmed(index, slack, alone) => {
+                    root.trimmed(index, slack, alone);
+                }
+                tune(index, name, value, alone) => {
+                    root.tune(index, name, value, alone);
+                }
+                curve(index, fade, name, alone) => {
+                    root.curve(index, fade, name, alone);
+                }
+                joint(index, head) => {
+                    root.joint(index, head)
+                }
+                mark(name) => {
+                    root.mark(name);
+                }
+                remove-clip => {
+                    root.remove-clip();
                 }
                 trim-done => {
                     root.trim-done();

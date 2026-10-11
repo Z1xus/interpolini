@@ -151,6 +151,9 @@ pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32
                 ratio: probed.width as f32 / probed.height.max(1) as f32,
                 zoom_x: 1.0,
                 zoom_y: 1.0,
+                ease_in: "linear".into(),
+                ease_out: "linear".into(),
+                ease_cross: "linear".into(),
                 thumbs: ModelRc::new(VecModel::from(vec![
                     slint::Image::default();
                     preview::THUMBS
@@ -176,6 +179,10 @@ pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32
                 measured: None,
                 size: (probed.width, probed.height),
                 place: Place::default(),
+                gain: 0.0,
+                fade: (0.0, 0.0),
+                cross: 0.0,
+                eases: [config::Ease::Linear; 3],
             });
         }
         if place.is_some() {

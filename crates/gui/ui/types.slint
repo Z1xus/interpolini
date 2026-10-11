@@ -27,6 +27,24 @@ export struct Clip {
     crop-top: float,
     crop-right: float,
     crop-bottom: float,
+    // decibels
+    gain: float,
+    // seconds
+    fade-in: float,
+    fade-out: float,
+    // the seconds of the crossfade with the clip before this one
+    cross: float,
+    // the curves of the fade in, of the fade out and of the crossfade
+    ease-in: string,
+    ease-out: string,
+    ease-cross: string,
+    // the crossfades that this clip is in now, at its start and at its end
+    cross-in: float,
+    cross-out: float,
+    // the curve of the crossfade at its end
+    ease-after: string,
+    // other clips are from the same file
+    paired: bool,
 }
 
 export struct Family {

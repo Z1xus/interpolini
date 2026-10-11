@@ -702,6 +702,48 @@ export component MenuItem inherits Rectangle {
     }
 }
 
+export component MenuRow inherits Rectangle {
+    in property <string> text;
+    height: 26px;
+    HorizontalLayout {
+        // the text starts where the text of a menu item starts
+        padding-left: 26px;
+        padding-right: 12px;
+        spacing: 12px;
+        Text {
+            width: 64px;
+            text: root.text;
+            color: Theme.ink;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+        @children
+    }
+}
+
+export component MenuSlider inherits MenuRow {
+    in property <string> shown;
+    in property <float> minimum <=> slider.minimum;
+    in property <float> maximum <=> slider.maximum;
+    in property <float> step <=> slider.step;
+    in-out property <float> value <=> slider.value;
+    callback changed <=> slider.changed;
+    min-width: 290px;
+    slider := Slider {
+        horizontal-stretch: 1;
+        label: root.text;
+    }
+    Text {
+        width: 52px;
+        text: root.shown;
+        color: Theme.muted;
+        font-size: 11px;
+        font-family: "monospace";
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
 export component MenuTitle inherits Rectangle {
     in property <string> text;
     callback clicked <=> touch.clicked;

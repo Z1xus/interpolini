@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use interpolini_core::{Event, Job, Place, config, run, sequence, sounds};
+use interpolini_core::{Event, Fade, Job, Place, config, run, sequence, sounds};
 
 const USAGE: &str = "usage: interpolini-cli [options] <clip>...
 
@@ -295,6 +295,8 @@ fn main() -> ExitCode {
             at: 0.0,
             track: 0,
             place: Place::default(),
+            fade: Fade::default(),
+            hold: 0.0,
         });
     }
 

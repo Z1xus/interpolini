@@ -102,7 +102,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_light_available(themes::has_light(theme));
     themes::apply(&ui, theme, ui.get_light());
 
-    const SHORTCUTS: [(&str, &str); 23] = [
+    const SHORTCUTS: [(&str, &str); 27] = [
         ("Play or pause", "Space, K"),
         ("Back or forward 1 second", "J, L"),
         ("Step 1 frame", "Left, Right"),
@@ -124,6 +124,10 @@ fn main() -> Result<(), slint::PlatformError> {
         ("Stretch", "Shift, drag an edge"),
         ("Reset the transform", "Double click"),
         ("Separate video and audio", "Alt, drag"),
+        ("Trim one clip of two", "Alt, drag an edge"),
+        ("Gain and fades", "Right click a clip"),
+        ("Crossfade", "Right click between two clips"),
+        ("Change only one clip of a file", "Alt right click"),
         ("Select more clips", "Ctrl click"),
         ("Go to start or end", "Home, End"),
     ];
@@ -200,6 +204,10 @@ fn main() -> Result<(), slint::PlatformError> {
             measured: None,
             size: (0, 0),
             place: interpolini_core::Place::default(),
+            gain: 0.0,
+            fade: (0.0, 0.0),
+            cross: 0.0,
+            eases: [config::Ease::Linear; 3],
         },
         tracks: Tracks {
             video: vec![64.0],

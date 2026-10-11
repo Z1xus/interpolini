@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use interpolini_core::config::{self, Config};
+use interpolini_core::config::{self, Config, Ease};
 use interpolini_core::{Place, Plan, lossless};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
@@ -19,6 +19,11 @@ pub fn layout(ui: &App, state: &mut State) {
         entry.cut = (row.cut_in, row.cut_out);
         entry.at = f64::from(row.at);
         entry.track = row.track as usize;
+        entry.gain = row.gain;
+        entry.fade = (row.fade_in, row.fade_out);
+        entry.cross = row.cross;
+        entry.eases = [&row.ease_in, &row.ease_out, &row.ease_cross]
+            .map(|name| Ease::parse(name).unwrap_or(Ease::Linear));
         entry.place = Place {
             x: row.x,
             y: row.y,
@@ -28,6 +33,34 @@ pub fn layout(ui: &App, state: &mut State) {
         let size = (entry.kept() as f32, entry.seconds as f32);
         if (row.kept, row.length) != size {
             (row.kept, row.length) = size;
+            rows.set_row_data(index, row);
+        }
+    }
+    for index in 0..state.entries.len() {
+        let Some(mut row) = rows.row_data(index) else {
+            continue;
+        };
+        let link = state.entries[index].link;
+        let span = state.span(index);
+        let shown = (
+            span.cross.0 as f32,
+            span.cross.1 as f32,
+            slint::SharedString::from(span.fade.curves.1.name()),
+            state
+                .entries
+                .iter()
+                .filter(|other| other.link == link)
+                .count()
+                > 1,
+        );
+        let now = (
+            row.cross_in,
+            row.cross_out,
+            row.ease_after.clone(),
+            row.paired,
+        );
+        if now != shown {
+            (row.cross_in, row.cross_out, row.ease_after, row.paired) = shown;
             rows.set_row_data(index, row);
         }
     }
@@ -229,17 +262,21 @@ pub fn refresh(ui: &App, shared: &Shared) {
     // a video that fills the picture hides the clips under it
     let fills = |index: &usize| {
         let entry = &state.entries[*index];
-        !entry.still && entry.place.covers(base.size, entry.size)
+        let plain = state.span(*index).picture().none();
+        !entry.still && plain && entry.place.covers(base.size, entry.size)
     };
     let shown = &part.clips[part.clips.iter().rposition(fills).unwrap_or(0)..];
     let layer = |index: &usize| {
-        let entry = &state.entries[*index];
+        let (entry, span) = (&state.entries[*index], state.span(*index));
         preview::Layer {
             clip: entry.clip.clone(),
             config: entry.config.clone(),
             still: entry.still,
             place: entry.place,
-            start: f64::from(entry.cut.0) * entry.seconds + time - entry.at,
+            start: span.start + time - span.at,
+            inside: time - span.at,
+            length: span.length,
+            fade: span.picture(),
         }
     };
     let (original, width) = wanted(ui);
