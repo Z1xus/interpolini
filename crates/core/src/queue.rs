@@ -178,6 +178,9 @@ fn encode(
     let mut reported = started;
     let mut written = 0;
     for part in &parts {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
         // a clip stays open until its end, and the gpu is free before the next one opens
         sources.retain(|clip, _| placed[*clip].at + placed[*clip].length > part.start + 0.001);
         // a video that fills the canvas hides the clips under it
