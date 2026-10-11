@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Sender, channel, sync_channel};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -404,6 +405,33 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
     (sender, thread)
 }
 
+// the work for the clips waits here: each job opens a decoder, and a thread for each one fills the memory
+fn queue(job: impl FnOnce() + Send + 'static) {
+    type Job = Box<dyn FnOnce() + Send>;
+    static JOBS: OnceLock<Sender<Job>> = OnceLock::new();
+    let jobs = JOBS.get_or_init(|| {
+        let (sender, receiver) = channel::<Job>();
+        let receiver = Arc::new(Mutex::new(receiver));
+        for _ in 0..2 {
+            let receiver = Arc::clone(&receiver);
+            std::thread::spawn(move || {
+                loop {
+                    let job = receiver
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .recv();
+                    match job {
+                        Ok(job) => job(),
+                        Err(_) => return,
+                    }
+                }
+            });
+        }
+        sender
+    });
+    let _ = jobs.send(Box::new(job));
+}
+
 // places gives the rows of the clips of one file, with the audio track of each
 pub fn thumbs(
     ui: Weak<App>,
@@ -411,7 +439,7 @@ pub fn thumbs(
     config: Config,
     places: impl Fn() -> Vec<(Option<usize>, usize)> + Send + Clone + 'static,
 ) {
-    std::thread::spawn(move || {
+    queue(move || {
         let Ok(graph) = Graph::open(&clip, &source(&config), &|_| {}) else {
             return;
         };
@@ -442,7 +470,7 @@ pub fn repeats(
     part: (f64, f64),
     done: impl FnOnce(&App, f32) + Send + 'static,
 ) {
-    std::thread::spawn(move || {
+    queue(move || {
         if let Ok(repeats) = interpolini_core::repeats(&clip, threshold, part.0, part.1) {
             let _ = ui.upgrade_in_event_loop(move |ui| done(&ui, repeats));
         }
@@ -455,7 +483,7 @@ pub fn waves(
     seconds: f64,
     places: impl Fn() -> Vec<(Option<usize>, usize)> + Send + 'static,
 ) {
-    std::thread::spawn(move || {
+    queue(move || {
         let Ok(tracks) = peaks(&clip, seconds, WAVE) else {
             return;
         };
