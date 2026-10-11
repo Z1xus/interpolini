@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use interpolini_core::config::{self, Config, Ease};
-use interpolini_core::{Place, Plan, lossless};
+use interpolini_core::{Part, Place, Plan, lossless};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::settings::settings;
@@ -232,24 +232,31 @@ pub fn refresh(ui: &App, shared: &Shared) {
     if ui.get_rendering() {
         if let Some(preview) = &state.preview {
             let _ = preview.send(preview::Request {
-                layers: Vec::new(),
+                parts: Vec::new(),
                 canvas: Default::default(),
                 play: false,
+                quiet: false,
                 original: false,
                 width: 0,
-                time: 0.0,
-                end: 0.0,
                 total: 0.0,
             });
         }
         return;
     }
-    let shown = state.part(ui.get_position());
-    let Some((time, part)) = shown.filter(|shown| !shown.1.clips.is_empty()) else {
-        // no clip is here, so the picture is empty and playback walks on by the clock
+    let empty = || {
         ui.set_preview(slint::Image::default());
         ui.set_original(slint::Image::default());
         ui.set_preview_note("".into());
+    };
+    let shown = state.part(ui.get_position());
+    let shown = shown.filter(|shown| !shown.1.clips.is_empty());
+    // without a video the lowest image gives the picture size
+    let lowest = shown.as_ref().map(|shown| shown.1.clips[0]);
+    let base = state.base().or(lowest);
+    let base = base.or_else(|| state.videos().first().copied());
+    let Some(base) = base.map(|index| &state.entries[index]) else {
+        // only sound is here, so playback walks on by the clock
+        empty();
         let walk = ui.get_playing() && !state.entries.is_empty();
         drop(state);
         if walk {
@@ -257,44 +264,83 @@ pub fn refresh(ui: &App, shared: &Shared) {
         }
         return;
     };
-    // without a video the lowest image gives the picture size
-    let base = &state.entries[state.base().unwrap_or(part.clips[0])];
-    // a video that fills the picture hides the clips under it
-    let fills = |index: &usize| {
+    let covers = |index: &usize| {
         let entry = &state.entries[*index];
-        let plain = state.span(*index).picture().none();
-        !entry.still && plain && entry.place.covers(base.size, entry.size)
+        !entry.still && entry.place.covers(base.size, entry.size)
     };
-    let shown = &part.clips[part.clips.iter().rposition(fills).unwrap_or(0)..];
-    let layer = |index: &usize| {
-        let (entry, span) = (&state.entries[*index], state.span(*index));
-        preview::Layer {
-            clip: entry.clip.clone(),
-            config: entry.config.clone(),
-            still: entry.still,
-            place: entry.place,
-            start: span.start + time - span.at,
-            inside: time - span.at,
-            length: span.length,
-            fade: span.picture(),
+    let stretch = |part: &Part, time: f64| {
+        // a video that fills the picture hides the clips under it
+        let fills = |index: &usize| covers(index) && state.span(*index).picture().none();
+        let shown = &part.clips[part.clips.iter().rposition(fills).unwrap_or(0)..];
+        let layer = |index: &usize| {
+            let (entry, span) = (&state.entries[*index], state.span(*index));
+            preview::Layer {
+                clip: entry.clip.clone(),
+                config: entry.config.clone(),
+                still: entry.still,
+                place: entry.place,
+                start: span.start + time - span.at,
+                inside: time - span.at,
+                length: span.length,
+                fade: span.picture(),
+                fills: covers(index),
+            }
+        };
+        preview::Stretch {
+            layers: shown.iter().map(layer).collect(),
+            time,
+            end: part.end,
         }
     };
+    // a playback goes on through the parts that follow, up to a part without a clip
+    let after = |end: f64| {
+        let later = state.parts().into_iter();
+        let later = later.skip_while(move |other| other.start < end - 0.0005);
+        later.take_while(|other| !other.clips.is_empty())
+    };
+    let ask = |parts: Vec<preview::Stretch>, quiet: bool, original: bool, width: i32| {
+        let request = preview::Request {
+            parts,
+            canvas: base.clip.clone(),
+            play: ui.get_playing(),
+            quiet,
+            original,
+            width: width as u32,
+            total: state.seconds(),
+        };
+        if let Some(preview) = &state.preview {
+            let _ = preview.send(request);
+        }
+    };
+    let Some((time, part)) = shown else {
+        // no clip is here, so the picture is empty and playback walks on by the clock
+        empty();
+        let walk = ui.get_playing();
+        if walk {
+            let time = f64::from(ui.get_position()) * state.seconds();
+            let gap = state.parts().into_iter().find(|part| part.end > time);
+            let next = gap.map(|gap| after(gap.end).map(|part| stretch(&part, part.start)));
+            ask(
+                next.map(Iterator::collect).unwrap_or_default(),
+                true,
+                false,
+                0,
+            );
+        }
+        drop(state);
+        if walk {
+            idle(ui, shared);
+        }
+        return;
+    };
+    let mut parts = vec![stretch(&part, time)];
+    if ui.get_playing() {
+        parts.extend(after(part.end).map(|part| stretch(&part, part.start)));
+    }
     let (original, width) = wanted(ui);
     ui.set_compared(original);
     ui.set_sharp(width);
-    let request = preview::Request {
-        layers: shown.iter().map(layer).collect(),
-        canvas: base.clip.clone(),
-        play: ui.get_playing(),
-        original,
-        width: width as u32,
-        time,
-        end: part.end,
-        total: state.seconds(),
-    };
-    if let Some(preview) = &state.preview {
-        let _ = preview.send(request);
-    }
+    ask(parts, false, original, width);
 }
 
 thread_local! {

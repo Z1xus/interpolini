@@ -197,14 +197,21 @@ fn paste(canvas: &mut frame::Video, picture: &frame::Video, left: u32, top: u32,
         for row in 0..height {
             let target = &mut to[(top + row) * stride + left..][..width];
             let source = &from[row * wide..][..width];
-            if cover.is_none() && level == 255 {
-                target.copy_from_slice(source);
+            let Some((cover, wide)) = cover else {
+                if level == 255 {
+                    target.copy_from_slice(source);
+                    continue;
+                }
+                // a division by 255 that the compiler can make wide
+                for (to, from) in target.iter_mut().zip(source) {
+                    let sum = u32::from(*from) * level + u32::from(*to) * (255 - level) + 127;
+                    *to = ((sum + 1 + (sum >> 8)) >> 8) as u8;
+                }
                 continue;
-            }
-            let cover = cover.map(|(cover, wide)| &cover[(row << shift) * wide..]);
+            };
+            let cover = &cover[(row << shift) * wide..];
             for (index, (to, from)) in target.iter_mut().zip(source).enumerate() {
-                let cover = cover.map_or(255, |cover| u32::from(cover[index << shift]));
-                let cover = cover * level / 255;
+                let cover = u32::from(cover[index << shift]) * level / 255;
                 *to =
                     ((u32::from(*from) * cover + u32::from(*to) * (255 - cover) + 127) / 255) as u8;
             }
@@ -235,8 +242,8 @@ impl Canvas {
         (self.meta.width, self.meta.height)
     }
 
-    fn black(&self) -> frame::Video {
-        let mut picture = frame::Video::new(Pixel::YUV420P, self.meta.width, self.meta.height);
+    fn black(&self, size: (u32, u32)) -> frame::Video {
+        let mut picture = frame::Video::new(Pixel::YUV420P, size.0, size.1);
         // 16 is black in the limited range, and 128 is no color
         picture
             .data_mut(0)
@@ -248,17 +255,28 @@ impl Canvas {
     }
 
     // the layers go on a black canvas, the lowest one first
-    pub(crate) fn compose(
+    pub(crate) fn compose(&mut self, layers: Vec<(Picture, Place, f32)>) -> Result<frame::Video> {
+        self.draw(layers, self.size())
+    }
+
+    fn draw(
         &mut self,
         mut layers: Vec<(Picture, Place, f32)>,
+        size: (u32, u32),
     ) -> Result<frame::Video> {
-        let size = self.size();
-        let mut canvas = self.black();
-        let like = |picture: &frame::Video| unsafe {
-            let (one, other) = (&*picture.as_ptr(), &*canvas.as_ptr());
-            picture.format() == Pixel::YUV420P
-                && (picture.width(), picture.height()) == size
-                && (one.colorspace, one.color_range) == (other.colorspace, other.color_range)
+        let full = self.size();
+        let mut canvas = self.black(size);
+        let (space, range) = unsafe {
+            let canvas = &*canvas.as_ptr();
+            (canvas.colorspace, canvas.color_range)
+        };
+        let tagged = |picture: &frame::Video| unsafe {
+            let picture = &*picture.as_ptr();
+            (picture.colorspace, picture.color_range) == (space, range)
+        };
+        let like = |picture: &frame::Video| {
+            let same = (picture.width(), picture.height()) == full;
+            picture.format() == Pixel::YUV420P && same && tagged(picture)
         };
         // a clip that is the canvas goes through as it is
         let whole = |layer: &(Picture, Place, f32)| {
@@ -296,6 +314,11 @@ impl Canvas {
                 from(right, whole[0], whole[2], width, 2).max(first.0 + 2),
                 from(bottom, whole[1], whole[3], height, 2).max(first.1 + 2),
             ];
+            let whole = part == [0, 0, width, height];
+            if whole && (right - left, bottom - top) == (width, height) && tagged(picture) {
+                paste(&mut canvas, picture, left, top, *opacity);
+                continue;
+            }
             let mut scaled = frame::Video::new(picture.format(), right - left, bottom - top);
             self.meta.tag(&mut scaled);
             self.scalers[index].run(&mut scaled, &window(picture, part))?;
@@ -305,7 +328,18 @@ impl Canvas {
     }
 
     pub fn preview(&mut self, layers: Vec<(Picture, Place, f32)>, width: u32) -> Result<Image> {
-        let picture = self.compose(layers)?;
+        let (wide, high) = self.size();
+        let width = width.min(wide) & !1;
+        let height = (u64::from(width) * u64::from(high) / u64::from(wide)) as u32 & !1;
+        // full-size pictures need no scaler, the rest is drawn at the width that shows
+        let fits = |layer: &(Picture, Place, f32)| {
+            layer.1 == Place::default() && (layer.0.0.width(), layer.0.0.height()) == (wide, high)
+        };
+        let size = match layers.iter().all(fits) {
+            true => (wide, high),
+            false => (width, height),
+        };
+        let picture = self.draw(layers, size)?;
         image(&self.shown, &picture, width)
     }
 }
