@@ -190,10 +190,24 @@ impl Graph {
             blended,
             weights,
         } = Plan::new(source_fps, config);
+        let still = |svp: &Arc<Svp>, clip: Clip, input: &Arc<Clip>| -> Result<Clip> {
+            let Some(mask) = mask else {
+                return Ok(clip);
+            };
+            let relay = Pick {
+                source: Arc::clone(input),
+                step: 1,
+                offset: 0,
+                width: size.0,
+                height: size.1,
+            };
+            let relay = svp.source(&input.shape(), relay)?;
+            Ok(svp.still(clip, &relay, mask)?.keep(relay))
+        };
         if let Some(fps) = pre {
             svp = host()?;
             let clip = Rife::open(&svp, Arc::clone(&input), &meta, fps, rife, None, sink)?;
-            input = Arc::new(clip);
+            input = Arc::new(still(&svp, clip, &input)?);
             sink(Event::Info(format!("rife to {fps} fps first")));
         }
         let mut fused = false;
@@ -205,20 +219,7 @@ impl Graph {
                 let blend = blended.then_some((radius, i64::from(target), i64::from(blending.fps)));
                 let clip = Rife::open(&svp, Arc::clone(&input), &meta, target, rife, blend, sink)?;
                 sink(Event::Info(format!("rife to {target} fps")));
-                Some(match mask {
-                    Some(mask) => {
-                        let relay = Pick {
-                            source: Arc::clone(&input),
-                            step: 1,
-                            offset: 0,
-                            width: size.0,
-                            height: size.1,
-                        };
-                        let relay = svp.source(&input.shape(), relay)?;
-                        svp.still(clip, &relay, mask)?.keep(relay)
-                    }
-                    None => clip,
-                })
+                Some(still(&svp, clip, &input)?)
             }
             Engine::Svp => {
                 let rate = format!("num:{target},den:1,abs:true");
