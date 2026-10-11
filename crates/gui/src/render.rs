@@ -45,13 +45,18 @@ fn show(ui: &App, event: Event, row: Option<usize>, current: usize, count: usize
             let left = ((frames - frame) as f32 / fps.max(0.001)) as u32;
             ui.set_status(format!("{fps:.0} fps  |  {}:{:02} left", left / 60, left % 60).into());
         }
-        Event::Done { clip, output, .. } => {
+        Event::Done {
+            clip,
+            output,
+            seconds,
+        } => {
             update(ui, clip, |row| {
                 row.progress = 0.0;
                 row.state = "Done".into();
             });
             let name = output.file_name().unwrap_or_default().to_string_lossy();
-            ui.set_status(name.as_ref().into());
+            let took = seconds as u32;
+            ui.set_status(format!("{name}, took {}:{:02}", took / 60, took % 60).into());
         }
         Event::Failed { clip, error } => {
             update(ui, clip, |row| {
