@@ -289,7 +289,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             dedup: Dedup {
-                enabled: false,
+                enabled: true,
                 threshold: 0.5,
             },
             pre: Pre {
@@ -301,7 +301,7 @@ impl Default for Config {
                 engine: Engine::Svp,
                 fps: Rate::Fps(960),
                 speed: Speed::Faster,
-                tuning: Tuning::Weak,
+                tuning: Tuning::Film,
                 algorithm: Algorithm::Standard,
                 half: true,
             },
