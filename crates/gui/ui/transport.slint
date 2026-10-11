@@ -1,14 +1,17 @@
-import { IconButton, Icons, Theme } from "widgets.slint";
+import { IconButton, Icons, Slider, Theme } from "widgets.slint";
 
 export component Transport inherits Rectangle {
     in-out property <bool> transform;
     in property <bool> playing;
+    in-out property <float> volume;
+    in-out property <bool> muted;
     in property <bool> rendering;
     in property <string> preview-note;
     in property <string> details;
     in property <string> timecode;
     callback step(int, float);
     callback play();
+    callback loudness();
     callback mark(string);
     callback add-clips();
     callback remove-clip();
@@ -60,6 +63,45 @@ export component Transport inherits Rectangle {
                     keys: ["Right"];
                     clicked => {
                         root.step(1, 0);
+                    }
+                }
+                Rectangle {
+                    width: 17px;
+                    Rectangle {
+                        width: 1px;
+                        height: 16px;
+                        background: Theme.seam;
+                    }
+                }
+                TouchArea {
+                    scroll-event(event) => {
+                        root.volume = clamp(root.volume + (event.delta-y > 0 ? 0.05 : -0.05), 0, 1);
+                        root.muted = false;
+                        root.loudness();
+                        accept
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        IconButton {
+                            shape: root.muted || root.volume == 0 ? Icons.volume-off : root.volume < 0.5 ? Icons.volume-low : Icons.volume;
+                            label: root.muted ? "Unmute" : "Mute";
+                            keys: ["M"];
+                            clicked => {
+                                root.muted = !root.muted;
+                                root.loudness();
+                            }
+                        }
+                        Slider {
+                            width: 64px;
+                            opacity: root.muted ? 0.4 : 1;
+                            step: 0.01;
+                            label: "Volume";
+                            value <=> root.volume;
+                            changed => {
+                                root.muted = false;
+                                root.loudness();
+                            }
+                        }
                     }
                 }
                 Rectangle {

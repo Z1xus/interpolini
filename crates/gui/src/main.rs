@@ -97,14 +97,18 @@ fn main() -> Result<(), slint::PlatformError> {
     let size = |key: &str| value(key).and_then(|size| size.parse::<f32>().ok());
     ui.set_rail(size("rail: ").unwrap_or(340.0));
     ui.set_deck(size("deck: ").unwrap_or(0.0));
+    ui.set_volume(size("volume: ").unwrap_or(1.0).clamp(0.0, 1.0));
+    sound::level(ui.get_volume());
     ui.set_light_available(themes::has_light(theme));
     themes::apply(&ui, theme, ui.get_light());
 
-    const SHORTCUTS: [(&str, &str); 21] = [
+    const SHORTCUTS: [(&str, &str); 23] = [
         ("Play or pause", "Space, K"),
         ("Back or forward 1 second", "J, L"),
         ("Step 1 frame", "Left, Right"),
         ("Move 1 second", "Shift Left, Right"),
+        ("Volume", "Up, Down"),
+        ("Mute", "M"),
         ("Set start or end", "I, O"),
         ("Restore full length", "X"),
         ("Split", "S"),

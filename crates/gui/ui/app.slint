@@ -23,6 +23,8 @@ export component App inherits Window {
     in property <length> content;
     in property <float> extent;
     in-out property <bool> playing;
+    in-out property <float> volume: 1;
+    in-out property <bool> muted;
     in-out property <string> view: "result";
     in property <float> seconds;
     // the sizes of the two panels, 0 is the usual size
@@ -110,6 +112,7 @@ export component App inherits Window {
     callback moved();
     callback ended();
     callback sounding();
+    callback loudness();
 
     // the sound stops here, and it starts with the first picture of a playback
     changed playing => {
@@ -208,6 +211,13 @@ export component App inherits Window {
             } else if event.text == Key.End {
                 root.position = 1;
                 root.seek();
+            } else if event.text == "m" {
+                root.muted = !root.muted;
+                root.loudness();
+            } else if event.text == Key.UpArrow || event.text == Key.DownArrow {
+                root.volume = clamp(root.volume + (event.text == Key.UpArrow ? 0.05 : -0.05), 0, 1);
+                root.muted = false;
+                root.loudness();
             } else if event.text == "i" {
                 root.mark("start");
             } else if event.text == "o" {
@@ -347,6 +357,11 @@ export component App inherits Window {
             if root.clips.length > 0: Transport {
                 transform <=> root.transform;
                 playing: root.playing;
+                volume <=> root.volume;
+                muted <=> root.muted;
+                loudness => {
+                    root.loudness();
+                }
                 rendering: root.rendering;
                 preview-note: root.preview-note;
                 details: root.details;

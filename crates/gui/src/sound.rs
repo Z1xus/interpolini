@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -9,6 +9,15 @@ use interpolini_core::{Mixer, RATE, Sound};
 // about a quarter of a second of stereo samples waits for the sound card
 const AHEAD: usize = RATE as usize / 2;
 const SLICE: usize = 2048;
+
+// the gain, as the bits of a float
+static LEVEL: AtomicU32 = AtomicU32::new(0);
+
+// half of the slider sounds half as loud, which is 10 decibels less
+pub fn level(volume: f32) {
+    let decibels = 10.0 * volume.log2();
+    LEVEL.store(10f32.powf(decibels / 20.0).to_bits(), Ordering::Relaxed);
+}
 
 pub struct Player {
     _stream: cpal::Stream,
@@ -31,10 +40,14 @@ impl Player {
         };
         let queue = Arc::new(Mutex::new(VecDeque::<f32>::new()));
         let waiting = Arc::clone(&queue);
+        let mut level = f32::from_bits(LEVEL.load(Ordering::Relaxed));
         let play = move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
             let mut waiting = waiting.lock().unwrap_or_else(|poison| poison.into_inner());
+            let target = f32::from_bits(LEVEL.load(Ordering::Relaxed));
             for sample in output {
-                *sample = waiting.pop_front().unwrap_or(0.0);
+                // the level moves in small steps, a jump is heard as a click
+                level += (target - level) * 0.002;
+                *sample = waiting.pop_front().unwrap_or(0.0) * level;
             }
         };
         let stream = device

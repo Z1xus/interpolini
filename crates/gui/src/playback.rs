@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use slint::ComponentHandle;
 
+use crate::settings::save_preferences;
 use crate::state::{Shared, lock, sounds};
 use crate::view::{refresh, timecode, wanted};
 use crate::{App, sound};
@@ -43,6 +44,14 @@ pub fn wire(ui: &App, state: &Shared) {
             .then(|| sound::Player::start(&sounds(&state), time))
             .flatten();
         PLAYER.set(player);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_loudness(move || {
+        if let Some(ui) = weak.upgrade() {
+            sound::level(if ui.get_muted() { 0.0 } else { ui.get_volume() });
+            save_preferences(&ui);
+        }
     });
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));

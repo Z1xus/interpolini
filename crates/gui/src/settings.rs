@@ -180,13 +180,14 @@ pub fn preferences() -> PathBuf {
 pub fn save_preferences(ui: &App) {
     let yes = |value: bool| if value { "yes" } else { "no" };
     let text = format!(
-        "theme: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\nupdates: {}\n",
+        "theme: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\nupdates: {}\nvolume: {}\n",
         ui.get_theme(),
         yes(ui.get_light()),
         yes(ui.get_separate()),
         ui.get_rail(),
         ui.get_deck(),
-        yes(ui.get_updates())
+        yes(ui.get_updates()),
+        ui.get_volume()
     );
     let _ = std::fs::write(preferences(), text);
 }
