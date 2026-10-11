@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use slint::{ComponentHandle, Model, VecModel};
@@ -19,13 +20,38 @@ pub fn overwrite(ui: &App, state: &mut State, link: u64) {
         .filter(|entry| entry.link == link)
         .cloned()
         .collect();
-    for mover in movers {
+    // a video that is cut takes its sounds with it, on any track
+    let under = |video: &&Entry| {
+        let covers = |mover: &Entry| {
+            let (from, to) = (mover.at, mover.at + mover.kept());
+            let (start, end) = (video.at, video.at + video.kept());
+            mover.audio.is_none()
+                && mover.track == video.track
+                && from < end - 0.001
+                && start < to - 0.001
+        };
+        video.link != link && video.audio.is_none() && movers.iter().any(covers)
+    };
+    let cut: Vec<u64> = state
+        .entries
+        .iter()
+        .filter(under)
+        .map(|video| video.link)
+        .collect();
+    let mut pieces = HashMap::new();
+    for mover in &movers {
         let (from, to) = (mover.at, mover.at + mover.kept());
         for index in (0..state.entries.len()).rev() {
             let other = state.entries[index].clone();
             let same = other.audio.is_some() == mover.audio.is_some() && other.track == mover.track;
+            let follows =
+                mover.audio.is_none() && other.audio.is_some() && cut.contains(&other.link);
             let (start, end) = (other.at, other.at + other.kept());
-            if other.link == link || !same || to <= start + 0.001 || end <= from + 0.001 {
+            if other.link == link
+                || !(same || follows)
+                || to <= start + 0.001
+                || end <= from + 0.001
+            {
                 continue;
             }
             let Some(mut row) = model.row_data(index) else {
@@ -45,18 +71,28 @@ pub fn overwrite(ui: &App, state: &mut State, link: u64) {
                     (rest.cut_in, rest.at) = (place(to), to as f32);
                     row.cut_out = place(from);
                     (row.fade_out, rest.fade_in, rest.cross) = (0.0, 0.0, 0.0);
-                    // the second piece is a clip of its own, it does not move with the first
-                    state.ids += 2;
-                    rest.link = state.ids as i32;
+                    // the second pieces are a clip of their own, they do not move with the first
+                    state.ids += 1;
+                    let id = state.ids;
+                    let fresh = *pieces.entry(other.link).or_insert_with(|| {
+                        state.ids += 1;
+                        state.ids
+                    });
+                    rest.link = fresh as i32;
                     let copy = Entry {
-                        id: state.ids - 1,
-                        link: state.ids,
+                        id,
+                        link: fresh,
+                        cut: (rest.cut_in, rest.cut_out),
+                        at: to,
                         ..other.clone()
                     };
                     state.entries.insert(index + 1, copy);
                     model.insert(index + 1, rest);
                 }
             }
+            // the next mover must see this cut
+            (state.entries[index].cut, state.entries[index].at) =
+                ((row.cut_in, row.cut_out), f64::from(row.at));
             model.set_row_data(index, row);
         }
     }
@@ -393,8 +429,8 @@ pub fn wire(ui: &App, state: &Shared) {
                 .iter()
                 .any(|entry| entry.link == link && entry.audio.is_none())
         };
-        let mut ends = std::collections::HashMap::new();
-        let mut moves = std::collections::HashMap::new();
+        let mut ends = HashMap::new();
+        let mut moves = HashMap::new();
         for &index in &order {
             let entry = &state.entries[index];
             // a sound follows its video, and a sound alone packs on its own track
