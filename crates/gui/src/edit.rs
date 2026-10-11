@@ -9,7 +9,8 @@ use crate::view::{fit, lanes, layout, load, refresh, select, selected};
 use crate::{App, Clip};
 
 // a clip that lands on other clips of its track takes their place there
-pub fn overwrite(ui: &App, state: &mut State, link: u64) {
+// moved is how far the clip came, a clip that is not moved gives 0
+pub fn overwrite(ui: &App, state: &mut State, link: u64, moved: f64) {
     let rows = ui.get_clips();
     let Some(model) = rows.as_any().downcast_ref::<VecModel<Clip>>() else {
         return;
@@ -56,6 +57,12 @@ pub fn overwrite(ui: &App, state: &mut State, link: u64) {
             }
             let Some(mut row) = model.row_data(index) else {
                 continue;
+            };
+            // a clip that came from one side takes the other clip up to that side, and does not split it
+            let (from, to) = match () {
+                () if from - moved >= end - 0.001 => (from, to.max(end)),
+                () if to - moved <= start + 0.001 => (from.min(start), to),
+                () => (from, to),
             };
             let place = |time: f64| row.cut_in + ((time - start) / other.seconds) as f32;
             match (from <= start, to >= end) {
@@ -323,7 +330,7 @@ pub fn wire(ui: &App, state: &Shared) {
         let held = state
             .entries
             .get(index as usize)
-            .map(|entry| (entry.id, f64::from(time) - entry.at));
+            .map(|entry| (entry.id, f64::from(time) - entry.at, entry.at));
         state.held = held;
         state.touched = state.entries.get(index as usize).map(|entry| entry.link);
     });
@@ -335,7 +342,7 @@ pub fn wire(ui: &App, state: &Shared) {
         };
         let rows = ui.get_clips();
         let mut state = lock(&shared);
-        let Some((id, offset)) = state.held else {
+        let Some((id, offset, _)) = state.held else {
             return;
         };
         let Some(index) = state.entries.iter().position(|entry| entry.id == id) else {
@@ -401,10 +408,13 @@ pub fn wire(ui: &App, state: &Shared) {
     ui.on_release(move || {
         if let Some(ui) = weak.upgrade() {
             let mut state = lock(&shared);
-            state.held = None;
+            let moved = state.held.take().and_then(|(id, _, was)| {
+                let held = state.entries.iter().find(|entry| entry.id == id);
+                held.map(|entry| entry.at - was)
+            });
             state.spare = None;
             if let Some(link) = state.touched.take() {
-                overwrite(&ui, &mut state, link);
+                overwrite(&ui, &mut state, link, moved.unwrap_or(0.0));
             }
             drop(state);
             fit(&ui, &shared);
@@ -661,7 +671,7 @@ pub fn wire(ui: &App, state: &Shared) {
         if let Some(ui) = weak.upgrade() {
             let mut state = lock(&shared);
             if let Some(link) = state.touched.take() {
-                overwrite(&ui, &mut state, link);
+                overwrite(&ui, &mut state, link, 0.0);
             }
             drop(state);
             fit(&ui, &shared);

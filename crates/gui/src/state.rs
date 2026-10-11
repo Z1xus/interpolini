@@ -83,8 +83,8 @@ pub struct State {
     pub tracks: Tracks,
     pub preview: Option<Sender<preview::Request>>,
     pub ids: u64,
-    // the clip that the pointer holds to move it, and where on the clip it holds
-    pub held: Option<(u64, f64)>,
+    // the clip that the pointer holds to move it, where on the clip it holds, and where the clip was
+    pub held: Option<(u64, f64, f64)>,
     // the link of the clips that the pointer moves or trims
     pub touched: Option<u64>,
     // a drag past the last track makes a new track, of video or of audio, which goes away again without a clip

@@ -186,7 +186,7 @@ pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32
             });
         }
         if place.is_some() {
-            overwrite(ui, &mut guard, link);
+            overwrite(ui, &mut guard, link, 0.0);
         }
         drop(guard);
         let shared = Arc::clone(state);
