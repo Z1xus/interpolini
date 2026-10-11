@@ -148,7 +148,18 @@ impl Graph {
         };
         let mut input = Arc::new(svp.source(&shape, decoder)?);
 
-        if dedup.enabled {
+        let Plan {
+            pre,
+            fps: target,
+            interpolate,
+            blended,
+            weights,
+        } = Plan::new(source_fps, config);
+        // svp skips a repeated frame by itself, the other paths get it replaced here
+        let skipped = interpolate && interpolation.engine == Engine::Svp && pre.is_none();
+        if dedup.enabled && skipped {
+            sink(Event::Info("replacing repeated frames".into()));
+        } else if dedup.enabled {
             let mut fills = Vec::new();
             for offset in 0..2 {
                 let shape = Shape {
@@ -165,7 +176,8 @@ impl Graph {
                 };
                 let pick = svp.source(&shape, pick)?;
                 // without the still mask: over the double gap of these clips it leaves specks
-                let options = |gpu| Options::new(interpolation, "num:2,den:1", None, gpu, half);
+                let options =
+                    |gpu| Options::new(interpolation, "num:2,den:1", None, None, gpu, half);
                 let fill = svp.smooth(&pick, &options(true));
                 let fill = fill.or_else(|_| svp.smooth(&pick, &options(false)))?;
                 fills.push(fill.keep(pick));
@@ -183,13 +195,6 @@ impl Graph {
             sink(Event::Info("replacing repeated frames".into()));
         }
 
-        let Plan {
-            pre,
-            fps: target,
-            interpolate,
-            blended,
-            weights,
-        } = Plan::new(source_fps, config);
         let still = |svp: &Arc<Svp>, clip: Clip, input: &Arc<Clip>| -> Result<Clip> {
             let Some(mask) = mask else {
                 return Ok(clip);
@@ -223,7 +228,8 @@ impl Graph {
             }
             Engine::Svp => {
                 let rate = format!("num:{target},den:1,abs:true");
-                let options = |gpu| Options::new(interpolation, &rate, mask, gpu, half);
+                let limit = (dedup.enabled && skipped).then_some(dedup.threshold);
+                let options = |gpu| Options::new(interpolation, &rate, mask, limit, gpu, half);
                 let made = match blended {
                     true => svp.smooth_blend(&input, &options(true), &weights, blending),
                     false => svp.smooth(&input, &options(true)),

@@ -301,6 +301,7 @@ impl Options {
         interpolation: &Interpolation,
         rate: &str,
         mask: Option<&Mask>,
+        dedup: Option<f32>,
         gpu: bool,
         half: bool,
     ) -> Self {
@@ -367,8 +368,9 @@ impl Options {
         } else {
             "blend:false,mode:0"
         };
+        let dedup = dedup.map_or(String::new(), |limit| format!(",dedup:{limit}"));
         let smooth = format!(
-            "{{rate:{{{rate}}},algo:{algorithm},mask:{{cover:80,area:0,area_sharp:1.2{masking}}},scene:{{{scene}}}}}"
+            "{{rate:{{{rate}}},algo:{algorithm},mask:{{cover:80,area:0,area_sharp:1.2{masking}}},scene:{{{scene}}}{dedup}}}"
         );
 
         let text = |text: String| CString::new(text).unwrap_or_default();
