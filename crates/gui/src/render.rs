@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use interpolini_core::{Event, Fade, Job, run};
+use interpolini_core::{Event, Fade, Job, Sound, run};
 use slint::{ComponentHandle, Model};
 
 use crate::App;
-use crate::state::{Shared, lock, sounds};
-use crate::view::{layout, refresh, update};
+use crate::state::{Shared, State, lock, sounds};
+use crate::view::{layout, megabytes, refresh, update};
 
 // row is the clip that renders now, or none when all clips go into one file
 fn show(ui: &App, event: Event, row: Option<usize>, current: usize, count: usize) {
@@ -55,8 +55,9 @@ fn show(ui: &App, event: Event, row: Option<usize>, current: usize, count: usize
                 row.state = "Done".into();
             });
             let name = output.file_name().unwrap_or_default().to_string_lossy();
+            let size = megabytes(std::fs::metadata(&output).map_or(0, |file| file.len()));
             let took = seconds as u32;
-            ui.set_status(format!("{name}, took {}:{:02}", took / 60, took % 60).into());
+            ui.set_status(format!("{name}, {size}, took {}:{:02}", took / 60, took % 60).into());
         }
         Event::Failed { clip, error } => {
             update(ui, clip, |row| {
@@ -69,56 +70,60 @@ fn show(ui: &App, event: Event, row: Option<usize>, current: usize, count: usize
     }
 }
 
+pub fn jobs(state: &State, separate: bool) -> (Vec<Job>, Vec<Sound>, Vec<usize>) {
+    let heard = sounds(state);
+    // an image goes into the file of the timeline, and has no file of its own
+    let mut rows = state.videos();
+    rows.retain(|index| !separate || !state.entries[*index].still);
+    let job = |index: &usize| {
+        let entry = &state.entries[*index];
+        // the fades are for the timeline, a clip in a file of its own has none
+        let span = state.span(*index);
+        let (start, end) = (span.start, span.start + span.length);
+        let faded = !separate && span.length != entry.kept();
+        // a clip on its own takes the audio tracks of its file that are still on the timeline
+        let kept = |stream: &usize| {
+            heard
+                .iter()
+                .any(|sound| sound.clip == entry.clip && sound.stream == *stream)
+        };
+        Job {
+            clip: entry.clip.clone(),
+            config: entry.config.clone(),
+            cut: match faded {
+                true => Some((start, end.min(entry.seconds))),
+                false => (entry.cut != (0.0, 1.0)).then_some((
+                    f64::from(entry.cut.0) * entry.seconds,
+                    f64::from(entry.cut.1) * entry.seconds,
+                )),
+            },
+            muted: (0..entry.streams).filter(|stream| !kept(stream)).collect(),
+            at: if faded { span.at } else { entry.at },
+            track: entry.track,
+            place: entry.place,
+            fade: if separate {
+                Fade::default()
+            } else {
+                span.picture()
+            },
+            hold: if faded {
+                (end - entry.seconds).max(0.0)
+            } else {
+                0.0
+            },
+        }
+    };
+    let jobs = rows.iter().map(job).collect();
+    (jobs, heard, rows)
+}
+
 fn render(ui: &App, shared: &Shared) {
     let separate = ui.get_separate();
     let (jobs, sounds, rows, cancel) = {
         let mut state = lock(shared);
         layout(ui, &mut state);
         state.cancel = Arc::new(AtomicBool::new(false));
-        let heard = sounds(&state);
-        // an image goes into the file of the timeline, and has no file of its own
-        let mut rows = state.videos();
-        rows.retain(|index| !separate || !state.entries[*index].still);
-        let job = |index: &usize| {
-            let entry = &state.entries[*index];
-            // the fades are for the timeline, a clip in a file of its own has none
-            let span = state.span(*index);
-            let (start, end) = (span.start, span.start + span.length);
-            let faded = !separate && span.length != entry.kept();
-            // a clip on its own takes the audio tracks of its file that are still on the timeline
-            let kept = |stream: &usize| {
-                heard
-                    .iter()
-                    .any(|sound| sound.clip == entry.clip && sound.stream == *stream)
-            };
-            Job {
-                clip: entry.clip.clone(),
-                config: entry.config.clone(),
-                cut: match faded {
-                    true => Some((start, end.min(entry.seconds))),
-                    false => (entry.cut != (0.0, 1.0)).then_some((
-                        f64::from(entry.cut.0) * entry.seconds,
-                        f64::from(entry.cut.1) * entry.seconds,
-                    )),
-                },
-                muted: (0..entry.streams).filter(|stream| !kept(stream)).collect(),
-                at: if faded { span.at } else { entry.at },
-                track: entry.track,
-                place: entry.place,
-                fade: if separate {
-                    Fade::default()
-                } else {
-                    span.picture()
-                },
-                hold: if faded {
-                    (end - entry.seconds).max(0.0)
-                } else {
-                    0.0
-                },
-            }
-        };
-        let jobs: Vec<Job> = rows.iter().map(job).collect();
-        let sounds = heard.clone();
+        let (jobs, sounds, rows) = jobs(&state, separate);
         (jobs, sounds, rows, Arc::clone(&state.cancel))
     };
     if ui.get_videos() == 0 {

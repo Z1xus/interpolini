@@ -131,6 +131,14 @@ pub fn clock(seconds: f64) -> String {
     format!("{}:{:02}.{rest:03}", whole / 60, whole % 60)
 }
 
+pub fn megabytes(bytes: u64) -> String {
+    match bytes as f64 / 1e6 {
+        size if size >= 1000.0 => format!("{:.1} GB", size / 1000.0),
+        size if size >= 10.0 => format!("{size:.0} MB"),
+        size => format!("{size:.1} MB"),
+    }
+}
+
 pub fn label(entry: &config::Entry) -> String {
     match entry.local {
         true => format!("{} (folder)", entry.name),
@@ -224,6 +232,7 @@ pub fn wanted(ui: &App) -> (bool, i32) {
 
 pub fn refresh(ui: &App, shared: &Shared) {
     timecode(ui, shared);
+    crate::estimate::ask(ui, shared);
     let mut state = lock(shared);
     layout(ui, &mut state);
     let entry = state.current(ui);

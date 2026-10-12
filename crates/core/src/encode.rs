@@ -10,6 +10,9 @@ use crate::audio::{Lane, Mixer, Source};
 use crate::config::{self, Codec, Output};
 use crate::decode::Meta;
 
+// the frames from one key frame to the next, each encoder has another default
+pub const GOP: u32 = 250;
+
 fn candidates(output: &Output) -> impl Iterator<Item = &'static str> {
     let (hardware, software): (&[_], _) = match output.codec {
         Codec::H264 => (
@@ -53,19 +56,15 @@ fn pairs(text: &str) -> impl Iterator<Item = (&str, &str)> {
     std::iter::from_fn(move || Some((words.next()?.trim_start_matches('-'), words.next()?)))
 }
 
-fn options(name: &str, quality: u32, custom: &str) -> Dictionary<'static> {
+fn options(name: &str, output: &Output, sized: bool) -> Dictionary<'static> {
     // these av1 encoders count the quantizer to 255, the others to 51 or 63
     let wide = name.starts_with("av1_") && !name.ends_with("_nvenc");
-    let quality = (quality * if wide { 4 } else { 1 }).to_string();
-    let mut options = Dictionary::new();
-    let pairs: &[(&str, &str)] = match name.rsplit('_').next() {
-        Some("nvenc") => &[
-            ("preset", "p4"),
-            ("tune", "hq"),
-            ("rc", "vbr"),
-            ("cq", &quality),
-            ("b", "0"),
-        ],
+    let quality = (output.quality * if wide { 4 } else { 1 }).to_string();
+    let family = name.rsplit('_').next();
+    let rate: &[(&str, &str)] = match family {
+        Some("nvenc") if sized => &[("tune", "hq"), ("rc", "vbr")],
+        _ if sized => &[],
+        Some("nvenc") => &[("tune", "hq"), ("rc", "vbr"), ("cq", &quality), ("b", "0")],
         Some("amf") => &[
             ("rc", "cqp"),
             ("qp_i", &quality),
@@ -76,10 +75,20 @@ fn options(name: &str, quality: u32, custom: &str) -> Dictionary<'static> {
         Some("vaapi") => &[("rc_mode", "CQP"), ("global_quality", &quality)],
         Some("vulkan") => &[("qp", &quality)],
         Some("videotoolbox") => &[("flags", "+qscale"), ("global_quality", &quality)],
-        _ if name == "libsvtav1" => &[("crf", &quality), ("preset", "10")],
-        _ => &[("crf", &quality), ("preset", "veryfast")],
+        _ => &[("crf", &quality)],
     };
-    for (key, value) in pairs.iter().copied().chain(self::pairs(custom)) {
+    let presets = match family {
+        Some("nvenc") => Some(("preset", ["p4", "p6", "p7"])),
+        Some("amf") => Some(("quality", ["speed", "balanced", "quality"])),
+        Some("qsv") => Some(("preset", ["medium", "slow", "veryslow"])),
+        _ if name == "libsvtav1" => Some(("preset", ["10", "8", "6"])),
+        _ if name.starts_with("lib") => Some(("preset", ["veryfast", "medium", "slow"])),
+        _ => None,
+    };
+    let preset = presets.map(|(key, presets)| (key, presets[output.effort as usize]));
+    let pairs = preset.into_iter().chain(rate.iter().copied());
+    let mut options = Dictionary::new();
+    for (key, value) in pairs.chain(self::pairs(&output.options)) {
         if key != "c:v" {
             options.set(key, value);
         }
@@ -243,17 +252,18 @@ pub struct Encoder {
     packet: Packet,
     base: Rational,
     pub name: String,
+    pub packets: [(u32, u64); 2],
 }
 
 impl Encoder {
     pub fn open(
-        path: &Path,
+        mut output: format::context::Output,
         meta: &Meta,
         fps: (i64, i64),
         config: &Output,
+        rate: Option<usize>,
         plan: Plan,
     ) -> Result<Self> {
-        let mut output = format::output(path)?;
         let header = output
             .format()
             .flags()
@@ -291,6 +301,7 @@ impl Encoder {
                 }
                 video.set_time_base(base);
                 video.set_frame_rate(Some(base.invert()));
+                video.set_gop(GOP);
                 video.set_colorspace(meta.space);
                 video.set_color_range(meta.range);
                 video.set_color_primaries(meta.primaries);
@@ -298,7 +309,16 @@ impl Encoder {
                 if header {
                     video.set_flags(codec::Flags::GLOBAL_HEADER);
                 }
-                match video.open_with(options(name, config.quality, &config.options)) {
+                if let Some(rate) = rate {
+                    video.set_bit_rate(rate);
+                }
+                // svt-av1 takes a top rate only with a constant quality
+                if let Some(rate) = rate.filter(|_| name != "libsvtav1") {
+                    video.set_max_bit_rate(rate);
+                    // one second of the rate, with more the file can go over its size
+                    unsafe { (*video.as_mut_ptr()).rc_buffer_size = rate as i32 };
+                }
+                match video.open_with(options(name, config, rate.is_some())) {
                     Ok(encoder) => Some((name, encoder)),
                     Err(error) => {
                         failure = format!("{name}: {error}");
@@ -358,6 +378,7 @@ impl Encoder {
             packet: Packet::empty(),
             base,
             name: name.to_owned(),
+            packets: [(0, 0); 2],
         })
     }
 
@@ -371,6 +392,8 @@ impl Encoder {
             if let Some(audio) = &mut self.audio {
                 audio.copy(&mut self.output, seconds)?;
             }
+            let kind = &mut self.packets[usize::from(self.packet.is_key())];
+            *kind = (kind.0 + 1, kind.1 + self.packet.size() as u64);
             self.packet.rescale_ts(self.base, target);
             self.packet.set_stream(0);
             self.packet.write_interleaved(&mut self.output)?;
@@ -427,7 +450,7 @@ impl Encoder {
         self.pump(f64::from(n + 1) * f64::from(self.base))
     }
 
-    pub fn finish(mut self, seconds: f64) -> Result<()> {
+    pub fn finish(&mut self, seconds: f64) -> Result<()> {
         self.encoder.send_eof()?;
         self.drain()?;
         if let Some(audio) = &mut self.audio {

@@ -11,6 +11,7 @@ use crate::Result;
 use crate::timeline::Fade;
 
 pub const RATE: u32 = 48_000;
+pub const BITRATE: usize = 192_000;
 const FORMAT: Sample = Sample::F32(Type::Planar);
 
 struct Track {
@@ -282,7 +283,7 @@ impl Lane {
         audio.set_rate(RATE as i32);
         audio.set_channel_layout(ChannelLayout::STEREO);
         audio.set_format(FORMAT);
-        audio.set_bit_rate(192_000);
+        audio.set_bit_rate(BITRATE);
         audio.set_time_base(Rational(1, RATE as i32));
         if header {
             audio.set_flags(codec::Flags::GLOBAL_HEADER);

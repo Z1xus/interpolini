@@ -5,6 +5,7 @@ mod components;
 #[cfg(target_os = "linux")]
 mod drop;
 mod edit;
+mod estimate;
 mod ffmpeg;
 mod history;
 #[cfg(target_os = "linux")]

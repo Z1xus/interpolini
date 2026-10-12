@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use interpolini_core::config::{
-    self, Algorithm, Backend, Codec, Config, Container, Encoder, Engine, Masking, Method, Rate,
-    Resolution, Speed, Tuning, Weighting,
+    self, Algorithm, Backend, Codec, Config, Container, Effort, Encoder, Engine, Masking, Method,
+    Rate, Resolution, Speed, Target, Tuning, Weighting,
 };
 use slint::ComponentHandle;
 
@@ -69,7 +69,10 @@ pub fn settings(config: &Config) -> Settings {
         method: upscale.method.name().into(),
         codec: output.codec.name().into(),
         encoder: output.encoder.name().into(),
+        target: output.target.name().into(),
         quality: output.quality as f32,
+        size: output.size as i32,
+        effort: output.effort.name().into(),
         container: output.container.name().into(),
         audio: output.audio.name().into(),
         options: output.options.as_str().into(),
@@ -127,7 +130,10 @@ pub fn apply(settings: &Settings, config: &mut Config) {
     upscale.method = Method::parse(&settings.method).unwrap_or(upscale.method);
     output.codec = Codec::parse(&settings.codec).unwrap_or(output.codec);
     output.encoder = Encoder::parse(&settings.encoder).unwrap_or(output.encoder);
+    output.target = Target::parse(&settings.target).unwrap_or(output.target);
     output.quality = settings.quality as u32;
+    output.size = settings.size as u32;
+    output.effort = Effort::parse(&settings.effort).unwrap_or(output.effort);
     output.container = Container::parse(&settings.container).unwrap_or(output.container);
     output.audio = config::Audio::parse(&settings.audio).unwrap_or(output.audio);
     output.options = settings.options.to_string();

@@ -81,6 +81,7 @@ export component App inherits Window {
     in property <string> done;
     in property <string> preview-note;
     in property <bool> lossless;
+    in property <string> estimate;
     in-out property <bool> separate;
     in-out property <string> scope: "all clips";
     in property <[Piece]> art;
@@ -505,6 +506,7 @@ export component App inherits Window {
             weights: root.weights;
             summary: root.summary;
             lossless: root.lossless;
+            estimate: root.estimate;
             separate: root.separate;
             rendering: root.rendering;
             progress: root.progress;

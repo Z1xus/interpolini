@@ -450,7 +450,7 @@ export component Section inherits VerticalLayout {
             vertical-alignment: center;
         }
         Text {
-            x: parent.width - self.width - 56px;
+            x: parent.width - self.width - (root.toggle ? 56px : 12px);
             text: root.hint;
             color: root.enabled ? Theme.faint : Theme.accent;
             font-size: 11px;

@@ -85,7 +85,9 @@ impl Plan {
 pub fn lossless(source_fps: f64, config: &Config) -> bool {
     let plan = Plan::new(source_fps, config);
     let untouched = !plan.interpolate && !plan.blended && plan.pre.is_none();
-    let plain = config.output.options.is_empty() && config.output.audio == config::Audio::Separate;
+    let output = &config.output;
+    let plain = output.options.is_empty() && output.audio == config::Audio::Separate;
+    let plain = plain && output.target == config::Target::Quality;
     untouched && plain && !config.dedup.enabled && !config.color.enabled && !config.upscale.enabled
 }
 

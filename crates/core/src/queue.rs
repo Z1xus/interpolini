@@ -3,9 +3,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::audio::{Mixer, Sound};
+use ffmpeg_next::format;
+
+use crate::audio::{BITRATE, Mixer, Sound};
 use crate::compose::{Canvas, Place, Source};
-use crate::config::{Audio, Config};
+use crate::config::{self, Audio, Config, Target};
 use crate::copy::copy;
 use crate::decode::{Meta, Probe, probe};
 use crate::encode::{Encoder, Plan};
@@ -14,6 +16,11 @@ use crate::timeline::{Fade, Part, Placed, parts};
 use crate::upscale::Upscaler;
 use crate::{Event, Result, Sink};
 
+const MEGABYTE: f64 = 1e6;
+// the encoders miss a bit rate by a few percent, and the container takes some bytes too
+const MARGIN: f64 = 0.95;
+
+#[derive(Clone, PartialEq)]
 pub struct Job {
     pub clip: PathBuf,
     pub config: Config,
@@ -48,7 +55,7 @@ pub fn sequence(jobs: &mut [Job]) -> Result<()> {
     Ok(())
 }
 
-fn kept(job: &Job, probe: &Probe) -> f64 {
+pub(crate) fn kept(job: &Job, probe: &Probe) -> f64 {
     let length = match job.cut {
         // an image is as long as its clip
         Some((start, end)) if probe.still => end - start,
@@ -95,10 +102,20 @@ fn base(jobs: &[(usize, &Job)]) -> Result<usize> {
     first.ok_or_else(|| "the timeline has no video".into())
 }
 
+fn budget(megabytes: f64, seconds: f64, lanes: usize) -> Result<usize> {
+    let sound = (lanes * BITRATE) as f64 * seconds;
+    let rate = (megabytes * MEGABYTE * 8.0 - sound) / seconds;
+    match rate >= 50_000.0 {
+        true => Ok(rate as usize),
+        false => Err("the size is too small for this clip".into()),
+    }
+}
+
 fn encode(
     jobs: &[(usize, &Job)],
     timeline: Option<&[Sound]>,
     output: &Path,
+    share: f64,
     sink: Sink,
     cancel: &AtomicBool,
 ) -> Result<()> {
@@ -147,14 +164,28 @@ fn encode(
     let job = jobs[base].1;
     let config = &job.config.output;
     let start = job.cut.map_or(0.0, |cut| cut.0);
+    let (mix, sized) = (config.audio == Audio::Mix, config.target == Target::Size);
     let plan = match timeline {
-        Some(sounds) => Plan::Mix(Mixer::new(sounds, config.audio == Audio::Mix)),
-        None if config.audio == Audio::Mix && most > 1 => Plan::Encode { lanes: 1 },
+        Some(sounds) => Plan::Mix(Mixer::new(sounds, mix)),
+        // sound that is copied has no known size
+        None if sized || (mix && most > 1) => Plan::Encode {
+            lanes: if mix { most.min(1) } else { most },
+        },
         None => Plan::Copy {
             clip: &job.clip,
             start,
             muted: &job.muted,
         },
+    };
+    let lanes = match &plan {
+        Plan::Mix(mixer) => mixer.lanes(),
+        Plan::Encode { lanes } => *lanes,
+        Plan::Copy { .. } => 0,
+    };
+    let megabytes = f64::from(config.size) * MARGIN * share;
+    let bits = match sized {
+        true => Some(budget(megabytes, f64::from(frames) / rate, lanes)?),
+        false => None,
     };
     let upscaler = Upscaler::new(&meta, &job.config.upscale);
     if let Some(upscaler) = &upscaler {
@@ -165,7 +196,7 @@ fn encode(
         )));
     }
     let encoded = upscaler.as_ref().map_or(meta, |upscaler| upscaler.meta);
-    let mut encoder = Encoder::open(output, &encoded, fps, config, plan)?;
+    let mut encoder = Encoder::open(format::output(output)?, &encoded, fps, config, bits, plan)?;
     sink(Event::Info(format!("encoding with {}", encoder.name)));
     if timeline.is_none() {
         encoder.begin(&job.clip, start, &job.muted)?;
@@ -245,12 +276,53 @@ fn encode(
     }
 }
 
+fn fit(
+    jobs: &[(usize, &Job)],
+    timeline: Option<&[Sound]>,
+    output: &Path,
+    sink: Sink,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    let config = &jobs[base(jobs)?].1.config.output;
+    let limit = f64::from(config.size) * MEGABYTE;
+    let software = jobs.iter().map(|(_, job)| {
+        let mut job = (*job).clone();
+        job.config.output.encoder = config::Encoder::Software;
+        job
+    });
+    let software: Vec<Job> = software.collect();
+    let software: Vec<(usize, &Job)> = jobs.iter().map(|job| job.0).zip(&software).collect();
+    let mut share = 1.0;
+    for attempt in 0.. {
+        let jobs = if attempt < 2 { jobs } else { &software };
+        encode(jobs, timeline, output, share, sink, cancel)?;
+        let size = std::fs::metadata(output)?.len() as f64;
+        if config.target == Target::Quality || size <= limit || cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        if attempt == 2 {
+            sink(Event::Warning(format!("still over {} MB", config.size)));
+            break;
+        }
+        share = if attempt == 0 {
+            limit / size * MARGIN
+        } else {
+            1.0
+        };
+        sink(Event::Warning(format!(
+            "over {} MB, rendering again",
+            config.size
+        )));
+    }
+    Ok(())
+}
+
 fn render(job: &Job, clip: usize, output: &Path, sink: Sink, cancel: &AtomicBool) -> Result<()> {
     let untouched = job.place == Place::default();
     if untouched && lossless(probe(&job.clip)?.fps, &job.config) {
         return copy(job, output, sink, cancel);
     }
-    encode(&[(clip, job)], None, output, sink, cancel)
+    fit(&[(clip, job)], None, output, sink, cancel)
 }
 
 // with join, all clips go into one file in their order
@@ -260,7 +332,7 @@ pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, sink: Sink, cancel: &Atomic
         let all: Vec<(usize, &Job)> = jobs.iter().enumerate().collect();
         let named = &jobs[base(&all).unwrap_or(0)];
         let output = target(&named.clip, named.config.output.container.name());
-        match encode(&all, Some(sounds), &output, sink, cancel) {
+        match fit(&all, Some(sounds), &output, sink, cancel) {
             Ok(()) => {
                 let seconds = started.elapsed().as_secs_f32();
                 for clip in 0..jobs.len() {

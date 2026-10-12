@@ -68,6 +68,7 @@ export component Panel inherits Rectangle {
     in property <[float]> weights;
     in property <string> summary;
     in property <bool> lossless;
+    in property <string> estimate;
     in property <bool> separate;
     in property <bool> rendering;
     in property <float> progress;
@@ -612,6 +613,7 @@ export component Panel inherits Rectangle {
 
             Section {
                 title: "Output";
+                hint: root.estimate;
                 toggle: false;
                 Row {
                     label: "Codec";
@@ -633,13 +635,49 @@ export component Panel inherits Rectangle {
                         }
                     }
                 }
-                SliderRow {
+                Row {
+                    label: "Target";
+                    Segment {
+                        options: ["quality", "size"];
+                        value <=> root.settings.target;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                }
+                if root.settings.target == "quality": SliderRow {
                     label: "Quality";
                     maximum: 51;
                     step: 1;
                     value <=> root.settings.quality;
                     changed => {
                         root.changed();
+                    }
+                }
+                if root.settings.target == "size": Row {
+                    label: "Size";
+                    Rectangle { }
+                    Number {
+                        width: 76px;
+                        height: 22px;
+                        y: 3px;
+                        value <=> root.settings.size;
+                        changed => {
+                            root.changed();
+                        }
+                    }
+                    Label {
+                        text: "MB";
+                    }
+                }
+                Row {
+                    label: "Effort";
+                    Segment {
+                        options: ["fast", "balanced", "best"];
+                        value <=> root.settings.effort;
+                        changed => {
+                            root.changed();
+                        }
                     }
                 }
                 Row {

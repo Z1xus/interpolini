@@ -62,6 +62,8 @@ named!(Resolution { P1080 = "1080p", P1440 = "1440p", P2160 = "2160p" });
 named!(Method { Nearest = "nearest", Bilinear = "bilinear", Bicubic = "bicubic", Lanczos = "lanczos" });
 named!(Codec { H264 = "h264", Hevc = "hevc", Av1 = "av1" });
 named!(Encoder { Auto = "auto", Hardware = "hardware", Software = "software" });
+named!(Target { Quality = "quality", Size = "size" });
+named!(Effort { Fast = "fast", Balanced = "balanced", Best = "best" });
 named!(Container { Mp4 = "mp4", Mkv = "mkv", Mov = "mov" });
 named!(Audio { Separate = "separate", Mix = "mix" });
 named!(Ease { Linear = "linear", Smooth = "smooth", EaseIn = "ease in", EaseOut = "ease out" });
@@ -266,7 +268,11 @@ pub struct Upscale {
 pub struct Output {
     pub codec: Codec,
     pub encoder: Encoder,
+    pub target: Target,
     pub quality: u32,
+    // megabytes
+    pub size: u32,
+    pub effort: Effort,
     pub container: Container,
     pub audio: Audio,
     pub options: String,
@@ -342,7 +348,10 @@ impl Default for Config {
             output: Output {
                 codec: Codec::H264,
                 encoder: Encoder::Auto,
+                target: Target::Quality,
                 quality: 20,
+                size: 10,
+                effort: Effort::Fast,
                 container: Container::Mp4,
                 audio: Audio::Mix,
                 options: String::new(),
@@ -429,7 +438,10 @@ impl Config {
             field("upscale", "method", &mut upscale.method),
             field("output", "codec", &mut output.codec),
             field("output", "encoder", &mut output.encoder),
+            field("output", "target", &mut output.target),
             field("output", "quality", Within(&mut output.quality, 0, 51)),
+            field("output", "size", Within(&mut output.size, 1, 100_000)),
+            field("output", "effort", &mut output.effort),
             field("output", "container", &mut output.container),
             field("output", "audio", &mut output.audio),
             field("output", "options", &mut output.options),
