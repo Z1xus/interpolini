@@ -93,7 +93,7 @@ impl Place {
 pub struct Picture(pub(crate) frame::Video);
 
 // a second handle to the same pixels
-fn share(picture: &frame::Video) -> frame::Video {
+pub(crate) fn share(picture: &frame::Video) -> frame::Video {
     unsafe { frame::Video::wrap(ffi::av_frame_clone(picture.as_ptr())) }
 }
 
@@ -265,11 +265,7 @@ impl Canvas {
         size: (u32, u32),
     ) -> Result<frame::Video> {
         let full = self.size();
-        let mut canvas = self.black(size);
-        let (space, range) = unsafe {
-            let canvas = &*canvas.as_ptr();
-            (canvas.colorspace, canvas.color_range)
-        };
+        let (space, range) = self.meta.tags();
         let tagged = |picture: &frame::Video| unsafe {
             let picture = &*picture.as_ptr();
             (picture.colorspace, picture.color_range) == (space, range)
@@ -285,6 +281,7 @@ impl Canvas {
         if matches!(&layers[..], [layer] if whole(layer)) {
             return Ok(layers.remove(0).0.0);
         }
+        let mut canvas = self.black(size);
         for (index, (Picture(picture), place, opacity)) in layers.iter().enumerate() {
             if self.scalers.len() <= index {
                 self.scalers.push(Scaler::new());

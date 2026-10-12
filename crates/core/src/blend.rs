@@ -1,10 +1,12 @@
+use std::sync::Mutex;
+
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::frame;
 use rayon::prelude::*;
 
 use crate::Result;
+use crate::compose::share;
 use crate::config::Blending;
-use crate::svp::{Clip, Frame};
 
 const SHIFT: u32 = 15;
 
@@ -14,6 +16,7 @@ pub struct Blend {
     curve: Option<[f32; 256]>,
     step: (i64, i64),
     last: i64,
+    held: Mutex<Vec<(i64, frame::Video)>>,
     pub frames: i32,
 }
 
@@ -36,15 +39,33 @@ impl Blend {
             curve: (gamma != 1.0).then(|| std::array::from_fn(curve)),
             step,
             last: i64::from(frames - 1),
+            held: Mutex::new(Vec::new()),
             frames: (i64::from(frames) * step.1 / step.0).max(1) as i32,
         }
     }
 
-    pub fn frame(&self, clip: &Clip, n: i32, width: u32, height: u32) -> Result<frame::Video> {
+    pub fn frame(
+        &self,
+        source: impl Fn(i32) -> Result<frame::Video>,
+        n: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<frame::Video> {
         let radius = (self.weights.len() / 2) as i64;
         let center = i64::from(n) * self.step.0 / self.step.1;
-        let frames: Vec<Frame> = (center - radius..=center + radius)
-            .map(|index| clip.frame(index.clamp(0, self.last) as i32))
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *held = (center - radius..=center + radius)
+            .map(|index| {
+                let index = index.clamp(0, self.last);
+                let picture = match held.iter().find(|held| held.0 == index) {
+                    Some(held) => share(&held.1),
+                    None => source(index as i32)?,
+                };
+                Ok((index, picture))
+            })
             .collect::<Result<_>>()?;
 
         let mut output = frame::Video::new(Pixel::YUV420P, width, height);
@@ -57,20 +78,20 @@ impl Blend {
                 .par_chunks_mut(stride)
                 .take(height)
                 .enumerate();
-            let line = |frame: &Frame, y| unsafe {
-                let data = frame.data(plane).add(y * frame.stride(plane));
-                std::slice::from_raw_parts(data, width)
-            };
-            let frames = || frames.iter().zip(&self.weights);
+            let lines: Vec<(&[u8], usize, u32)> = held
+                .iter()
+                .zip(&self.weights)
+                .map(|(held, &weight)| (held.1.data(plane), held.1.stride(plane), weight))
+                .collect();
             // luma only, as in open-svpflow
             if let Some(curve) = self.curve.filter(|_| plane == 0) {
                 rows.for_each_init(
                     || vec![0f32; width],
                     |sums, (y, row)| {
                         sums.fill(0.0);
-                        for (frame, &weight) in frames() {
+                        for &(data, stride, weight) in &lines {
                             let weight = weight as f32 / (1 << SHIFT) as f32;
-                            for (sum, &sample) in sums.iter_mut().zip(line(frame, y)) {
+                            for (sum, &sample) in sums.iter_mut().zip(&data[y * stride..]) {
                                 *sum += weight * curve[usize::from(sample)];
                             }
                         }
@@ -81,17 +102,24 @@ impl Blend {
                 );
                 continue;
             }
+            // 16 bits hold a sum with 7 bits after the point, and each product loses half a step
+            let start = 64 + lines.len() as u16 / 2;
             rows.for_each_init(
-                || vec![0u32; width],
-                |sums, (y, row)| {
-                    sums.fill(1 << (SHIFT - 1));
-                    for (frame, &weight) in frames() {
-                        for (sum, &sample) in sums.iter_mut().zip(line(frame, y)) {
-                            *sum += u32::from(sample) * weight;
+                || (vec![0u16; width], vec![0u16; width]),
+                |(sums, wide), (y, row)| {
+                    sums.fill(start);
+                    for &(data, stride, weight) in &lines {
+                        // a separate pass, so that the compiler multiplies in 16 bits
+                        for (wide, &sample) in wide.iter_mut().zip(&data[y * stride..]) {
+                            *wide = u16::from(sample) << 8;
+                        }
+                        let weight = weight as u16;
+                        for (sum, &wide) in sums.iter_mut().zip(wide.iter()) {
+                            *sum += ((u32::from(wide) * u32::from(weight)) >> 16) as u16;
                         }
                     }
                     for (sample, sum) in row.iter_mut().zip(sums.iter()) {
-                        *sample = (sum >> SHIFT) as u8;
+                        *sample = (sum >> 7) as u8;
                     }
                 },
             );

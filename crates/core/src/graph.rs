@@ -1,6 +1,6 @@
 use std::ffi::c_void;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::{ffi, frame};
@@ -9,7 +9,7 @@ use crate::blend::Blend;
 use crate::color::Grade;
 use crate::compose::Scaler;
 use crate::config::{self, Config, Engine};
-use crate::decode::{Decoder, Meta};
+use crate::decode::{Ahead, Decoder, Meta};
 use crate::dedup::{Dedup, Pick};
 use crate::rife::Rife;
 use crate::svp::{Clip, Frame, Options, Shape, Svp};
@@ -23,9 +23,16 @@ pub struct Info {
     pub frames: i32,
 }
 
+enum Feed {
+    File(Mutex<Ahead>),
+    Host {
+        derived: Option<Clip>,
+        input: Arc<Clip>,
+    },
+}
+
 pub struct Graph {
-    derived: Option<Clip>,
-    input: Arc<Clip>,
+    feed: Feed,
     blend: Option<Blend>,
     grade: Option<Grade>,
     pub(crate) meta: Meta,
@@ -126,6 +133,67 @@ impl Graph {
             "{width}x{height}  |  {source_fps:.2} fps  |  {frames} frames"
         )));
 
+        let plan = Plan::new(source_fps, config);
+        let plain = !config.dedup.enabled && plan.pre.is_none() && !plan.interpolate;
+        let (feed, fused) = match plan.blended && plain {
+            true => (
+                Feed::File(Mutex::new(Ahead::new(decoder, plan.weights.len()))),
+                false,
+            ),
+            false => Self::host(decoder, config, &plan, sink)?,
+        };
+        let Plan {
+            blended, weights, ..
+        } = plan;
+        let blending = &config.blending;
+        let shape = match &feed {
+            Feed::File(_) => Shape {
+                width,
+                height,
+                fps,
+                frames,
+            },
+            Feed::Host { derived, input } => derived.as_ref().unwrap_or(input).shape(),
+        };
+        let blend =
+            (blended && !fused).then(|| Blend::new(&weights, shape.fps, blending, shape.frames));
+        if blended {
+            let fused = if fused { " on the gpu" } else { "" };
+            sink(Event::Info(format!(
+                "blending {} frames to {} fps{fused}",
+                weights.len(),
+                blending.fps
+            )));
+        }
+        let info = Info {
+            width,
+            height,
+            fps: if blend.is_some() {
+                (i64::from(blending.fps), 1)
+            } else {
+                shape.fps
+            },
+            frames: blend.as_ref().map_or(shape.frames, |blend| blend.frames),
+        };
+        let grade = Grade::new(&config.color, &meta)?;
+        Ok(Self {
+            feed,
+            blend,
+            grade,
+            meta,
+            info,
+        })
+    }
+
+    fn host(decoder: Decoder, config: &Config, plan: &Plan, sink: Sink) -> Result<(Feed, bool)> {
+        let meta = decoder.meta();
+        let Meta {
+            width,
+            height,
+            fps,
+            frames,
+            ..
+        } = meta;
         let Config {
             dedup,
             interpolation,
@@ -154,7 +222,8 @@ impl Graph {
             interpolate,
             blended,
             weights,
-        } = Plan::new(source_fps, config);
+        } = plan;
+        let (pre, target, interpolate, blended) = (*pre, *target, *interpolate, *blended);
         // svp skips a repeated frame by itself, the other paths get it replaced here
         let skipped = interpolate && interpolation.engine == Engine::Svp && pre.is_none();
         if dedup.enabled && skipped {
@@ -231,7 +300,7 @@ impl Graph {
                 let limit = (dedup.enabled && skipped).then_some(dedup.threshold);
                 let options = |gpu| Options::new(interpolation, &rate, mask, limit, gpu, half);
                 let made = match blended {
-                    true => svp.smooth_blend(&input, &options(true), &weights, blending),
+                    true => svp.smooth_blend(&input, &options(true), weights, blending),
                     false => svp.smooth(&input, &options(true)),
                 };
                 fused = blended && made.is_ok();
@@ -251,45 +320,24 @@ impl Graph {
                 Some(clip)
             }
         };
-
-        let shape = derived.as_ref().unwrap_or(&*input).shape();
-        let blend =
-            (blended && !fused).then(|| Blend::new(&weights, shape.fps, blending, shape.frames));
-        if blended {
-            let fused = if fused { " on the gpu" } else { "" };
-            sink(Event::Info(format!(
-                "blending {} frames to {} fps{fused}",
-                weights.len(),
-                blending.fps
-            )));
-        }
-        let info = Info {
-            width,
-            height,
-            fps: if blend.is_some() {
-                (i64::from(blending.fps), 1)
-            } else {
-                shape.fps
-            },
-            frames: blend.as_ref().map_or(shape.frames, |blend| blend.frames),
-        };
-        let grade = Grade::new(&config.color, &meta)?;
-        Ok(Self {
-            derived,
-            input,
-            blend,
-            grade,
-            meta,
-            info,
-        })
+        Ok((Feed::Host { derived, input }, fused))
     }
 
     pub(crate) fn frame(&self, n: i32) -> Result<frame::Video> {
         let Info { width, height, .. } = self.info;
-        let clip = self.derived.as_ref().unwrap_or(&*self.input);
+        let source = |n| match &self.feed {
+            Feed::File(decoder) => {
+                let decoder = decoder.lock().unwrap_or_else(|poison| poison.into_inner());
+                decoder.picture(n)
+            }
+            Feed::Host { derived, input } => {
+                let clip = derived.as_ref().unwrap_or(input);
+                Ok(wrap(clip.frame(n)?, width, height))
+            }
+        };
         let picture = match &self.blend {
-            Some(blend) => blend.frame(clip, n, width, height)?,
-            None => wrap(clip.frame(n)?, width, height),
+            Some(blend) => blend.frame(source, n, width, height)?,
+            None => source(n)?,
         };
         let mut picture = match &self.grade {
             Some(grade) => grade.apply(&picture),

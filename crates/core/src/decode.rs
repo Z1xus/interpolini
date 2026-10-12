@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::mpsc::{self, TryRecvError};
 
 use ffmpeg_next::codec::{self, threading};
 use ffmpeg_next::format::{self, Pixel};
@@ -7,6 +8,7 @@ use ffmpeg_next::packet::Mut;
 use ffmpeg_next::software::scaling;
 use ffmpeg_next::{Packet, color, ffi, frame, media};
 
+use crate::compose::share;
 use crate::svp::Reader;
 use crate::{Error, Result};
 
@@ -36,17 +38,22 @@ impl Meta {
         self.range == color::Range::JPEG
     }
 
-    // marks a picture with the color of this clip, so a scaler can bring it to another clip
-    pub fn tag(&self, picture: &mut frame::Video) {
-        let raw = unsafe { &mut *picture.as_mut_ptr() };
-        raw.colorspace = match self.bt601() {
+    pub fn tags(&self) -> (ffi::AVColorSpace, ffi::AVColorRange) {
+        let space = match self.bt601() {
             true => ffi::AVColorSpace::AVCOL_SPC_SMPTE170M,
             false => ffi::AVColorSpace::AVCOL_SPC_BT709,
         };
-        raw.color_range = match self.full() {
+        let range = match self.full() {
             true => ffi::AVColorRange::AVCOL_RANGE_JPEG,
             false => ffi::AVColorRange::AVCOL_RANGE_MPEG,
         };
+        (space, range)
+    }
+
+    // marks a picture with the color of this clip, so a scaler can bring it to another clip
+    pub fn tag(&self, picture: &mut frame::Video) {
+        let raw = unsafe { &mut *picture.as_mut_ptr() };
+        (raw.colorspace, raw.color_range) = self.tags();
     }
 
     pub fn scaler(
@@ -399,17 +406,14 @@ impl Decoder {
     }
 }
 
-impl Reader for Decoder {
-    fn read(&mut self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
+impl Decoder {
+    fn find(&mut self, n: i32) -> Result<Option<usize>> {
         // the host reads short gaps in order, so a longer jump is a seek
         // a file can end before its frame count says so, and then the last picture stays
         if n < self.at {
             // after a jump the host reads some pictures back, and a seek for each one is slow
             if let Some(index) = self.past.iter().rposition(|past| past.0 <= n) {
-                std::mem::swap(&mut self.frame, &mut self.past[index].1);
-                let stored = self.store(planes, strides);
-                std::mem::swap(&mut self.frame, &mut self.past[index].1);
-                return stored;
+                return Ok(Some(index));
             }
             self.seek(n)?;
         } else if n > self.at + 64 && !self.drained {
@@ -439,6 +443,84 @@ impl Reader for Decoder {
         if self.at < 0 {
             return Err(Error("the clip has no frames".into()));
         }
-        self.store(planes, strides)
+        Ok(None)
+    }
+
+    fn with<T>(&mut self, n: i32, run: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let past = self.find(n)?;
+        if let Some(index) = past {
+            std::mem::swap(&mut self.frame, &mut self.past[index].1);
+        }
+        let result = run(self);
+        if let Some(index) = past {
+            std::mem::swap(&mut self.frame, &mut self.past[index].1);
+        }
+        result
+    }
+
+    pub fn picture(&mut self, n: i32) -> Result<frame::Video> {
+        self.with(n, |decoder| {
+            if matches!(decoder.frame.format(), Pixel::YUV420P | Pixel::YUVJ420P) {
+                return Ok(share(&decoder.frame));
+            }
+            let Meta { width, height, .. } = decoder.meta;
+            let picture = frame::Video::new(Pixel::YUV420P, width, height);
+            let raw = unsafe { &*picture.as_ptr() };
+            let strides = [0, 1, 2].map(|plane| raw.linesize[plane] as isize);
+            decoder.store([raw.data[0], raw.data[1], raw.data[2]], strides)?;
+            Ok(picture)
+        })
+    }
+}
+
+pub struct Ahead {
+    wanted: mpsc::Sender<i32>,
+    pictures: mpsc::Receiver<Result<frame::Video>>,
+}
+
+impl Ahead {
+    pub fn new(mut decoder: Decoder, most: usize) -> Self {
+        let (wanted, asked) = mpsc::channel();
+        let (ready, pictures) = mpsc::channel();
+        let last = decoder.meta.frames - 1;
+        std::thread::spawn(move || {
+            let mut made = VecDeque::new();
+            let mut next = 0;
+            loop {
+                let asked = match made.len() >= most || next > last {
+                    true => asked.recv().map_err(|_| TryRecvError::Disconnected),
+                    false => asked.try_recv(),
+                };
+                match asked {
+                    Ok(n) => {
+                        if next - made.len() as i32 > n || n >= next {
+                            made.clear();
+                            made.push_back(decoder.picture(n));
+                            next = n + 1;
+                        }
+                        made.drain(..made.len() - (next - n) as usize);
+                        let _ = ready.send(made.pop_front().unwrap_or(Err("no picture".into())));
+                    }
+                    Err(TryRecvError::Empty) => {
+                        made.push_back(decoder.picture(next));
+                        next += 1;
+                    }
+                    Err(TryRecvError::Disconnected) => break,
+                }
+            }
+        });
+        Self { wanted, pictures }
+    }
+
+    pub fn picture(&self, n: i32) -> Result<frame::Video> {
+        let stopped = "the decoder stopped";
+        self.wanted.send(n).map_err(|_| stopped)?;
+        self.pictures.recv().map_err(|_| stopped)?
+    }
+}
+
+impl Reader for Decoder {
+    fn read(&mut self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
+        self.with(n, |decoder| decoder.store(planes, strides))
     }
 }
