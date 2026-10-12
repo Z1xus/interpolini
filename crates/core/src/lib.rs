@@ -32,6 +32,7 @@ mod graph;
 mod lut;
 mod queue;
 mod rife;
+mod segments;
 mod svp;
 mod tensorrt;
 mod timeline;

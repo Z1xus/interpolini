@@ -44,14 +44,33 @@ impl Blend {
         }
     }
 
+    fn radius(&self) -> i64 {
+        (self.weights.len() / 2) as i64
+    }
+
+    pub fn first(&self, n: i32) -> i32 {
+        let center = i64::from(n) * self.step.0 / self.step.1;
+        (center - self.radius()).clamp(0, self.last) as i32
+    }
+
+    pub fn last(&self, n: i32) -> i32 {
+        let center = i64::from(n) * self.step.0 / self.step.1;
+        (center + self.radius()).clamp(0, self.last) as i32
+    }
+
+    pub fn after(&self, picture: i32) -> i32 {
+        let reach = (i64::from(picture) + self.radius()) * self.step.1;
+        ((reach + self.step.0 - 1) / self.step.0) as i32
+    }
+
     pub fn frame(
         &self,
-        source: impl Fn(i32) -> Result<frame::Video>,
+        mut source: impl FnMut(i32) -> Result<frame::Video>,
         n: i32,
         width: u32,
         height: u32,
     ) -> Result<frame::Video> {
-        let radius = (self.weights.len() / 2) as i64;
+        let radius = self.radius();
         let center = i64::from(n) * self.step.0 / self.step.1;
         let mut held = self
             .held
@@ -78,10 +97,17 @@ impl Blend {
                 .par_chunks_mut(stride)
                 .take(height)
                 .enumerate();
-            let lines: Vec<(&[u8], usize, u32)> = held
+            // a picture from the gpu has both color planes in one, a sample of each in turn
+            let lines: Vec<(&[u8], usize, u32, usize)> = held
                 .iter()
                 .zip(&self.weights)
-                .map(|(held, &weight)| (held.1.data(plane), held.1.stride(plane), weight))
+                .map(|((_, picture), &weight)| {
+                    let (from, side) = match picture.format() {
+                        Pixel::NV12 if plane > 0 => (1, plane),
+                        _ => (plane, 0),
+                    };
+                    (picture.data(from), picture.stride(from), weight, side)
+                })
                 .collect();
             // luma only, as in open-svpflow
             if let Some(curve) = self.curve.filter(|_| plane == 0) {
@@ -89,7 +115,7 @@ impl Blend {
                     || vec![0f32; width],
                     |sums, (y, row)| {
                         sums.fill(0.0);
-                        for &(data, stride, weight) in &lines {
+                        for &(data, stride, weight, _) in &lines {
                             let weight = weight as f32 / (1 << SHIFT) as f32;
                             for (sum, &sample) in sums.iter_mut().zip(&data[y * stride..]) {
                                 *sum += weight * curve[usize::from(sample)];
@@ -108,10 +134,25 @@ impl Blend {
                 || (vec![0u16; width], vec![0u16; width]),
                 |(sums, wide), (y, row)| {
                     sums.fill(start);
-                    for &(data, stride, weight) in &lines {
+                    for &(data, stride, weight, side) in &lines {
                         // a separate pass, so that the compiler multiplies in 16 bits
-                        for (wide, &sample) in wide.iter_mut().zip(&data[y * stride..]) {
-                            *wide = u16::from(sample) << 8;
+                        let line = &data[y * stride..];
+                        match side {
+                            0 => {
+                                for (wide, &sample) in wide.iter_mut().zip(line) {
+                                    *wide = u16::from(sample) << 8;
+                                }
+                            }
+                            1 => {
+                                for (wide, pair) in wide.iter_mut().zip(line.as_chunks::<2>().0) {
+                                    *wide = u16::from_le_bytes(*pair) << 8;
+                                }
+                            }
+                            _ => {
+                                for (wide, pair) in wide.iter_mut().zip(line.as_chunks::<2>().0) {
+                                    *wide = u16::from_le_bytes(*pair) & 0xff00;
+                                }
+                            }
                         }
                         let weight = weight as u16;
                         for (sum, &wide) in sums.iter_mut().zip(wide.iter()) {

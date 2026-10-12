@@ -9,9 +9,10 @@ use crate::blend::Blend;
 use crate::color::Grade;
 use crate::compose::Scaler;
 use crate::config::{self, Config, Engine};
-use crate::decode::{Ahead, Decoder, Meta};
+use crate::decode::{Decoder, Meta};
 use crate::dedup::{Dedup, Pick};
 use crate::rife::Rife;
+use crate::segments::Segments;
 use crate::svp::{Clip, Frame, Options, Shape, Svp};
 use crate::{Event, Result, Sink, weights};
 
@@ -24,7 +25,7 @@ pub struct Info {
 }
 
 enum Feed {
-    File(Mutex<Ahead>),
+    File(Box<Mutex<Segments>>),
     Host {
         derived: Option<Clip>,
         input: Arc<Clip>,
@@ -135,29 +136,25 @@ impl Graph {
 
         let plan = Plan::new(source_fps, config);
         let plain = !config.dedup.enabled && plan.pre.is_none() && !plan.interpolate;
-        let (feed, fused) = match plan.blended && plain {
-            true => (
-                Feed::File(Mutex::new(Ahead::new(decoder, plan.weights.len()))),
-                false,
-            ),
-            false => Self::host(decoder, config, &plan, sink)?,
-        };
         let Plan {
             blended, weights, ..
-        } = plan;
+        } = &plan;
         let blending = &config.blending;
-        let shape = match &feed {
-            Feed::File(_) => Shape {
-                width,
-                height,
-                fps,
-                frames,
-            },
-            Feed::Host { derived, input } => derived.as_ref().unwrap_or(input).shape(),
+        let (feed, fused) = match *blended && plain {
+            true => {
+                let segments = Segments::new(clip, decoder, weights, blending);
+                (Feed::File(Box::new(Mutex::new(segments))), false)
+            }
+            false => Self::host(decoder, config, &plan, sink)?,
         };
-        let blend =
-            (blended && !fused).then(|| Blend::new(&weights, shape.fps, blending, shape.frames));
-        if blended {
+        let blend = match &feed {
+            Feed::Host { derived, input } if *blended && !fused => {
+                let shape = derived.as_ref().unwrap_or(input).shape();
+                Some(Blend::new(weights, shape.fps, blending, shape.frames))
+            }
+            _ => None,
+        };
+        if *blended {
             let fused = if fused { " on the gpu" } else { "" };
             sink(Event::Info(format!(
                 "blending {} frames to {} fps{fused}",
@@ -165,15 +162,22 @@ impl Graph {
                 blending.fps
             )));
         }
+        let (fps, frames) = match (&feed, &blend) {
+            (Feed::File(segments), _) => {
+                let segments = segments.lock().unwrap_or_else(|poison| poison.into_inner());
+                ((i64::from(blending.fps), 1), segments.frames)
+            }
+            (_, Some(blend)) => ((i64::from(blending.fps), 1), blend.frames),
+            (Feed::Host { derived, input }, None) => {
+                let shape = derived.as_ref().unwrap_or(input).shape();
+                (shape.fps, shape.frames)
+            }
+        };
         let info = Info {
             width,
             height,
-            fps: if blend.is_some() {
-                (i64::from(blending.fps), 1)
-            } else {
-                shape.fps
-            },
-            frames: blend.as_ref().map_or(shape.frames, |blend| blend.frames),
+            fps,
+            frames,
         };
         let grade = Grade::new(&config.color, &meta)?;
         Ok(Self {
@@ -325,19 +329,19 @@ impl Graph {
 
     pub(crate) fn frame(&self, n: i32) -> Result<frame::Video> {
         let Info { width, height, .. } = self.info;
-        let source = |n| match &self.feed {
-            Feed::File(decoder) => {
-                let decoder = decoder.lock().unwrap_or_else(|poison| poison.into_inner());
-                decoder.picture(n)
+        let picture = match &self.feed {
+            Feed::File(segments) => {
+                let mut segments = segments.lock().unwrap_or_else(|poison| poison.into_inner());
+                segments.frame(n)?
             }
             Feed::Host { derived, input } => {
                 let clip = derived.as_ref().unwrap_or(input);
-                Ok(wrap(clip.frame(n)?, width, height))
+                let source = |n| Ok(wrap(clip.frame(n)?, width, height));
+                match &self.blend {
+                    Some(blend) => blend.frame(source, n, width, height)?,
+                    None => source(n)?,
+                }
             }
-        };
-        let picture = match &self.blend {
-            Some(blend) => blend.frame(source, n, width, height)?,
-            None => source(n)?,
         };
         let mut picture = match &self.grade {
             Some(grade) => grade.apply(&picture),
