@@ -202,7 +202,10 @@ fn terminal() -> bool {
 
 fn main() -> ExitCode {
     #[cfg(windows)]
-    colors();
+    {
+        colors();
+        config::mark();
+    }
     let (mut global, mut lines, mut named) = (false, false, String::from("default"));
     let mut join = false;
     let (mut settings, mut clips, mut muted) = (String::new(), Vec::new(), Vec::new());

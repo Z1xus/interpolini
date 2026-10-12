@@ -67,6 +67,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           bash .github/build.sh "$TARGET" dist
+          if [[ "$RUNNER_OS" == Windows ]]; then bash .github/build.sh "$TARGET" dist setup; fi
           # an artifact drops the mark of a program from its files, a tar keeps it
           tar -cf "$TARGET.tar" -C dist .
       - uses: actions/upload-artifact@v7.0.2
@@ -98,11 +99,11 @@ jobs:
             find "$folder" -exec touch -h -t 198001010000 {} +
             find "$folder" -type f -print0 | sort -z | xargs -0 zip -X -q "${folder%/}.zip"
           done
-          sha256sum ./*.zip > SHA256SUMS
+          sha256sum ./*.zip ./*.exe > SHA256SUMS
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS \
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.exe dist/SHA256SUMS \
             --verify-tag --title "$GITHUB_REF_NAME" --generate-notes

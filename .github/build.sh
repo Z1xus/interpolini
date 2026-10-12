@@ -17,6 +17,8 @@ sdk_version=26.1
 sdk_package=beee7212d265a6d2867d0236cc069314b38d5fb3486a6515734e76fa210c784c
 svpflow_release=nightly-20261011-deadbadae0d9
 precotti_release=nightly-20261008-deadbadb5f7f
+inno_version=7.1.0
+inno_package=0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f
 
 case "$target" in
   x86_64-unknown-linux-gnu)
@@ -241,9 +243,22 @@ rife() {
   cp "$cooked/licenses"/* "$stage/licenses/"
 }
 
+setup() {
+  local inno="$work/inno-$inno_version"
+  # bash must not change the options with a slash into paths
+  local -x MSYS2_ARG_CONV_EXCL='*'
+  if [[ ! -d "$inno" ]]; then
+    curl -fsSL "https://github.com/jrsoftware/issrc/releases/download/is-${inno_version//./_}/innosetup-$inno_version-x64.exe" -o "$work/inno.exe"
+    check "$work/inno.exe" "$inno_package"
+    "$work/inno.exe" /VERYSILENT /SUPPRESSMSGBOXES /CURRENTUSER /PORTABLE=1 "/DIR=$(cygpath -w "$inno")"
+    rm "$work/inno.exe"
+  fi
+  "$inno/ISCC.exe" "/Doutput=$(cygpath -aw "$output")" "/Dname=$name" .github/installer.iss
+}
+
 for part in "${parts[@]}"; do
   case "$part" in
-    app | svpflow | rife) "$part" ;;
+    app | svpflow | rife | setup) "$part" ;;
     *)
       echo "unknown part $part" >&2
       exit 1

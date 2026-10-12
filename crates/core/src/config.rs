@@ -620,6 +620,16 @@ pub fn models(backend: Backend) -> Vec<String> {
     models
 }
 
+// the installer does not go on while a program has this name open
+#[cfg(windows)]
+pub fn mark() {
+    unsafe extern "system" {
+        fn CreateMutexW(security: *const u8, owned: i32, name: *const u16) -> *mut u8;
+    }
+    let name: Vec<u16> = "interpolini\0".encode_utf16().collect();
+    unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+}
+
 pub fn create() {
     let path = path(&app_dir(), "default");
     if !path.exists() {

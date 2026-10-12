@@ -50,6 +50,8 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         update::helper(&arguments[2..]);
     }
+    #[cfg(windows)]
+    config::mark();
     config::create();
     let _ = slint::set_xdg_app_id("interpolini");
     let ui = App::new()?;

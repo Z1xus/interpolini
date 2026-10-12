@@ -8,6 +8,18 @@ It does the same thing as [smoothie](https://github.com/couleur-tweak-tips/smoot
 
 It's also a wannabe NLE. There is a timeline with video and audio tracks where you can cut, split and layer clips, drop images on top, move, scale and crop things on the preview, and give each clip its own settings.
 
+## Download
+
+### Portable
+
+Get the zip for your system from the [releases page](https://github.com/Z1xus/interpolini/releases) and unzip it into any folder.
+
+### Install (Windows only)
+
+If you're on Windows and you'd rather install it, good news, you can download `interpolini-windows-x86_64-setup.exe` from the same page. It also comes with a nice addition of a Send to option: right click a clip in Explorer and render it without opening the app.
+
+Uninstalling deletes the whole folder, including your configs and downloaded models.
+
 ## Usage
 
 Open interpolini, drop your clips into the window and press Render.
