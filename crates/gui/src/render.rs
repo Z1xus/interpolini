@@ -13,7 +13,10 @@ fn show(ui: &App, event: Event, row: Option<usize>, current: usize, count: usize
     match event {
         Event::Start { clip } if row.is_some() => update(ui, clip, |row| row.state = "0%".into()),
         Event::Start { .. } => {}
-        Event::Info(text) | Event::Warning(text) => ui.set_status(text.into()),
+        Event::Info(text) | Event::Warning(text) => {
+            ui.set_log(format!("{}{text}\n", ui.get_log()).into());
+            ui.set_status(text.into());
+        }
         Event::Progress { frame, frames, fps } => {
             let done = frame as f32 / frames as f32;
             let rows = ui.get_clips();
@@ -65,6 +68,7 @@ fn show(ui: &App, event: Event, row: Option<usize>, current: usize, count: usize
                 row.state = "Failed".into();
             });
             ui.set_failed(true);
+            ui.set_log(format!("{}{error}\n", ui.get_log()).into());
             ui.set_status(error.into());
         }
     }
@@ -135,6 +139,7 @@ fn render(ui: &App, shared: &Shared) {
         return;
     }
     ui.set_rendering(true);
+    ui.set_log("".into());
     ui.set_failed(false);
     ui.set_progress(0.0);
     ui.set_playing(false);

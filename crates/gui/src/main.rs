@@ -39,10 +39,10 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("COMMIT"), "
 // the system is asked on another thread, the answers take a moment
 fn details(ui: &App, state: &Shared) -> impl FnOnce() -> String + Send + use<> {
     let config = lock(state).current(ui).config.to_ini();
-    let (status, clip) = (ui.get_status(), ui.get_details());
+    let (status, clip, log) = (ui.get_status(), ui.get_details(), ui.get_log());
     move || {
         let about = interpolini_core::about();
-        format!("interpolini {VERSION}\n{about}\nclip: {clip}\nstatus: {status}\n\n{config}")
+        format!("interpolini {VERSION}\n{about}\nclip: {clip}\nstatus: {status}\n{log}\n{config}")
     }
 }
 

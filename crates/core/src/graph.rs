@@ -129,11 +129,12 @@ impl Graph {
             height,
             fps,
             frames,
+            codec,
             ..
         } = meta;
         let source_fps = fps.0 as f64 / fps.1 as f64;
         sink(Event::Info(format!(
-            "{width}x{height}  |  {source_fps:.2} fps  |  {frames} frames"
+            "{codec}  |  {width}x{height}  |  {source_fps:.2} fps  |  {frames} frames"
         )));
 
         let plan = Plan::new(source_fps, config);

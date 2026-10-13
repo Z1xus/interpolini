@@ -28,6 +28,7 @@ pub struct Meta {
     pub primaries: color::Primaries,
     pub transfer: color::TransferCharacteristic,
     pub still: bool,
+    pub codec: &'static str,
 }
 
 impl Meta {
@@ -355,6 +356,7 @@ impl Decoder {
             primaries: decoder.color_primaries(),
             transfer: decoder.color_transfer_characteristic(),
             still,
+            codec: decoder.id().name(),
         };
         if meta.width == 0 || meta.height == 0 {
             return Err("the clip has no picture size".into());
