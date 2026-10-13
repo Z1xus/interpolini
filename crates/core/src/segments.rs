@@ -116,14 +116,14 @@ fn feed(clip: &Path, threads: usize, gpu: Option<Gpu>) -> Result<(usize, Feed)> 
 }
 
 #[cfg(target_os = "linux")]
-fn memory() -> Option<usize> {
+pub fn memory() -> Option<usize> {
     let text = std::fs::read_to_string("/proc/meminfo").ok()?;
     let line = text.lines().find(|line| line.starts_with("MemTotal:"))?;
     Some(line.split_whitespace().nth(1)?.parse::<usize>().ok()? * 1024)
 }
 
 #[cfg(windows)]
-fn memory() -> Option<usize> {
+pub fn memory() -> Option<usize> {
     // MEMORYSTATUSEX, the fields after the total are not read
     #[repr(C)]
     struct Status {
@@ -145,7 +145,7 @@ fn memory() -> Option<usize> {
 }
 
 #[cfg(target_os = "macos")]
-fn memory() -> Option<usize> {
+pub fn memory() -> Option<usize> {
     use std::ffi::{c_char, c_void};
     unsafe extern "C" {
         fn sysctlbyname(
@@ -164,7 +164,7 @@ fn memory() -> Option<usize> {
 }
 
 #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
-fn memory() -> Option<usize> {
+pub fn memory() -> Option<usize> {
     None
 }
 
@@ -452,6 +452,14 @@ impl Segments {
             });
             self.planned = end;
         }
+    }
+
+    pub fn lanes(&self) -> (usize, usize) {
+        let gpu = match self.shared.gpu.get() {
+            Some(Some(_)) => self.shared.wanted.load(Ordering::Relaxed).min(self.gpus),
+            _ => 0,
+        };
+        (self.started, gpu)
     }
 
     fn stop(&mut self) {

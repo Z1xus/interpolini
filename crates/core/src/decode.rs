@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::ffi::CStr;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::mpsc::{self, TryRecvError};
@@ -206,6 +207,24 @@ pub fn gpus() -> Vec<Gpu> {
         Gpu::AV_HWDEVICE_TYPE_VAAPI
     });
     gpus
+}
+
+pub fn decoders() -> Vec<String> {
+    ffmpeg_next::log::set_level(Level::Quiet);
+    let starts = |gpu: &Gpu| unsafe {
+        let mut device = std::ptr::null_mut();
+        let (name, options) = (std::ptr::null(), std::ptr::null_mut());
+        let made = ffi::av_hwdevice_ctx_create(&mut device, *gpu, name, options, 0) >= 0;
+        ffi::av_buffer_unref(&mut device);
+        made
+    };
+    let name = |gpu| unsafe { CStr::from_ptr(ffi::av_hwdevice_get_type_name(gpu)) };
+    let names = gpus().into_iter().filter(starts);
+    let names = names
+        .map(|gpu| name(gpu).to_string_lossy().into_owned())
+        .collect();
+    ffmpeg_next::log::set_level(Level::Error);
+    names
 }
 
 // asks the driver itself, because ffmpeg prints an error on a computer without the gpu

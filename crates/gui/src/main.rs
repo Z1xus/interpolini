@@ -36,11 +36,14 @@ slint::include_modules!();
 
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("COMMIT"), ")");
 
-fn details(ui: &App, state: &Shared) -> String {
+// the system is asked on another thread, the answers take a moment
+fn details(ui: &App, state: &Shared) -> impl FnOnce() -> String + Send + use<> {
     let config = lock(state).current(ui).config.to_ini();
-    let about = interpolini_core::about();
     let (status, clip) = (ui.get_status(), ui.get_details());
-    format!("interpolini {VERSION}\n{about}\nclip: {clip}\nstatus: {status}\n\n{config}")
+    move || {
+        let about = interpolini_core::about();
+        format!("interpolini {VERSION}\n{about}\nclip: {clip}\nstatus: {status}\n\n{config}")
+    }
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -301,16 +304,23 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(&state));
     ui.on_copy_details(move || {
-        if let Some(ui) = weak.upgrade() {
-            ui.invoke_copy(details(&ui, &shared).into());
-            ui.set_copied(true);
-            let weak = ui.as_weak();
-            slint::Timer::single_shot(std::time::Duration::from_millis(1500), move || {
-                if let Some(ui) = weak.upgrade() {
-                    ui.set_copied(false);
-                }
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let (details, weak) = (details(&ui, &shared), weak.clone());
+        std::thread::spawn(move || {
+            let details = details();
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                ui.invoke_copy(details.into());
+                ui.set_copied(true);
+                let weak = ui.as_weak();
+                slint::Timer::single_shot(std::time::Duration::from_millis(1500), move || {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_copied(false);
+                    }
+                });
             });
-        }
+        });
     });
 
     let clips = std::env::args().skip(1).map(PathBuf::from).collect();

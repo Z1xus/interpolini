@@ -264,6 +264,14 @@ fn encode(
             }
         }
     }
+    for source in sources.values() {
+        let lanes = source.graph().and_then(|graph| graph.lanes());
+        if let Some((cpu, gpu)) = lanes.filter(|lanes| lanes.0 > 1) {
+            sink(Event::Info(format!(
+                "{cpu} decoders on the cpu, {gpu} on the gpu"
+            )));
+        }
+    }
     if written < frames {
         sink(Event::Warning(format!(
             "stopped at frame {written} of {frames}"

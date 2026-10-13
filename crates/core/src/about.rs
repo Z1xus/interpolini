@@ -133,6 +133,10 @@ fn system() -> Vec<(&'static str, String)> {
             "cpu",
             run("sysctl", &["-n", "machdep.cpu.brand_string"]).unwrap_or_default(),
         ),
+        (
+            "memory",
+            crate::segments::memory().map_or(String::new(), |bytes| format!("{} GB", bytes >> 30)),
+        ),
         ("gpu", chips.collect::<Vec<_>>().join(", ")),
     ]
 }
@@ -158,7 +162,10 @@ pub fn about() -> String {
         format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
     )];
     lines.extend(system());
+    let threads = std::thread::available_parallelism().map_or(0, usize::from);
     lines.extend([
+        ("threads", threads.to_string()),
+        ("gpu decoders", crate::decode::decoders().join(" ")),
         ("nvidia", nvidia.unwrap_or_default().replace('\n', ", ")),
         (
             "libavformat",

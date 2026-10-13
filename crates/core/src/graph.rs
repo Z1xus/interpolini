@@ -353,6 +353,16 @@ impl Graph {
         Ok(picture)
     }
 
+    pub(crate) fn lanes(&self) -> Option<(usize, usize)> {
+        match &self.feed {
+            Feed::File(segments) => {
+                let segments = segments.lock().unwrap_or_else(|poison| poison.into_inner());
+                Some(segments.lanes())
+            }
+            Feed::Host { .. } => None,
+        }
+    }
+
     pub fn source_fps(&self) -> f64 {
         self.meta.fps.0 as f64 / self.meta.fps.1 as f64
     }
