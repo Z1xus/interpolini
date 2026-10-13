@@ -6,6 +6,7 @@ use ffmpeg_next::{color, ffi, frame};
 use crate::config::Config;
 use crate::decode::{Decoder, Meta};
 use crate::graph::{Graph, Image, image};
+use crate::segments::Made;
 use crate::{Result, Sink};
 
 pub struct Scaler(*mut ffi::SwsContext);
@@ -121,6 +122,13 @@ impl Source {
         match &self.kind {
             Kind::Clip(graph) => Some(graph),
             Kind::Still(_) => None,
+        }
+    }
+
+    pub(crate) fn made(&mut self, n: i32) -> Result<Made> {
+        match &self.kind {
+            Kind::Clip(graph) => graph.made(n),
+            Kind::Still(picture) => Ok(Made::Picture(share(picture))),
         }
     }
 

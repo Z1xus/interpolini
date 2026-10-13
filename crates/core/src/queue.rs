@@ -12,6 +12,7 @@ use crate::copy::copy;
 use crate::decode::{Meta, Probe, probe};
 use crate::encode::{Encoder, Plan};
 use crate::graph::lossless;
+use crate::segments::Made;
 use crate::timeline::{Fade, Part, Placed, parts};
 use crate::upscale::Upscaler;
 use crate::{Event, Result, Sink};
@@ -200,6 +201,17 @@ fn encode(
     let encoded = upscaler.as_ref().map_or(meta, |upscaler| upscaler.meta);
     let mut encoder = Encoder::open(format::output(output)?, &encoded, fps, config, bits, plan)?;
     sink(Event::Info(format!("encoding with {}", encoder.name)));
+    let from = ((start - job.at) * rate).round().max(0.0) as i32;
+    let alone = timeline.is_none() && upscaler.is_none() && job.fade.none();
+    let alone = alone && job.place == Place::default();
+    let fused = match (encoder.spare(), first.graph()) {
+        (Some(spare), Some(graph)) if alone => graph.encode(spare, from, from + frames),
+        _ => false,
+    };
+    let frames = match (fused, first.graph()) {
+        (true, Some(graph)) => frames.min(graph.info.frames - from),
+        _ => frames,
+    };
     if timeline.is_none() {
         encoder.begin(&job.clip, start, &job.muted)?;
     }
@@ -233,28 +245,38 @@ fn encode(
             false => ((part.end * rate).round() as i32).min(frames),
         };
         while written < last && !cancel.load(Ordering::Relaxed) {
-            let time = f64::from(written) / rate;
-            let mut layers = Vec::new();
-            let level = |clip: &usize| {
-                let Placed { at, length, .. } = placed[*clip];
-                jobs[*clip].1.fade.level(time - at, length)
+            let made = match sources.get_mut(&base).filter(|_| fused) {
+                Some(source) => Some(source.made(from + written)?),
+                None => None,
             };
-            let top = shown
-                .iter()
-                .rposition(|clip| fills(clip) && level(clip) >= 1.0);
-            for clip in &shown[top.unwrap_or(0)..] {
-                let job = jobs[*clip].1;
-                let inside = job.cut.map_or(0.0, |cut| cut.0) + time - job.at;
-                if let Some(source) = sources.get_mut(clip) {
-                    layers.push((source.at(inside)?, job.place, level(clip) as f32));
+            match made {
+                Some(Made::Packets(packets)) => encoder.pass(packets, written)?,
+                Some(Made::Picture(picture)) => encoder.write(picture, written)?,
+                None => {
+                    let time = f64::from(written) / rate;
+                    let mut layers = Vec::new();
+                    let level = |clip: &usize| {
+                        let Placed { at, length, .. } = placed[*clip];
+                        jobs[*clip].1.fade.level(time - at, length)
+                    };
+                    let top = shown
+                        .iter()
+                        .rposition(|clip| fills(clip) && level(clip) >= 1.0);
+                    for clip in &shown[top.unwrap_or(0)..] {
+                        let job = jobs[*clip].1;
+                        let inside = job.cut.map_or(0.0, |cut| cut.0) + time - job.at;
+                        if let Some(source) = sources.get_mut(clip) {
+                            layers.push((source.at(inside)?, job.place, level(clip) as f32));
+                        }
+                    }
+                    let picture = canvas.compose(layers)?;
+                    let picture = match &upscaler {
+                        Some(upscaler) => upscaler.run(&picture)?,
+                        None => picture,
+                    };
+                    encoder.write(picture, written)?;
                 }
             }
-            let picture = canvas.compose(layers)?;
-            let picture = match &upscaler {
-                Some(upscaler) => upscaler.run(&picture)?,
-                None => picture,
-            };
-            encoder.write(picture, written)?;
             written += 1;
             if reported.elapsed() >= Duration::from_millis(100) || written == frames {
                 reported = Instant::now();

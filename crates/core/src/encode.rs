@@ -1,9 +1,11 @@
+use std::ffi::c_void;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use ffmpeg_next::format::{self, Pixel};
 use ffmpeg_next::log::Level;
 use ffmpeg_next::software::scaling;
-use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, ffi, frame, media};
+use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, ffi, frame, media, picture};
 
 use crate::Result;
 use crate::audio::{Lane, Mixer, Source};
@@ -91,7 +93,10 @@ fn options(name: &str, output: &Output, sized: bool) -> Dictionary<'static> {
     // a card with two encoders uses both for one picture, h264 has no such mode
     let split = (family == Some("nvenc") && !name.starts_with("h264"))
         .then_some(("split_encode_mode", "forced"));
-    let pairs = preset.into_iter().chain(rate.iter().copied()).chain(split);
+    // after a flush the next picture must be an idr
+    let fresh = (family == Some("nvenc")).then_some(("forced-idr", "1"));
+    let pairs = preset.into_iter().chain(rate.iter().copied());
+    let pairs = pairs.chain(split).chain(fresh);
     let mut options = Dictionary::new();
     for (key, value) in pairs.chain(self::pairs(&output.options)) {
         if key != "c:v" {
@@ -231,6 +236,175 @@ impl Audio {
     }
 }
 
+// call it after the encoder of the file is open, nvenc fails to open at the same time
+fn engines() -> usize {
+    #[repr(C)]
+    struct Guid(u32, u16, u16, [u8; 8]);
+    #[repr(C)]
+    struct List {
+        version: u32,
+        reserved: u32,
+        functions: [*const c_void; 318],
+    }
+    #[repr(C)]
+    struct Session {
+        version: u32,
+        kind: u32,
+        device: *mut c_void,
+        reserved: *mut c_void,
+        api: u32,
+        rest: [u32; 253],
+        more: [*mut c_void; 64],
+    }
+    #[repr(C)]
+    struct Caps {
+        version: u32,
+        query: u32,
+        reserved: [u32; 62],
+    }
+    type Open = unsafe extern "C" fn(*mut Session, *mut *mut c_void) -> u32;
+    type Ask = unsafe extern "C" fn(*mut c_void, Guid, *mut Caps, *mut i32) -> u32;
+    type Close = unsafe extern "C" fn(*mut c_void) -> u32;
+    // the first api version that tells the number of chips
+    const API: u32 = 12 | 1 << 24;
+    const fn version(of: u32) -> u32 {
+        API | of << 16 | 0x7 << 28
+    }
+    // places in the function list, and the id of the question
+    const ASK: usize = 7;
+    const CLOSE: usize = 27;
+    const OPEN: usize = 29;
+    const CHIPS: u32 = 49;
+    const H264: Guid = Guid(
+        0x6bc8_2762,
+        0x4e63,
+        0x4ca4,
+        [0xaa, 0x85, 0x1e, 0x50, 0xf3, 0x21, 0xf6, 0xbf],
+    );
+    static CHIPS_FOUND: OnceLock<usize> = OnceLock::new();
+    let ask = || unsafe {
+        let names = match cfg!(windows) {
+            true => ("nvcuda.dll", "nvEncodeAPI64.dll"),
+            false => ("libcuda.so.1", "libnvidia-encode.so.1"),
+        };
+        let cuda = libloading::Library::new(names.0).ok()?;
+        let nvenc = libloading::Library::new(names.1).ok()?;
+        let init = cuda.get::<unsafe extern "C" fn(u32) -> i32>(b"cuInit\0");
+        let device = cuda.get::<unsafe extern "C" fn(*mut i32, i32) -> i32>(b"cuDeviceGet\0");
+        let create = cuda
+            .get::<unsafe extern "C" fn(*mut *mut c_void, u32, i32) -> i32>(b"cuCtxCreate_v2\0");
+        let destroy = cuda.get::<unsafe extern "C" fn(*mut c_void) -> i32>(b"cuCtxDestroy_v2\0");
+        let (init, device, create, destroy) =
+            (init.ok()?, device.ok()?, create.ok()?, destroy.ok()?);
+        let instance =
+            nvenc.get::<unsafe extern "C" fn(*mut List) -> u32>(b"NvEncodeAPICreateInstance\0");
+        let instance = instance.ok()?;
+        let (mut card, mut context) = (0, std::ptr::null_mut());
+        if init(0) != 0 || device(&raw mut card, 0) != 0 || create(&raw mut context, 0, card) != 0 {
+            return None;
+        }
+        let mut list = List {
+            version: version(2),
+            reserved: 0,
+            functions: [std::ptr::null(); 318],
+        };
+        let mut session = Session {
+            version: version(1),
+            kind: 1,
+            device: context,
+            reserved: std::ptr::null_mut(),
+            api: API,
+            rest: [0; 253],
+            more: [std::ptr::null_mut(); 64],
+        };
+        let mut caps = Caps {
+            version: version(1),
+            query: CHIPS,
+            reserved: [0; 62],
+        };
+        let (mut encoder, mut chips) = (std::ptr::null_mut(), 0);
+        let mut found = None;
+        if instance(&raw mut list) == 0 && !list.functions[OPEN].is_null() {
+            let open: Open = std::mem::transmute(list.functions[OPEN]);
+            let ask: Ask = std::mem::transmute(list.functions[ASK]);
+            let close: Close = std::mem::transmute(list.functions[CLOSE]);
+            let opened = open(&raw mut session, &raw mut encoder) == 0;
+            if opened && ask(encoder, H264, &raw mut caps, &raw mut chips) == 0 {
+                found = Some(chips.max(1) as usize);
+            }
+            // the api wants a close for a session that did not open, too
+            if !encoder.is_null() {
+                close(encoder);
+            }
+        }
+        destroy(context);
+        found
+    };
+    *CHIPS_FOUND.get_or_init(|| ask().unwrap_or(1))
+}
+
+pub type Spare = Arc<dyn Fn() -> Result<encoder::video::Encoder> + Send + Sync>;
+
+fn head(video: &encoder::video::Encoder) -> Vec<u8> {
+    let context = unsafe { &*video.as_ptr() };
+    match context.extradata.is_null() {
+        true => Vec::new(),
+        false => unsafe {
+            std::slice::from_raw_parts(context.extradata, context.extradata_size as usize).to_vec()
+        },
+    }
+}
+
+fn context(
+    name: &str,
+    meta: &Meta,
+    base: Rational,
+    config: &Output,
+    rate: Option<usize>,
+    header: bool,
+) -> Option<std::result::Result<encoder::video::Encoder, String>> {
+    let codec = encoder::find_by_name(name)?;
+    let mut video = codec::Context::new_with_codec(codec)
+        .encoder()
+        .video()
+        .ok()?;
+    video.set_width(meta.width);
+    video.set_height(meta.height);
+    let format = match name.rsplit('_').next() {
+        Some("qsv") => Pixel::NV12,
+        Some("vaapi") => Pixel::VAAPI,
+        Some("vulkan") => Pixel::VULKAN,
+        _ => Pixel::YUV420P,
+    };
+    video.set_format(format);
+    if matches!(format, Pixel::VAAPI | Pixel::VULKAN)
+        && let Err(error) = surfaces(&mut video, meta, format)
+    {
+        return Some(Err(format!("{name}: {error}")));
+    }
+    video.set_time_base(base);
+    video.set_frame_rate(Some(base.invert()));
+    video.set_gop(GOP);
+    video.set_colorspace(meta.space);
+    video.set_color_range(meta.range);
+    video.set_color_primaries(meta.primaries);
+    video.set_color_transfer_characteristic(meta.transfer);
+    if header {
+        video.set_flags(codec::Flags::GLOBAL_HEADER);
+    }
+    if let Some(rate) = rate {
+        video.set_bit_rate(rate);
+    }
+    // svt-av1 takes a top rate only with a constant quality
+    if let Some(rate) = rate.filter(|_| name != "libsvtav1") {
+        video.set_max_bit_rate(rate);
+        // one second of the rate, with more the file can go over its size
+        unsafe { (*video.as_mut_ptr()).rc_buffer_size = rate as i32 };
+    }
+    let opened = video.open_with(options(name, config, rate.is_some()));
+    Some(opened.map_err(|error| format!("{name}: {error}")))
+}
+
 pub enum Plan<'a> {
     // the packets of the clip, as they are
     Copy {
@@ -256,6 +430,8 @@ pub struct Encoder {
     nv12: Option<scaling::Context>,
     packet: Packet,
     base: Rational,
+    spare: Option<Spare>,
+    busy: bool,
     pub name: String,
     pub packets: [(u32, u64); 2],
 }
@@ -283,54 +459,15 @@ impl Encoder {
         // the encoders that do not fit this computer fail without a word
         let mut open = |level| {
             ffmpeg_next::log::set_level(level);
-            names.iter().find_map(|&name| {
-                let codec = encoder::find_by_name(name)?;
-                let mut video = codec::Context::new_with_codec(codec)
-                    .encoder()
-                    .video()
-                    .ok()?;
-                video.set_width(meta.width);
-                video.set_height(meta.height);
-                let format = match name.rsplit('_').next() {
-                    Some("qsv") => Pixel::NV12,
-                    Some("vaapi") => Pixel::VAAPI,
-                    Some("vulkan") => Pixel::VULKAN,
-                    _ => Pixel::YUV420P,
-                };
-                video.set_format(format);
-                if matches!(format, Pixel::VAAPI | Pixel::VULKAN)
-                    && let Err(error) = surfaces(&mut video, meta, format)
-                {
-                    failure = format!("{name}: {error}");
-                    return None;
-                }
-                video.set_time_base(base);
-                video.set_frame_rate(Some(base.invert()));
-                video.set_gop(GOP);
-                video.set_colorspace(meta.space);
-                video.set_color_range(meta.range);
-                video.set_color_primaries(meta.primaries);
-                video.set_color_transfer_characteristic(meta.transfer);
-                if header {
-                    video.set_flags(codec::Flags::GLOBAL_HEADER);
-                }
-                if let Some(rate) = rate {
-                    video.set_bit_rate(rate);
-                }
-                // svt-av1 takes a top rate only with a constant quality
-                if let Some(rate) = rate.filter(|_| name != "libsvtav1") {
-                    video.set_max_bit_rate(rate);
-                    // one second of the rate, with more the file can go over its size
-                    unsafe { (*video.as_mut_ptr()).rc_buffer_size = rate as i32 };
-                }
-                match video.open_with(options(name, config, rate.is_some())) {
+            names.iter().find_map(
+                |&name| match context(name, meta, base, config, rate, header)? {
                     Ok(encoder) => Some((name, encoder)),
                     Err(error) => {
-                        failure = format!("{name}: {error}");
+                        failure = error;
                         None
                     }
-                }
-            })
+                },
+            )
         };
         let opened = open(Level::Quiet).or_else(|| open(Level::Error));
         ffmpeg_next::log::set_level(Level::Error);
@@ -357,6 +494,20 @@ impl Encoder {
             }
         };
         output.write_header()?;
+        // nvenc starts again after a flush, and a size target needs one encoder for the whole file
+        let spare = (name.ends_with("_nvenc") && rate.is_none() && engines() > 1).then(|| {
+            let (name, meta, config, first) =
+                (name.to_owned(), *meta, config.clone(), head(&encoder));
+            let spare: Spare = Arc::new(move || {
+                let video = context(&name, &meta, base, &config, None, header);
+                let video = video.ok_or("no encoder")??;
+                match head(&video) == first {
+                    true => Ok(video),
+                    false => Err("the encoders do not match".into()),
+                }
+            });
+            spare
+        });
         let nv12 = if encoder.format() != Pixel::YUV420P {
             let (width, height) = (meta.width, meta.height);
             let flags = scaling::Flags::BILINEAR;
@@ -382,28 +533,53 @@ impl Encoder {
             nv12,
             packet: Packet::empty(),
             base,
+            spare,
+            busy: false,
             name: name.to_owned(),
             packets: [(0, 0); 2],
         })
     }
 
+    fn mux(&mut self) -> Result<()> {
+        let target = self
+            .output
+            .stream(0)
+            .map_or(self.base, |stream| stream.time_base());
+        let seconds = self.packet.dts().unwrap_or(0) as f64 * f64::from(self.base);
+        if let Some(audio) = &mut self.audio {
+            audio.copy(&mut self.output, seconds)?;
+        }
+        let kind = &mut self.packets[usize::from(self.packet.is_key())];
+        *kind = (kind.0 + 1, kind.1 + self.packet.size() as u64);
+        self.packet.rescale_ts(self.base, target);
+        self.packet.set_stream(0);
+        self.packet.write_interleaved(&mut self.output)?;
+        Ok(())
+    }
+
     fn drain(&mut self) -> Result<()> {
         while self.encoder.receive_packet(&mut self.packet).is_ok() {
-            let target = self
-                .output
-                .stream(0)
-                .map_or(self.base, |stream| stream.time_base());
-            let seconds = self.packet.dts().unwrap_or(0) as f64 * f64::from(self.base);
-            if let Some(audio) = &mut self.audio {
-                audio.copy(&mut self.output, seconds)?;
-            }
-            let kind = &mut self.packets[usize::from(self.packet.is_key())];
-            *kind = (kind.0 + 1, kind.1 + self.packet.size() as u64);
-            self.packet.rescale_ts(self.base, target);
-            self.packet.set_stream(0);
-            self.packet.write_interleaved(&mut self.output)?;
+            self.mux()?;
         }
         Ok(())
+    }
+
+    pub fn spare(&self) -> Option<Spare> {
+        self.spare.clone()
+    }
+
+    pub fn pass(&mut self, packets: Vec<Packet>, n: i32) -> Result<()> {
+        if self.busy {
+            self.encoder.send_eof()?;
+            self.drain()?;
+            unsafe { ffi::avcodec_flush_buffers(self.encoder.as_mut_ptr()) };
+            self.busy = false;
+        }
+        for packet in packets {
+            self.packet = packet;
+            self.mux()?;
+        }
+        self.pump(f64::from(n + 1) * f64::from(self.base))
     }
 
     pub fn begin(&mut self, clip: &Path, start: f64, muted: &[usize]) -> Result<()> {
@@ -450,6 +626,10 @@ impl Encoder {
             picture = surface;
         }
         picture.set_pts(Some(i64::from(n)));
+        if !self.busy && self.spare.is_some() {
+            picture.set_kind(picture::Type::I);
+        }
+        self.busy = true;
         self.encoder.send_frame(&picture)?;
         self.drain()?;
         self.pump(f64::from(n + 1) * f64::from(self.base))

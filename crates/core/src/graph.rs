@@ -11,8 +11,9 @@ use crate::compose::Scaler;
 use crate::config::{self, Config, Engine, Masking};
 use crate::decode::{Decoder, Meta};
 use crate::dedup::{Dedup, Pick};
+use crate::encode::Spare;
 use crate::rife::Rife;
-use crate::segments::Segments;
+use crate::segments::{Made, Segments};
 use crate::svp::{Clip, Frame, Options, Shape, Svp};
 use crate::{Event, Result, Sink, weights};
 
@@ -369,6 +370,30 @@ impl Graph {
         };
         self.meta.tag(&mut picture);
         Ok(picture)
+    }
+
+    pub(crate) fn encode(&self, spare: Spare, from: i32, end: i32) -> bool {
+        let Feed::File(segments) = &self.feed else {
+            return false;
+        };
+        if self.grade.is_some() {
+            return false;
+        }
+        let mut segments = segments.lock().unwrap_or_else(|poison| poison.into_inner());
+        segments.encode(spare, from, end);
+        true
+    }
+
+    pub(crate) fn made(&self, n: i32) -> Result<Made> {
+        let Feed::File(segments) = &self.feed else {
+            return self.frame(n).map(Made::Picture);
+        };
+        let mut segments = segments.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut made = segments.take(n)?;
+        if let Made::Picture(picture) = &mut made {
+            self.meta.tag(picture);
+        }
+        Ok(made)
     }
 
     pub(crate) fn lanes(&self) -> Option<(usize, usize)> {
