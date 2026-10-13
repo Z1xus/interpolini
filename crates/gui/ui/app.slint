@@ -1,5 +1,5 @@
 import { Button, Piece, Theme, Tip } from "widgets.slint";
-import { Clip, Fact, Family, Ghost, Lane, Settings } from "types.slint";
+import { Clip, Fact, Family, Ghost, Lane, Sections, Settings } from "types.slint";
 import { Timeline } from "timeline.slint";
 import { Menu } from "menu.slint";
 import { Panel } from "panel.slint";
@@ -41,6 +41,10 @@ export component App inherits Window {
     }
     in-out property <length> rail: 340px;
     in-out property <length> deck;
+    in-out property <Sections> sections: { interpolation: true, masking: true, blending: true, color: true, upscale: true, output: true };
+    changed sections => {
+        root.save-preferences();
+    }
     // the length of one frame of the clip that shows
     in property <float> tick: 1 / 60;
     in-out property <bool> transform;
@@ -515,6 +519,7 @@ export component App inherits Window {
             videos: root.videos;
             selected: root.selected;
             settings <=> root.settings;
+            sections <=> root.sections;
             scope <=> root.scope;
             configs: root.configs;
             config <=> root.config;

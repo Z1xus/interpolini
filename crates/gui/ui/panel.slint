@@ -1,5 +1,5 @@
 import { Action, Dropdown, Field, Label, Note, Number, Row, Scroll, Section, Segment, SliderRow, Switch, Theme } from "widgets.slint";
-import { Clip, Fact, Settings } from "types.slint";
+import { Clip, Fact, Sections, Settings } from "types.slint";
 
 component Curve inherits Rectangle {
     in property <[float]> weights;
@@ -57,6 +57,7 @@ export component Panel inherits Rectangle {
     in property <int> videos;
     in property <int> selected;
     in-out property <Settings> settings;
+    in-out property <Sections> sections;
     in-out property <string> scope;
     in property <[string]> configs;
     in-out property <string> config;
@@ -265,9 +266,9 @@ export component Panel inherits Rectangle {
             visible: !root.copying;
             Section {
                 title: "Dedup";
+                open <=> root.sections.dedup;
                 // a clip with repeats is the reason to turn this on
                 hint: root.repeats >= 0.05 ? "\{round(root.repeats * 100)}% repeats" : "";
-                open: false;
                 enabled <=> root.settings.dedup;
                 toggled => {
                     root.changed();
@@ -286,7 +287,7 @@ export component Panel inherits Rectangle {
 
             Section {
                 title: "Pre-interpolation";
-                open: false;
+                open <=> root.sections.pre;
                 enabled <=> root.settings.pre;
                 toggled => {
                     root.changed();
@@ -342,6 +343,7 @@ export component Panel inherits Rectangle {
 
             Section {
                 title: "Interpolation";
+                open <=> root.sections.interpolation;
                 enabled <=> root.settings.interpolate;
                 toggled => {
                     root.changed();
@@ -451,6 +453,7 @@ export component Panel inherits Rectangle {
 
             Section {
                 title: "Masking";
+                open <=> root.sections.masking;
                 enabled <=> root.settings.mask;
                 toggled => {
                     root.changed();
@@ -516,6 +519,7 @@ export component Panel inherits Rectangle {
 
             Section {
                 title: "Blending";
+                open <=> root.sections.blending;
                 enabled <=> root.settings.blend;
                 toggled => {
                     root.changed();
@@ -587,6 +591,7 @@ export component Panel inherits Rectangle {
 
             Section {
                 title: "Color";
+                open <=> root.sections.color;
                 enabled <=> root.settings.grade;
                 toggled => {
                     root.changed();
@@ -660,6 +665,7 @@ export component Panel inherits Rectangle {
 
             Section {
                 title: "Upscale";
+                open <=> root.sections.upscale;
                 enabled <=> root.settings.upscale;
                 toggled => {
                     root.changed();
@@ -694,6 +700,7 @@ export component Panel inherits Rectangle {
 
             Section {
                 title: "Output";
+                open <=> root.sections.output;
                 hint: root.estimate;
                 toggle: false;
                 Row {

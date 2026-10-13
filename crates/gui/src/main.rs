@@ -104,6 +104,19 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_rail(size("rail: ").unwrap_or(340.0));
     ui.set_deck(size("deck: ").unwrap_or(0.0));
     ui.set_volume(size("volume: ").unwrap_or(1.0).clamp(0.0, 1.0));
+    if let Some(open) = value("sections: ") {
+        let open = |name: &str| open.split(' ').any(|section| section == name);
+        ui.set_sections(Sections {
+            dedup: open("dedup"),
+            pre: open("pre"),
+            interpolation: open("interpolation"),
+            masking: open("masking"),
+            blending: open("blending"),
+            color: open("color"),
+            upscale: open("upscale"),
+            output: open("output"),
+        });
+    }
     sound::level(ui.get_volume());
     ui.set_light_available(themes::has_light(theme));
     themes::apply(&ui, theme, ui.get_light());

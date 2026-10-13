@@ -189,15 +189,32 @@ pub fn preferences() -> PathBuf {
 
 pub fn save_preferences(ui: &App) {
     let yes = |value: bool| if value { "yes" } else { "no" };
+    let sections = ui.get_sections();
+    let open = [
+        ("dedup", sections.dedup),
+        ("pre", sections.pre),
+        ("interpolation", sections.interpolation),
+        ("masking", sections.masking),
+        ("blending", sections.blending),
+        ("color", sections.color),
+        ("upscale", sections.upscale),
+        ("output", sections.output),
+    ];
+    let open: Vec<&str> = open
+        .iter()
+        .filter(|open| open.1)
+        .map(|open| open.0)
+        .collect();
     let text = format!(
-        "theme: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\nupdates: {}\nvolume: {}\n",
+        "theme: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\nupdates: {}\nvolume: {}\nsections: {}\n",
         ui.get_theme(),
         yes(ui.get_light()),
         yes(ui.get_separate()),
         ui.get_rail(),
         ui.get_deck(),
         yes(ui.get_updates()),
-        ui.get_volume()
+        ui.get_volume(),
+        open.join(" ")
     );
     let _ = std::fs::write(preferences(), text);
 }
