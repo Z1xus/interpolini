@@ -88,7 +88,10 @@ fn options(name: &str, output: &Output, sized: bool) -> Dictionary<'static> {
         _ => None,
     };
     let preset = presets.map(|(key, presets)| (key, presets[output.effort as usize]));
-    let pairs = preset.into_iter().chain(rate.iter().copied());
+    // a card with two encoders uses both for one picture, h264 has no such mode
+    let split = (family == Some("nvenc") && !name.starts_with("h264"))
+        .then_some(("split_encode_mode", "forced"));
+    let pairs = preset.into_iter().chain(rate.iter().copied()).chain(split);
     let mut options = Dictionary::new();
     for (key, value) in pairs.chain(self::pairs(&output.options)) {
         if key != "c:v" {
