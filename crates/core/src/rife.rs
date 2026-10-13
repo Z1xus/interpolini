@@ -117,6 +117,7 @@ impl Rife {
         let from = source.shape();
         let step = (from.fps.0, from.fps.1 * i64::from(fps));
         let shape = Shape {
+            deep: false,
             width,
             height,
             fps: (i64::from(fps), 1),

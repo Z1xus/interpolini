@@ -8,7 +8,7 @@ use ffmpeg_next::{ffi, frame};
 use crate::blend::Blend;
 use crate::color::Grade;
 use crate::compose::Scaler;
-use crate::config::{self, Config, Engine};
+use crate::config::{self, Config, Engine, Masking};
 use crate::decode::{Decoder, Meta};
 use crate::dedup::{Dedup, Pick};
 use crate::rife::Rife;
@@ -216,6 +216,7 @@ impl Graph {
         let host = || Svp::load(&config::app_dir());
         let mut svp = host()?;
         let shape = Shape {
+            deep: false,
             width,
             height,
             fps,
@@ -271,36 +272,56 @@ impl Graph {
             sink(Event::Info("replacing repeated frames".into()));
         }
 
-        let still = |svp: &Arc<Svp>, clip: Clip, input: &Arc<Clip>| -> Result<Clip> {
-            let Some(mask) = mask else {
-                return Ok(clip);
-            };
+        // the layer of peel is a 16-bit clip of double height
+        let relay = |svp: &Arc<Svp>, source: &Arc<Clip>, scale: usize| {
             let relay = Pick {
-                source: Arc::clone(input),
+                source: Arc::clone(source),
                 step: 1,
                 offset: 0,
-                width: size.0,
-                height: size.1,
+                width: size.0 * scale,
+                height: size.1 * scale,
             };
-            let relay = svp.source(&input.shape(), relay)?;
-            Ok(svp.still(clip, &relay, mask)?.keep(relay))
+            svp.source(&source.shape(), relay)
+        };
+        let pass = |svp: &mut Arc<Svp>, input: &Arc<Clip>, fps, blend| -> Result<Clip> {
+            let open = |svp: &Arc<Svp>, source: &Arc<Clip>| {
+                Rife::open(svp, Arc::clone(source), &meta, fps, rife, blend, sink)
+            };
+            match mask {
+                Some(mask) if mask.method == Masking::Peel => {
+                    let options = |gpu| Options::new(interpolation, "", None, None, gpu, half);
+                    let layer = svp.layer(input, &options(true), mask.peel);
+                    let layer = layer.or_else(|_| svp.layer(input, &options(false), mask.peel))?;
+                    let layer = Arc::new(layer);
+                    let bare = Arc::new(svp.peel(input, &layer)?);
+                    *svp = host()?;
+                    let clip = open(svp, &bare)?;
+                    svp.unpeel(clip, relay(svp, input, 1)?, relay(svp, &layer, 2)?)
+                }
+                Some(mask) => {
+                    *svp = host()?;
+                    let relay = relay(svp, input, 1)?;
+                    Ok(svp.still(open(svp, input)?, &relay, mask)?.keep(relay))
+                }
+                None => {
+                    *svp = host()?;
+                    open(svp, input)
+                }
+            }
         };
         if let Some(fps) = pre {
-            svp = host()?;
-            let clip = Rife::open(&svp, Arc::clone(&input), &meta, fps, rife, None, sink)?;
-            input = Arc::new(still(&svp, clip, &input)?);
+            input = Arc::new(pass(&mut svp, &input, fps, None)?);
             sink(Event::Info(format!("rife to {fps} fps first")));
         }
         let mut fused = false;
         let derived = match interpolation.engine {
             _ if !interpolate => None,
             Engine::Rife => {
-                svp = host()?;
                 let radius = (weights.len() / 2) as i64;
                 let blend = blended.then_some((radius, i64::from(target), i64::from(blending.fps)));
-                let clip = Rife::open(&svp, Arc::clone(&input), &meta, target, rife, blend, sink)?;
+                let clip = pass(&mut svp, &input, target, blend)?;
                 sink(Event::Info(format!("rife to {target} fps")));
-                Some(still(&svp, clip, &input)?)
+                Some(clip)
             }
             Engine::Svp => {
                 let rate = format!("num:{target},den:1,abs:true");
@@ -311,15 +332,11 @@ impl Graph {
                     false => svp.smooth(&input, &options(true)),
                 };
                 fused = blended && made.is_ok();
-                let clip = match (made, mask) {
-                    (Ok(clip), _) => clip,
-                    (Err(_), mask) => {
+                let clip = match made {
+                    Ok(clip) => clip,
+                    Err(_) => {
                         sink(Event::Warning("no opencl gpu, rendering on the cpu".into()));
-                        let clip = svp.smooth(&input, &options(false))?;
-                        match mask {
-                            Some(mask) => svp.still(clip, &input, mask)?,
-                            None => clip,
-                        }
+                        svp.smooth(&input, &options(false))?
                     }
                 };
                 let half = if half { ", half-size analysis" } else { "" };

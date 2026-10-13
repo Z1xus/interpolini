@@ -8,6 +8,7 @@ use crate::config::{Algorithm, Blending, Interpolation, Mask, Masking, Speed, Tu
 use crate::{Error, Result};
 
 const YUV420P8: i32 = 0;
+const YUV420P16: i32 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -34,6 +35,9 @@ api! {
     smooth_fps_blend: b"osvp_smooth_fps_blend\0"
         fn(Raw, Raw, Text, Text, Text, i32, *const f64, i32, i64, i64, f64) -> Raw;
     still: b"osvp_still\0" fn(Raw, Raw, Raw, f64, f64, f64) -> Raw;
+    layer: b"osvp_layer\0" fn(Raw, Raw, Text, Text, i32, f64) -> Raw;
+    peel: b"osvp_peel\0" fn(Raw, Raw, Raw) -> Raw;
+    unpeel: b"osvp_unpeel\0" fn(Raw, Raw, Raw, Raw) -> Raw;
     clip_info: b"osvp_clip_info\0" fn(Raw, *mut VideoInfo);
     clip_free: b"osvp_clip_free\0" fn(Raw);
     get_frame: b"osvp_get_frame\0" fn(Raw, i32) -> Raw;
@@ -139,6 +143,7 @@ impl Frame {
 }
 
 pub struct Shape {
+    pub deep: bool,
     pub width: u32,
     pub height: u32,
     pub fps: (i64, i64),
@@ -174,7 +179,7 @@ impl Svp {
 
     pub fn source<R: Reader>(self: &Arc<Self>, shape: &Shape, reader: R) -> Result<Clip> {
         let info = VideoInfo {
-            format: YUV420P8,
+            format: if shape.deep { YUV420P16 } else { YUV420P8 },
             width: shape.width as i32,
             height: shape.height as i32,
             fps_num: shape.fps.0,
@@ -249,6 +254,34 @@ impl Svp {
             unsafe { (self.api.still)(self.context, clip.raw, source.raw, limit, edge, tolerance) };
         Ok(self.clip(raw)?.keep(clip))
     }
+
+    pub fn layer(self: &Arc<Self>, source: &Clip, options: &Options, limit: f32) -> Result<Clip> {
+        let Options {
+            supers,
+            analyse,
+            half,
+            ..
+        } = options;
+        self.clip(unsafe {
+            (self.api.layer)(
+                self.context,
+                source.raw,
+                supers.as_ptr(),
+                analyse.as_ptr(),
+                i32::from(*half),
+                f64::from(limit),
+            )
+        })
+    }
+
+    pub fn peel(self: &Arc<Self>, source: &Clip, layer: &Clip) -> Result<Clip> {
+        self.clip(unsafe { (self.api.peel)(self.context, source.raw, layer.raw) })
+    }
+
+    pub fn unpeel(self: &Arc<Self>, clip: Clip, source: Clip, layer: Clip) -> Result<Clip> {
+        let raw = unsafe { (self.api.unpeel)(self.context, clip.raw, source.raw, layer.raw) };
+        Ok(self.clip(raw)?.keep(clip).keep(source).keep(layer))
+    }
 }
 
 unsafe fn error(api: &Api) -> Error {
@@ -269,6 +302,7 @@ impl Clip {
         let mut info = VideoInfo::default();
         unsafe { (self.svp.api.clip_info)(self.raw, &raw mut info) };
         Shape {
+            deep: info.format == YUV420P16,
             width: info.width as u32,
             height: info.height as u32,
             fps: (info.fps_num, info.fps_den),
@@ -352,16 +386,14 @@ impl Options {
                 method: Masking::Peel,
                 peel,
                 ..
-            }) if gpu => format!(",peel:{{limit:{peel}}}"),
+            }) => format!(",peel:{{limit:{peel}}}"),
             Some(Mask {
                 limit,
                 edge,
                 tolerance,
                 ..
-            }) if gpu => {
-                format!(",still:{{limit:{limit},edge:{edge},tolerance:{tolerance}}}")
-            }
-            _ => String::new(),
+            }) => format!(",still:{{limit:{limit},edge:{edge},tolerance:{tolerance}}}"),
+            None => String::new(),
         };
         let scene = if tuning == Tuning::Weak {
             "blend:true,mode:0,limits:{blocks:50}"
