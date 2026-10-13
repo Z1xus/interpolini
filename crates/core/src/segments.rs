@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::frame;
@@ -20,8 +20,8 @@ use crate::decode::{Ahead, Decoder, Gpu, Meta, gpus};
 const HELD: usize = 32;
 // the frames that a part has at least, so that the pictures it decodes again stay few
 const LEAST: i32 = 16;
-// the frames in a row that the reader waits for before the lanes start
-const PATIENCE: u32 = 8;
+// the reader waits this long for each frame before the lanes start, a short read must not start them
+const PATIENCE: Duration = Duration::from_secs(1);
 
 type Made = Result<frame::Video>;
 
@@ -61,7 +61,7 @@ pub struct Segments {
     planned: i32,
     next: Option<i32>,
     longest: usize,
-    waits: u32,
+    waiting: Option<Instant>,
     hurry: bool,
 }
 
@@ -315,7 +315,7 @@ impl Segments {
             planned: 0,
             next: None,
             longest: 0,
-            waits: 0,
+            waiting: None,
             hurry: false,
         }
     }
@@ -481,7 +481,7 @@ impl Segments {
             }
             self.parts.clear();
             (self.planned, self.next, self.longest) = (n, None, 0);
-            (self.waits, self.hurry) = (0, false);
+            (self.waiting, self.hurry) = (None, false);
         }
         loop {
             self.plan();
@@ -492,12 +492,12 @@ impl Segments {
             }
             let picture = match part.made.try_recv() {
                 Ok(picture) => {
-                    self.waits = 0;
+                    self.waiting = None;
                     picture
                 }
                 Err(_) => {
-                    self.waits += 1;
-                    self.hurry |= self.waits >= PATIENCE && self.most > 1;
+                    let since = *self.waiting.get_or_insert_with(Instant::now);
+                    self.hurry |= since.elapsed() >= PATIENCE && self.most > 1;
                     part.made.recv().map_err(|_| "the decoder stopped")?
                 }
             };
