@@ -191,6 +191,23 @@ pub struct Decoder {
 // the scaler has no thread affinity and the host reads one frame at a time
 unsafe impl Send for Decoder {}
 
+pub type Gpu = ffi::AVHWDeviceType;
+
+pub fn gpus() -> Vec<Gpu> {
+    let mut gpus = Vec::new();
+    if nvidia() {
+        gpus.push(Gpu::AV_HWDEVICE_TYPE_CUDA);
+    }
+    gpus.push(if cfg!(windows) {
+        Gpu::AV_HWDEVICE_TYPE_D3D11VA
+    } else if cfg!(target_os = "macos") {
+        Gpu::AV_HWDEVICE_TYPE_VIDEOTOOLBOX
+    } else {
+        Gpu::AV_HWDEVICE_TYPE_VAAPI
+    });
+    gpus
+}
+
 // asks the driver itself, because ffmpeg prints an error on a computer without the gpu
 fn nvidia() -> bool {
     static FOUND: OnceLock<bool> = OnceLock::new();
@@ -224,24 +241,23 @@ fn rgb(format: Pixel) -> bool {
 
 impl Decoder {
     pub fn open(path: &Path) -> Result<Self> {
-        Self::start(path, 0, false)
+        Self::start(path, 0, None)
     }
 
     // 0 lets ffmpeg take one thread for each core, up to 16
     pub fn threaded(path: &Path, threads: usize) -> Result<Self> {
-        Self::start(path, threads, false)
+        Self::start(path, threads, None)
     }
 
-    pub fn gpu(path: &Path) -> Result<Self> {
-        match nvidia() {
-            true => Self::start(path, 1, true),
-            false => Err("no nvidia gpu".into()),
-        }
+    pub fn gpu(path: &Path, gpu: Gpu) -> Result<Self> {
+        Self::start(path, 1, Some(gpu))
     }
 
-    fn start(path: &Path, threads: usize, gpu: bool) -> Result<Self> {
+    fn start(path: &Path, threads: usize, gpu: Option<Gpu>) -> Result<Self> {
         ffmpeg_next::init()?;
-        ffmpeg_next::log::set_level(Level::Error);
+        // only once, so that it does not end the quiet time of a trial of the gpu
+        static LEVEL: OnceLock<()> = OnceLock::new();
+        LEVEL.get_or_init(|| ffmpeg_next::log::set_level(Level::Error));
         let input = format::input(path)?;
         let stream = input
             .streams()
@@ -287,15 +303,11 @@ impl Decoder {
             kind: threading::Type::Frame,
             count: threads,
         });
-        if gpu {
-            let kind = ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA;
+        if let Some(kind) = gpu {
             let device = unsafe { &mut (*context.as_mut_ptr()).hw_device_ctx };
             let (name, options) = (std::ptr::null(), std::ptr::null_mut());
-            // a computer without this gpu, or a clip that it cannot decode, fails without a word
-            ffmpeg_next::log::set_level(Level::Quiet);
             let code = unsafe { ffi::av_hwdevice_ctx_create(device, kind, name, options, 0) };
             if code < 0 {
-                ffmpeg_next::log::set_level(Level::Error);
                 return Err(ffmpeg_next::Error::from(code).into());
             }
         }
@@ -306,7 +318,7 @@ impl Decoder {
             decoder.id(),
             codec::Id::H264 | codec::Id::HEVC | codec::Id::AV1 | codec::Id::VP9
         );
-        if gpu && !(exact && matches!(format, Pixel::YUV420P | Pixel::YUVJ420P)) {
+        if gpu.is_some() && !(exact && matches!(format, Pixel::YUV420P | Pixel::YUVJ420P)) {
             return Err("the gpu does not decode this clip".into());
         }
         let limited = format != Pixel::YUVJ420P && decoder.color_range() != color::Range::JPEG;
@@ -340,7 +352,7 @@ impl Decoder {
             after: None,
             meta,
             stream: index,
-            gpu,
+            gpu: gpu.is_some(),
             drained: false,
             start,
             frames_per_tick: time_base * fps,
@@ -363,9 +375,8 @@ impl Decoder {
         loop {
             if self.decoder.receive_frame(&mut self.ahead).is_ok() {
                 if self.gpu {
-                    ffmpeg_next::log::set_level(Level::Error);
                     // a clip that the gpu cannot decode comes from the cpu, with one thread
-                    if self.ahead.format() != Pixel::CUDA {
+                    if unsafe { (*self.ahead.as_ptr()).hw_frames_ctx.is_null() } {
                         return Err("the gpu does not decode this clip".into());
                     }
                     let mut copy = frame::Video::empty();
@@ -594,7 +605,7 @@ impl Decoder {
     }
 }
 
-const AHEAD: usize = 32;
+const AHEAD: usize = 16;
 
 pub struct Ahead {
     wanted: mpsc::Sender<(i32, i32)>,

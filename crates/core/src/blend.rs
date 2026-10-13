@@ -53,6 +53,14 @@ impl Blend {
         (center - self.radius()).clamp(0, self.last) as i32
     }
 
+    pub fn window(&self) -> usize {
+        self.weights.len()
+    }
+
+    pub fn pace(&self) -> f32 {
+        self.step.0 as f32 / self.step.1 as f32
+    }
+
     pub fn last(&self, n: i32) -> i32 {
         let center = i64::from(n) * self.step.0 / self.step.1;
         (center + self.radius()).clamp(0, self.last) as i32
