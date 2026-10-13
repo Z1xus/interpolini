@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -20,8 +20,12 @@ use crate::decode::{Ahead, Decoder, Gpu, Meta, gpus};
 const HELD: usize = 32;
 // the frames that a part has at least, so that the pictures it decodes again stay few
 const LEAST: i32 = 16;
-// the reader waits this long for each frame before the lanes start, a short read must not start them
+// the reader's waits are counted over this time, a shorter read starts no lanes
 const PATIENCE: Duration = Duration::from_secs(1);
+// the wait that the lanes must save, their start costs time
+const START: Duration = Duration::from_secs(2);
+// a lane with fewer threads is too slow for the reader
+const THREADS: usize = 12;
 
 type Made = Result<frame::Video>;
 
@@ -36,7 +40,11 @@ struct Part {
     made: Receiver<Made>,
 }
 
-type Jobs = Arc<Mutex<Receiver<Job>>>;
+#[derive(Default)]
+struct Jobs {
+    queue: Mutex<(VecDeque<Job>, bool)>,
+    ready: Condvar,
+}
 
 pub struct Segments {
     clip: PathBuf,
@@ -49,8 +57,7 @@ pub struct Segments {
     most: usize,
     gpus_most: usize,
     room: usize,
-    jobs: Sender<Job>,
-    idle: Jobs,
+    jobs: Arc<Jobs>,
     started: usize,
     shared: Arc<Shared>,
     gpus: usize,
@@ -61,7 +68,8 @@ pub struct Segments {
     planned: i32,
     next: Option<i32>,
     longest: usize,
-    waiting: Option<Instant>,
+    waiting: (Instant, Duration, u32),
+    warm: bool,
     hurry: bool,
 }
 
@@ -85,6 +93,7 @@ struct Tune {
     frames: usize,
     settled: Option<(usize, usize)>,
     before: Option<f32>,
+    base: f32,
     idle: u32,
     done: bool,
 }
@@ -96,6 +105,7 @@ impl Tune {
             frames: 0,
             settled: None,
             before: None,
+            base: 0.0,
             idle: 0,
             done: false,
         }
@@ -200,7 +210,7 @@ struct Lane {
     clip: PathBuf,
     blend: Blend,
     size: (u32, u32),
-    jobs: Jobs,
+    jobs: Arc<Jobs>,
     gpu: Option<(usize, Arc<Shared>, i32)>,
 }
 
@@ -226,16 +236,32 @@ fn work(lane: Lane) -> JoinHandle<()> {
             {
                 return;
             }
-            let job = jobs.lock().unwrap_or_else(|poison| poison.into_inner());
-            let Ok(Job {
+            let mut queue = jobs
+                .queue
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let Job {
                 frames,
                 threads,
                 made,
-            }) = job.recv()
-            else {
-                return;
+            } = loop {
+                if queue.1 {
+                    return;
+                }
+                // a lane on the gpu starts slowly, so it takes the last part
+                let job = match place {
+                    Some(_) => queue.0.pop_back(),
+                    None => queue.0.pop_front(),
+                };
+                match job {
+                    Some(job) => break job,
+                    None => {
+                        let woken = jobs.ready.wait(queue);
+                        queue = woken.unwrap_or_else(|poison| poison.into_inner());
+                    }
+                }
             };
-            drop(job);
+            drop(queue);
             let last = blend.last(frames.end - 1);
             // a part that is alone has all threads, which is faster than the gpu
             let mut hard = gpu.filter(|_| threads > 0);
@@ -289,9 +315,7 @@ impl Segments {
         // a quarter of the memory: half for the pictures of the lanes, half for the frames that wait
         let budget = memory().map_or(2 << 30, |memory| (memory / 4).clamp(1 << 30, 8 << 30));
         let lanes = budget / 2 / ((math.window() + HELD) * picture);
-        // a decoder is the most efficient with few threads
-        let most = (cores / 2).min(lanes).max(1);
-        let (jobs, idle) = mpsc::channel();
+        let most = (cores / THREADS).min(lanes).max(1);
         Self {
             clip: clip.to_owned(),
             size: (width, height),
@@ -303,8 +327,7 @@ impl Segments {
             most,
             gpus_most: lanes.saturating_sub(most).clamp(1, GPUS),
             room: budget / 2 / picture,
-            jobs,
-            idle: Arc::new(Mutex::new(idle)),
+            jobs: Arc::default(),
             started: 0,
             shared: Arc::default(),
             gpus: 0,
@@ -315,7 +338,8 @@ impl Segments {
             planned: 0,
             next: None,
             longest: 0,
-            waiting: None,
+            waiting: (Instant::now(), Duration::ZERO, 0),
+            warm: false,
             hurry: false,
         }
     }
@@ -350,7 +374,7 @@ impl Segments {
             clip: self.clip.clone(),
             blend: (self.blend)(),
             size: self.size,
-            jobs: Arc::clone(&self.idle),
+            jobs: Arc::clone(&self.jobs),
             gpu,
         }));
     }
@@ -361,6 +385,7 @@ impl Segments {
             frames,
             settled,
             before,
+            base,
             idle,
             done,
         } = &mut self.tune;
@@ -376,7 +401,7 @@ impl Segments {
         let lanes = self.shared.wanted.load(Ordering::Relaxed);
         let rate = (pictures - first.1) as f32 / (seconds - SETTLE);
         let all = (*frames - first.0) as f32 * self.math.pace() / (seconds - SETTLE);
-        let slow = rate / lanes as f32 * 2.0 < (all - rate) / self.started.max(1) as f32;
+        let slow = rate * (self.cores as f32) < (all - rate) * lanes as f32;
         let wanted = match *before {
             // the gpu takes a moment to start, and some computers have none
             _ if rate == 0.0 && *idle < 2 => {
@@ -384,6 +409,8 @@ impl Segments {
                 lanes
             }
             _ if rate == 0.0 || slow => 0,
+            // the gpu must make the clip faster than one decoder did
+            None if all < 1.1 * *base => 0,
             Some(before) if rate < 1.15 * before => lanes - 1,
             _ => (lanes + 1).min(self.gpus_most),
         };
@@ -414,38 +441,44 @@ impl Segments {
                     // a long part to the end has no part after it to run at the same time
                     let length = (end - start) as usize;
                     if end == self.frames && length > 2 * self.longest {
-                        (end, 1)
+                        (end, 0)
                     } else {
                         self.longest = self.longest.max(length);
                         (end, (self.room / self.longest).clamp(1, self.most))
                     }
                 }
-                false => (start.saturating_add(LEAST).min(self.frames), 1),
+                false => (start.saturating_add(LEAST).min(self.frames), 0),
             };
             // parts get done out of order, so some more than the lanes keep all lanes at work
-            let open = (self.room / self.longest.max(1)).min(lanes * 2).max(1);
-            if self.parts.len() >= if lanes == 1 { 1 } else { open } {
+            let all = lanes + self.shared.wanted.load(Ordering::Relaxed);
+            let open = (self.room / self.longest.max(1)).min(all * 2).max(1);
+            if self.parts.len() >= if lanes == 0 { 1 } else { open } {
                 break;
             }
             self.next = None;
+            // 0 lanes: one decoder makes the part with all threads
             let (threads, room) = match lanes {
-                1 => (0, 2),
+                0 => (0, 2),
                 lanes => (self.cores.div_ceil(lanes), (end - start) as usize),
             };
             let (made, pictures) = mpsc::sync_channel(room);
-            if self.started < lanes {
+            if self.started < lanes.max(1) {
                 self.lane(false);
             }
-            if lanes > 1 && self.gpus == 0 {
+            if lanes > 0 && self.gpus == 0 {
                 self.shared.wanted.store(1, Ordering::Relaxed);
                 self.tune.since = Instant::now();
                 self.lane(true);
             }
-            let _ = self.jobs.send(Job {
+            let queue = self.jobs.queue.lock();
+            let mut queue = queue.unwrap_or_else(|poison| poison.into_inner());
+            queue.0.push_back(Job {
                 frames: start..end,
                 threads,
                 made,
             });
+            drop(queue);
+            self.jobs.ready.notify_all();
             self.parts.push_back(Part {
                 frames: start..end,
                 made: pictures,
@@ -464,8 +497,12 @@ impl Segments {
 
     fn stop(&mut self) {
         self.parts.clear();
-        let (jobs, idle) = mpsc::channel();
-        (self.jobs, self.idle) = (jobs, Arc::new(Mutex::new(idle)));
+        let jobs = std::mem::take(&mut self.jobs);
+        jobs.queue
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .1 = true;
+        jobs.ready.notify_all();
         for lane in self.lanes.drain(..) {
             let _ = lane.join();
         }
@@ -481,7 +518,8 @@ impl Segments {
             }
             self.parts.clear();
             (self.planned, self.next, self.longest) = (n, None, 0);
-            (self.waiting, self.hurry) = (None, false);
+            self.waiting = (Instant::now(), Duration::ZERO, 0);
+            (self.warm, self.hurry) = (false, false);
         }
         loop {
             self.plan();
@@ -491,16 +529,27 @@ impl Segments {
                 continue;
             }
             let picture = match part.made.try_recv() {
-                Ok(picture) => {
-                    self.waiting = None;
+                Ok(picture) => picture,
+                Err(_) => {
+                    let since = Instant::now();
+                    let picture = part.made.recv().map_err(|_| "the decoder stopped")?;
+                    self.waiting.1 += since.elapsed();
                     picture
                 }
-                Err(_) => {
-                    let since = *self.waiting.get_or_insert_with(Instant::now);
-                    self.hurry |= since.elapsed() >= PATIENCE && self.most > 1;
-                    part.made.recv().map_err(|_| "the decoder stopped")?
-                }
             };
+            let (since, waited, seen) = &mut self.waiting;
+            *seen += 1;
+            if since.elapsed() >= PATIENCE {
+                let left = (self.frames - n) as f32 / *seen as f32;
+                // a decoder is slow in its first second on any computer
+                if self.warm && !self.hurry && waited.mul_f32(left) >= START {
+                    self.hurry = true;
+                    self.tune.base =
+                        *seen as f32 * self.math.pace() / since.elapsed().as_secs_f32();
+                }
+                self.waiting = (Instant::now(), Duration::ZERO, 0);
+                self.warm = true;
+            }
             part.frames.start += 1;
             self.tune.frames += 1;
             if part.frames.start > n {
