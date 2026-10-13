@@ -146,8 +146,19 @@ pub fn label(entry: &config::Entry) -> String {
     }
 }
 
-pub fn curve(ui: &App, config: &Config, fps: f64) {
-    let plan = Plan::new(fps, config);
+pub fn curve(ui: &App, state: &mut State) {
+    let video = |entry: &&crate::state::Entry| entry.audio.is_none() && !entry.still;
+    let rates: Vec<f64> = match state.video(ui) {
+        Some(index) => vec![state.entries[index].fps],
+        None => state
+            .entries
+            .iter()
+            .filter(video)
+            .map(|entry| entry.fps)
+            .collect(),
+    };
+    let config = &state.current(ui).config;
+    let plan = Plan::new(rates.iter().copied().fold(0.0, f64::max), config);
     let peak = plan.weights.iter().copied().fold(0.0, f64::max);
     let weights: Vec<f32> = plan
         .weights
@@ -159,7 +170,7 @@ pub fn curve(ui: &App, config: &Config, fps: f64) {
         false => "".into(),
     });
     ui.set_weights(ModelRc::new(VecModel::from(weights)));
-    ui.set_lossless(fps > 0.0 && lossless(fps, config));
+    ui.set_lossless(!rates.is_empty() && rates.iter().all(|fps| lossless(*fps, config)));
 }
 
 // what the timeline has that a copy does not keep
@@ -244,8 +255,8 @@ pub fn load(ui: &App, state: &mut State) {
     ui.set_configs(ModelRc::new(VecModel::from(configs)));
     let origin = entry.origin.as_ref().map(label);
     ui.set_config(origin.unwrap_or("built-in".into()).into());
-    curve(ui, &entry.config, entry.fps);
     ui.set_unsaved(unsaved(entry));
+    curve(ui, state);
     ui.set_repeats(repeats(ui, state));
 }
 
@@ -274,8 +285,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
     crate::estimate::ask(ui, shared);
     let mut state = lock(shared);
     layout(ui, &mut state);
-    let entry = state.current(ui);
-    curve(ui, &entry.config, entry.fps);
+    curve(ui, &mut state);
     left(ui, &state);
     // a render gets all of the gpu, so the preview closes its clips until the render is done
     if ui.get_rendering() {
