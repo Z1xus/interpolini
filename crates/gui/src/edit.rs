@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use slint::{ComponentHandle, Model, VecModel};
 
-use crate::history::record;
+use crate::history::{record, revert};
 use crate::state::{Entry, Shared, State, lock};
 use crate::view::{fit, lanes, layout, load, refresh, select, selected};
 use crate::{App, Clip};
@@ -104,6 +104,77 @@ pub fn overwrite(ui: &App, state: &mut State, link: u64, moved: f64) {
         }
     }
     layout(ui, state);
+}
+
+fn clashes(state: &State, link: u64) -> bool {
+    let over = |mover: &Entry, other: &Entry| {
+        let same = other.audio.is_some() == mover.audio.is_some() && other.track == mover.track;
+        let apart = mover.at >= other.at + other.kept() - 0.001
+            || other.at >= mover.at + mover.kept() - 0.001;
+        other.link != link && same && !apart
+    };
+    let mut movers = state.entries.iter().filter(|entry| entry.link == link);
+    movers.any(|mover| state.entries.iter().any(|other| over(mover, other)))
+}
+
+// the move nearest to the wanted one that puts no clip of these files over a clip of another file
+fn clear(state: &State, group: &[u64], index: usize, track: usize, moved: f64) -> f64 {
+    let held = &state.entries[index];
+    let lane = |place: usize, entry: &Entry| match () {
+        () if place == index => track,
+        () if entry.link == held.link && held.audio.is_none() && entry.audio.is_some() => {
+            (entry.track + track).saturating_sub(held.track)
+        }
+        () => entry.track,
+    };
+    // the start, the length, the kind and the track
+    let shape = |place: usize, entry: &Entry| {
+        let own = group.contains(&entry.link);
+        let track = if own { lane(place, entry) } else { entry.track };
+        (own, (entry.at, entry.kept(), entry.audio.is_some(), track))
+    };
+    let shapes = state.entries.iter().enumerate();
+    let (movers, walls): (Vec<_>, Vec<_>) = shapes
+        .map(|(place, entry)| shape(place, entry))
+        .partition(|shape| shape.0);
+    let pairs = || {
+        movers.iter().flat_map(|(_, mover)| {
+            let same = move |wall: &&(bool, (f64, f64, bool, usize))| {
+                wall.1.2 == mover.2 && wall.1.3 == mover.3
+            };
+            walls.iter().filter(same).map(move |wall| (mover, &wall.1))
+        })
+    };
+    let free = |moved: f64| {
+        movers.iter().all(|(_, mover)| mover.0 + moved >= -0.0005)
+            && pairs().all(|(mover, wall)| {
+                let start = mover.0 + moved;
+                start >= wall.0 + wall.1 - 0.0005 || wall.0 >= start + mover.1 - 0.0005
+            })
+    };
+    let sides =
+        pairs().flat_map(|(mover, wall)| [wall.0 - mover.1 - mover.0, wall.0 + wall.1 - mover.0]);
+    let moves = [moved]
+        .into_iter()
+        .chain(sides)
+        .filter(|moved| free(*moved));
+    moves
+        .min_by(|a, b| (a - moved).abs().total_cmp(&(b - moved).abs()))
+        .unwrap_or(0.0)
+}
+
+// a clip without keyframes keeps the time, and a clip with no keyframe inside gives none
+fn snap(state: &State, entry: &Entry, time: f64) -> Option<f64> {
+    let video = |other: &&Entry| {
+        other.link == entry.link && other.audio.is_none() && !other.keys.is_empty()
+    };
+    let Some(video) = state.entries.iter().find(video) else {
+        return Some(time);
+    };
+    let start = f64::from(video.cut.0) * video.seconds;
+    let end = f64::from(video.cut.1) * video.seconds;
+    let key = video.key(start + time - video.at, start + 0.05, end - 0.05)?;
+    Some(video.at + key - start)
 }
 
 pub fn discard(ui: &App, state: &mut State, gone: impl Fn(&Entry) -> bool) {
@@ -218,7 +289,14 @@ pub fn wire(ui: &App, state: &Shared) {
         let under =
             |entry: &Entry| entry.at + least < time && time < entry.at + entry.kept() - least;
         // a split cuts every clip under the playhead, the other marks are for the selected clip
-        let chosen = selected(&ui).or_else(|| state.locate(ui.get_position()));
+        // a start or an end is for the clip under the playhead when the selected clip is not there
+        let held = |index: &usize| kind == "clear" || state.entries.get(*index).is_some_and(under);
+        // a copy has no images, so the video under an image gets the mark
+        let shown = |index: &&usize| !(ui.get_copying() && state.entries[**index].still);
+        let top = |part: interpolini_core::Part| part.clips.iter().rev().find(shown).copied();
+        let chosen = selected(&ui)
+            .filter(held)
+            .or_else(|| top(state.part(ui.get_position())?.1));
         let link = chosen
             .and_then(|index| state.entries.get(index))
             .map(|entry| entry.link);
@@ -262,6 +340,13 @@ pub fn wire(ui: &App, state: &Shared) {
             };
             let entry = state.entries[index].clone();
             let length = entry.seconds as f32;
+            let time = match kind.as_str() {
+                "start" | "split" if ui.get_copying() => match snap(&state, &entry, time) {
+                    Some(time) => time,
+                    None => continue,
+                },
+                _ => time,
+            };
             let local =
                 (row.cut_in + (time as f32 - row.at) / length).clamp(row.cut_in, row.cut_out);
             match kind.as_str() {
@@ -378,6 +463,10 @@ pub fn wire(ui: &App, state: &Shared) {
         let moved = (at - entry.at).max(-earliest);
         let track = state.reach(entry.audio.is_some(), depth);
         lanes(&ui, &state);
+        let moved = match ui.get_copying() {
+            true => clear(&state, &group, index, track, moved),
+            false => moved,
+        };
         let mut sounds = 0;
         for (other, linked) in state.entries.iter().enumerate() {
             let Some(mut row) = rows
@@ -414,6 +503,11 @@ pub fn wire(ui: &App, state: &Shared) {
             });
             state.spare = None;
             if let Some(link) = state.touched.take() {
+                // a copy has one file for each clip, so a clip does not cut into another one
+                if ui.get_copying() && clashes(&state, link) {
+                    drop(state);
+                    return revert(&ui, &shared);
+                }
                 overwrite(&ui, &mut state, link, moved.unwrap_or(0.0));
             }
             drop(state);
@@ -503,7 +597,7 @@ pub fn wire(ui: &App, state: &Shared) {
             .entries
             .iter()
             .find(joined)
-            .filter(|_| !alone)
+            .filter(|_| !alone && !ui.get_copying())
             .cloned();
         let playhead = f64::from(ui.get_position()) * state.seconds();
         let others = state.entries.iter().filter(|other| other.link != link);
@@ -513,6 +607,31 @@ pub fn wire(ui: &App, state: &Shared) {
             .map(|other| other as f32 - edge)
             .min_by(|a, b| a.abs().total_cmp(&b.abs()));
         let moved = near.filter(|near| near.abs() < slack).unwrap_or(0.0) / row.length;
+        // in a copy the clips next to this file are walls, the end of the one before and the start of the one after
+        let mut room = (0.0, f64::MAX);
+        let own = |member: &&Entry| member.link == link && ui.get_copying();
+        for member in state.entries.iter().filter(own) {
+            let wall = |other: &&Entry| {
+                let same = other.audio.is_some() == member.audio.is_some();
+                other.link != link && same && other.track == member.track
+            };
+            for other in state.entries.iter().filter(wall) {
+                match other.at < member.at {
+                    true => room.0 = f64::max(room.0, other.at + other.kept()),
+                    false => room.1 = f64::min(room.1, other.at),
+                }
+            }
+        }
+        let video = |other: &&Entry| other.link == link && other.audio.is_none();
+        let video = state.entries.iter().find(video);
+        let key = video
+            .filter(|_| head && ui.get_copying())
+            .and_then(|video| {
+                let (start, end) = (row.cut_in * row.length, row.cut_out * row.length);
+                let first = (f64::from(start - row.at) + room.0).max(0.0) - 0.001;
+                video.key(f64::from(start), first, f64::from(end) - 0.1)
+            });
+        let moved = key.map_or(moved, |key| key as f32 / row.length - row.cut_in);
         match head {
             true if row.cut_in + moved >= 0.0 => {
                 row.cut_in += moved;
@@ -521,6 +640,8 @@ pub fn wire(ui: &App, state: &Shared) {
             false if row.cut_out + moved <= 1.0 => row.cut_out += moved,
             _ => {}
         }
+        let most = row.cut_in + ((room.1 - f64::from(row.at)) / f64::from(row.length)) as f32;
+        row.cut_out = row.cut_out.min(most);
         rows.set_row_data(index as usize, row.clone());
         for (other, entry) in state.entries.iter().enumerate() {
             let Some(mut linked) = rows
@@ -671,6 +792,10 @@ pub fn wire(ui: &App, state: &Shared) {
         if let Some(ui) = weak.upgrade() {
             let mut state = lock(&shared);
             if let Some(link) = state.touched.take() {
+                if ui.get_copying() && clashes(&state, link) {
+                    drop(state);
+                    return revert(&ui, &shared);
+                }
                 overwrite(&ui, &mut state, link, 0.0);
             }
             drop(state);

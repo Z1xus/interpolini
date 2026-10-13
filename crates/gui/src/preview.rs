@@ -380,6 +380,12 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
                         if let Some(before) = before {
                             ui.set_original(picture(before));
                         }
+                        // a copy keeps the frame rate
+                        let rate = details.split_once(" to ").filter(|_| ui.get_copying());
+                        let details = match rate {
+                            Some((size, _)) => format!("{size} fps"),
+                            None => details,
+                        };
                         ui.set_details(details.into());
                         ui.set_tick((1.0 / fps) as f32);
                         ui.set_preview_note(text.into());

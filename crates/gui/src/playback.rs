@@ -33,6 +33,34 @@ pub fn wire(ui: &App, state: &Shared) {
     });
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_hop(move |forward| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let state = lock(&shared);
+        let time = f64::from(ui.get_position()) * state.seconds();
+        let video = |entry: &&crate::state::Entry| entry.audio.is_none();
+        let keys = state.entries.iter().filter(video).flat_map(|entry| {
+            let start = f64::from(entry.cut.0) * entry.seconds;
+            let kept = move |key: &f64| *key >= start - 0.001 && *key < start + entry.kept();
+            let keys = entry.keys.iter().copied().filter(kept);
+            keys.map(move |key| entry.at + key - start)
+        });
+        let next = match forward {
+            true => keys.filter(|key| *key > time + 0.001).reduce(f64::min),
+            false => keys.filter(|key| *key < time - 0.001).reduce(f64::max),
+        };
+        let Some(next) = next else {
+            return;
+        };
+        let position = next.max(0.0) / state.seconds().max(0.001);
+        drop(state);
+        ui.set_position(position as f32);
+        ui.set_playing(false);
+        refresh(&ui, &shared);
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_sounding(move || {
         let Some(ui) = weak.upgrade() else {
             return;

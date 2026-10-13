@@ -2,12 +2,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use interpolini_core::config::{self, Config, Ease};
-use interpolini_core::{Part, Place, Plan, lossless};
+use interpolini_core::{Fade, Part, Place, Plan, lossless};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::settings::settings;
 use crate::state::{Shared, State, lock};
-use crate::{App, Clip, Lane, preview};
+use crate::{App, Clip, Fact, Lane, preview};
 
 // the rows hold the place and the cut of each clip, and this brings the rest in line
 pub fn layout(ui: &App, state: &mut State) {
@@ -162,6 +162,43 @@ pub fn curve(ui: &App, config: &Config, fps: f64) {
     ui.set_lossless(fps > 0.0 && lossless(fps, config));
 }
 
+// what the timeline has that a copy does not keep
+fn left(ui: &App, state: &State) {
+    let video = |entry: &&crate::state::Entry| entry.audio.is_none() && !entry.still;
+    let count = |name: &str, found: usize| {
+        (found > 0).then(|| Fact {
+            name: name.into(),
+            value: found.to_string().into(),
+        })
+    };
+    let entries = || state.entries.iter();
+    let faded = |entry: &&crate::state::Entry| entry.fade != (0.0, 0.0) || entry.cross > 0.0;
+    let mut fades: Vec<u64> = entries().filter(faded).map(|entry| entry.link).collect();
+    fades.dedup();
+    let early = |entry: &&crate::state::Entry| {
+        let start = f64::from(entry.cut.0) * entry.seconds;
+        !entry.keys.is_empty() && entry.key(start, start - 0.005, start + 0.005).is_none()
+    };
+    let facts = [
+        count("Images", entries().filter(|entry| entry.still).count()),
+        count("Fades", fades.len()),
+        count(
+            "Transform",
+            entries()
+                .filter(video)
+                .filter(|entry| entry.place != Place::default())
+                .count(),
+        ),
+        count("Gain", entries().filter(|entry| entry.gain != 0.0).count()),
+        count(
+            "Exact starts",
+            entries().filter(video).filter(early).count(),
+        ),
+    ];
+    let facts: Vec<Fact> = facts.into_iter().flatten().collect();
+    ui.set_left(ModelRc::new(VecModel::from(facts)));
+}
+
 pub fn timecode(ui: &App, state: &Shared) {
     let total = lock(state).seconds();
     let now = f64::from(ui.get_position()) * total;
@@ -222,7 +259,9 @@ pub fn repeats(ui: &App, state: &State) -> f32 {
 }
 
 pub fn wanted(ui: &App) -> (bool, i32) {
-    let original = !ui.get_playing() || ui.get_view() != "result" || ui.get_held();
+    // a copy has no result to compare with
+    let original =
+        !ui.get_copying() && (!ui.get_playing() || ui.get_view() != "result" || ui.get_held());
     let shown = ui.get_drawn() * ui.window().scale_factor();
     // in steps, so not each zoom makes a new picture
     let steps = [1280, 1920, 2560, 3840];
@@ -237,6 +276,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
     layout(ui, &mut state);
     let entry = state.current(ui);
     curve(ui, &entry.config, entry.fps);
+    left(ui, &state);
     // a render gets all of the gpu, so the preview closes its clips until the render is done
     if ui.get_rendering() {
         if let Some(preview) = &state.preview {
@@ -273,30 +313,46 @@ pub fn refresh(ui: &App, shared: &Shared) {
         }
         return;
     };
+    // a copy shows each video as its file has it
+    let copying = ui.get_copying();
+    let place = |entry: &crate::state::Entry| match copying {
+        true => Place::default(),
+        false => entry.place,
+    };
     let covers = |index: &usize| {
         let entry = &state.entries[*index];
-        !entry.still && entry.place.covers(base.size, entry.size)
+        !entry.still && place(entry).covers(base.size, entry.size)
     };
     let stretch = |part: &Part, time: f64| {
         // a video that fills the picture hides the clips under it
-        let fills = |index: &usize| covers(index) && state.span(*index).picture().none();
+        let fills =
+            |index: &usize| covers(index) && (copying || state.span(*index).picture().none());
         let shown = &part.clips[part.clips.iter().rposition(fills).unwrap_or(0)..];
+        let shown = shown
+            .iter()
+            .filter(|index| !copying || !state.entries[**index].still);
         let layer = |index: &usize| {
             let (entry, span) = (&state.entries[*index], state.span(*index));
             preview::Layer {
                 clip: entry.clip.clone(),
-                config: entry.config.clone(),
+                config: match copying {
+                    true => preview::source(&entry.config),
+                    false => entry.config.clone(),
+                },
                 still: entry.still,
-                place: entry.place,
+                place: place(entry),
                 start: span.start + time - span.at,
                 inside: time - span.at,
                 length: span.length,
-                fade: span.picture(),
+                fade: match copying {
+                    true => Fade::default(),
+                    false => span.picture(),
+                },
                 fills: covers(index),
             }
         };
         preview::Stretch {
-            layers: shown.iter().map(layer).collect(),
+            layers: shown.map(layer).collect(),
             time,
             end: part.end,
         }

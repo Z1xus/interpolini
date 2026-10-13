@@ -56,8 +56,7 @@ pub fn record(ui: &App, state: &mut State, gesture: bool) {
 }
 
 pub fn travel(ui: &App, shared: &Shared, back: bool) {
-    let mut state = lock(shared);
-    let now = moment(ui, &state);
+    let now = moment(ui, &lock(shared));
     let target = HISTORY.with_borrow_mut(|history| {
         let History { undo, redo, .. } = history;
         let (from, to) = if back { (undo, redo) } else { (redo, undo) };
@@ -65,9 +64,20 @@ pub fn travel(ui: &App, shared: &Shared, back: bool) {
         to.push(now);
         Some(target)
     });
-    let Some(target) = target else {
-        return;
-    };
+    if let Some(target) = target {
+        restore(ui, shared, target);
+    }
+}
+
+// takes back a change that is not possible, it leaves nothing to redo
+pub fn revert(ui: &App, shared: &Shared) {
+    if let Some(target) = HISTORY.with_borrow_mut(|history| history.undo.pop()) {
+        restore(ui, shared, target);
+    }
+}
+
+fn restore(ui: &App, shared: &Shared, target: Moment) {
+    let mut state = lock(shared);
     state.entries = target.entries;
     state.tracks = target.tracks;
     ui.set_clips(ModelRc::new(VecModel::from(target.rows)));

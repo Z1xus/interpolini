@@ -2,10 +2,37 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use ffmpeg_next::{Packet, Rational, codec, encoder, ffi, format, media};
+use ffmpeg_next::{Discard, Packet, Rational, codec, encoder, ffi, format, media};
 
 use crate::queue::Job;
 use crate::{Event, Result, Sink};
+
+pub fn keyframes(clip: &Path) -> Result<Vec<f64>> {
+    ffmpeg_next::init()?;
+    let mut input = format::input(clip)?;
+    let video = input
+        .streams()
+        .best(media::Type::Video)
+        .ok_or("the clip has no video")?;
+    let (video, base) = (video.index(), f64::from(video.time_base()));
+    let begin = crate::decode::origin(&input) as f64 / 1e6;
+    for mut stream in input.streams_mut() {
+        let discard = match stream.index() == video {
+            true => Discard::NonKey,
+            false => Discard::All,
+        };
+        unsafe { (*stream.as_mut_ptr()).discard = discard.into() };
+    }
+    let mut keys = Vec::new();
+    let mut packet = Packet::empty();
+    while crate::decode::next(&mut packet, &mut input).is_ok() {
+        if packet.stream() == video && packet.is_key() {
+            let time = packet.pts().or(packet.dts()).unwrap_or(0);
+            keys.push(time as f64 * base - begin);
+        }
+    }
+    Ok(keys)
+}
 
 // copies the packets of the cut without a new encode, so the cut starts on a keyframe
 pub fn copy(job: &Job, output: &Path, sink: Sink, cancel: &AtomicBool) -> Result<()> {
@@ -40,12 +67,15 @@ pub fn copy(job: &Job, output: &Path, sink: Sink, cancel: &AtomicBool) -> Result
     let begin = unsafe {
         let context = input.as_mut_ptr();
         let begin = (*context).start_time.max(0);
-        let position = begin + (start * f64::from(ffi::AV_TIME_BASE)) as i64;
+        // a start on a keyframe must not fall before it
+        let position = begin + ((start + 0.001) * f64::from(ffi::AV_TIME_BASE)) as i64;
         ffi::av_seek_frame(context, -1, position, ffi::AVSEEK_FLAG_BACKWARD);
         begin as f64 / f64::from(ffi::AV_TIME_BASE)
     };
     target.write_header()?;
-    sink(Event::Info("nothing to render, copying the streams".into()));
+    if !job.copy {
+        sink(Event::Info("nothing to render, copying the streams".into()));
+    }
 
     let frames = ((end - start) * rate).max(1.0) as u32;
     let started = Instant::now();

@@ -108,11 +108,12 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_light_available(themes::has_light(theme));
     themes::apply(&ui, theme, ui.get_light());
 
-    const SHORTCUTS: [(&str, &str); 27] = [
+    const SHORTCUTS: [(&str, &str); 28] = [
         ("Play or pause", "Space, K"),
         ("Back or forward 1 second", "J, L"),
         ("Step 1 frame", "Left, Right"),
         ("Move 1 second", "Shift Left, Right"),
+        ("Step to a keyframe, in lossless cut", "Alt Left, Right"),
         ("Volume", "Up, Down"),
         ("Mute", "M"),
         ("Set start or end", "I, O"),
@@ -203,6 +204,7 @@ fn main() -> Result<(), slint::PlatformError> {
             cut: (0.0, 1.0),
             seconds: 0.0,
             fps: 0.0,
+            keys: Arc::default(),
             at: 0.0,
             track: 0,
             still: false,
@@ -234,6 +236,15 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_select(move |index| {
         if let Some(ui) = weak.upgrade() {
             select(&ui, &shared, index);
+        }
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(&state));
+    ui.on_moded(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_transform(false);
+            ui.set_playing(false);
+            view::refresh(&ui, &shared);
         }
     });
 

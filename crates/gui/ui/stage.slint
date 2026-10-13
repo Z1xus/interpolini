@@ -97,7 +97,8 @@ export component Stage inherits Rectangle {
     // the box on the picture is on, and the clip that it moves
     in property <bool> transform;
     in property <int> framed;
-    property <string> shown: root.held ? "original" : root.view;
+    in property <bool> copying;
+    property <string> shown: root.copying ? "result" : root.held ? "original" : root.view;
     property <length> pane: shown == "side" ? (root.width - 1px) / 2 : root.width;
     property <float> ratio: root.preview.height > 0 ? root.preview.width / root.preview.height : 16 / 9;
     property <length> wide: min(pane, root.height * ratio) * root.scale;
@@ -171,7 +172,7 @@ export component Stage inherits Rectangle {
             pan-x: root.pan-x;
             pan-y: root.pan-y;
         }
-        if root.held || root.shown == "split" || root.shown == "side": Tag {
+        if (root.held && !root.copying) || root.shown == "split" || root.shown == "side": Tag {
             x: 8px;
             y: parent.height - self.height - 8px;
             text: "original";
@@ -253,7 +254,7 @@ export component Stage inherits Rectangle {
                 padding-left: 12px;
                 padding-right: 12px;
                 spacing: 14px;
-                Tabs {
+                if !root.copying: Tabs {
                     options: ["original", "result", "split", "side"];
                     value <=> root.view;
                     changed => {

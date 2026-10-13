@@ -1,5 +1,5 @@
 import { Button, Piece, Theme, Tip } from "widgets.slint";
-import { Clip, Family, Ghost, Lane, Settings } from "types.slint";
+import { Clip, Fact, Family, Ghost, Lane, Settings } from "types.slint";
 import { Timeline } from "timeline.slint";
 import { Menu } from "menu.slint";
 import { Panel } from "panel.slint";
@@ -81,6 +81,13 @@ export component App inherits Window {
     in property <string> done;
     in property <string> preview-note;
     in property <bool> lossless;
+    // the clips are copied without a new encode, and the settings are not used
+    in-out property <bool> copying;
+    changed copying => {
+        root.moded();
+    }
+    callback moded();
+    in property <[Fact]> left;
     in property <string> estimate;
     in-out property <bool> separate;
     in-out property <string> scope: "all clips";
@@ -94,6 +101,7 @@ export component App inherits Window {
     callback remove-clip();
     callback close-clips();
     callback step(int, float);
+    callback hop(bool);
     callback mark(string);
     callback undo();
     callback redo();
@@ -202,6 +210,10 @@ export component App inherits Window {
                 root.viewed();
             } else if event.text == " " || event.text == "k" {
                 root.play();
+            } else if event.text == Key.LeftArrow && event.modifiers.alt && root.copying {
+                root.hop(false);
+            } else if event.text == Key.RightArrow && event.modifiers.alt && root.copying {
+                root.hop(true);
             } else if event.text == Key.LeftArrow {
                 root.step(event.modifiers.shift ? 0 : -1, event.modifiers.shift ? -1 : 0);
             } else if event.text == Key.RightArrow {
@@ -262,6 +274,7 @@ export component App inherits Window {
             root.show-components();
         }
         separate <=> root.separate;
+        copying: root.copying;
         add-clips => {
             root.add-clips();
         }
@@ -318,6 +331,7 @@ export component App inherits Window {
                 preview: root.preview;
                 original: root.original;
                 view <=> root.view;
+                copying: root.copying;
                 held: root.held;
                 viewed => {
                     root.viewed();
@@ -364,6 +378,10 @@ export component App inherits Window {
 
             if root.clips.length > 0: Transport {
                 transform <=> root.transform;
+                copying: root.copying;
+                hop(forward) => {
+                    root.hop(forward);
+                }
                 playing: root.playing;
                 volume <=> root.volume;
                 muted <=> root.muted;
@@ -400,6 +418,7 @@ export component App inherits Window {
                 visible: root.clips.length > 0;
                 height: root.clips.length == 0 ? 0px : root.deck > 0 ? max(90px, root.deck) : min(root.content + 24px, 380px);
                 clips <=> root.clips;
+                copying: root.copying;
                 video: root.video;
                 audio: root.audio;
                 selected: root.selected;
@@ -506,6 +525,8 @@ export component App inherits Window {
             weights: root.weights;
             summary: root.summary;
             lossless: root.lossless;
+            copying <=> root.copying;
+            left: root.left;
             estimate: root.estimate;
             separate: root.separate;
             rendering: root.rendering;

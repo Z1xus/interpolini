@@ -14,6 +14,8 @@ export struct Clip {
     // selected together with other clips
     picked: bool,
     thumbs: [image],
+    // the seconds in the source where its keyframes are
+    keys: [float],
     wave: [float],
     still: bool,
     // the width of the picture for a height of 1
@@ -45,6 +47,11 @@ export struct Clip {
     ease-after: string,
     // other clips are from the same file
     paired: bool,
+}
+
+export struct Fact {
+    name: string,
+    value: string,
 }
 
 export struct Family {

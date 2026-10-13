@@ -65,9 +65,23 @@ fn measure(ui: &App, shared: &Shared) {
     if ui.get_rendering() {
         return;
     }
-    let separate = ui.get_separate();
     let mut state = lock(shared);
-    let (mut jobs, sounds, _) = jobs(&state, separate);
+    // a copy is as large as the part of each file that it keeps
+    if ui.get_copying() {
+        let video = |entry: &&crate::state::Entry| entry.audio.is_none() && !entry.still;
+        let size = |entry: &crate::state::Entry| {
+            let file = std::fs::metadata(&entry.clip).map_or(0, |file| file.len());
+            file as f64 * f64::from(entry.cut.1 - entry.cut.0)
+        };
+        let bytes: f64 = state.entries.iter().filter(video).map(size).sum();
+        ASKED.set(None);
+        return ui.set_estimate(match bytes > 0.0 {
+            true => format!("about {}", megabytes(bytes as u64)).into(),
+            false => "".into(),
+        });
+    }
+    let separate = ui.get_separate();
+    let (mut jobs, sounds, _) = jobs(&state, separate, false);
     if state.current(ui).config.output.target == Target::Size || ui.get_lossless() {
         jobs.clear();
     }

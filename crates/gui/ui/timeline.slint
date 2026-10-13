@@ -12,6 +12,8 @@ component Fade inherits Rectangle {
     in property <bool> out;
     in property <string> curve;
     in property <brush> edge;
+    // the fade is there but not in use
+    in property <bool> off;
     // in pixels, so the corner is as wide as the fade
     property <float> wide: self.width / 1px;
     property <float> high: self.height / 1px;
@@ -20,13 +22,13 @@ component Fade inherits Rectangle {
         viewbox-width: root.wide;
         viewbox-height: root.high;
         commands: root.line + (root.out ? "V0z" : "H0z");
-        fill: Theme.rack;
+        fill: root.off ? transparent : Theme.rack;
     }
     Path {
         viewbox-width: root.wide;
         viewbox-height: root.high;
         commands: root.line;
-        stroke: root.edge;
+        stroke: root.off ? Theme.faint.with-alpha(0.7) : root.edge;
         stroke-width: 1px;
     }
 }
@@ -75,6 +77,7 @@ component Cross inherits Rectangle {
 
 export component Timeline inherits Rectangle {
     in-out property <[Clip]> clips;
+    in property <bool> copying;
     in property <[Lane]> video;
     in property <[Lane]> audio;
     in property <[Ghost]> ghosts;
@@ -114,6 +117,9 @@ export component Timeline inherits Rectangle {
         root.solo = solo;
         root.menu-x = x - root.absolute-position.x;
         root.menu-y = y - root.absolute-position.y;
+        if seam && root.copying {
+            return;
+        }
         if seam {
             join.show();
         } else {
@@ -265,7 +271,7 @@ export component Timeline inherits Rectangle {
         MenuPanel {
             VerticalLayout {
                 padding: 4px;
-                if root.clips[root.chosen].audio: MenuSlider {
+                if root.clips[root.chosen].audio && !root.copying: MenuSlider {
                     text: "Gain";
                     minimum: -24;
                     maximum: 24;
@@ -276,7 +282,7 @@ export component Timeline inherits Rectangle {
                         root.tune(root.chosen, "gain", value, root.solo);
                     }
                 }
-                MenuSlider {
+                if !root.copying: MenuSlider {
                     text: "Fade in";
                     maximum: 5;
                     value: root.clips[root.chosen].fade-in;
@@ -285,7 +291,7 @@ export component Timeline inherits Rectangle {
                         root.tune(root.chosen, "fade in", value, root.solo);
                     }
                 }
-                MenuRow {
+                if !root.copying: MenuRow {
                     text: "";
                     Segment {
                         horizontal-stretch: 1;
@@ -296,7 +302,7 @@ export component Timeline inherits Rectangle {
                         }
                     }
                 }
-                MenuSlider {
+                if !root.copying: MenuSlider {
                     text: "Fade out";
                     maximum: 5;
                     value: root.clips[root.chosen].fade-out;
@@ -305,7 +311,7 @@ export component Timeline inherits Rectangle {
                         root.tune(root.chosen, "fade out", value, root.solo);
                     }
                 }
-                MenuRow {
+                if !root.copying: MenuRow {
                     text: "";
                     Segment {
                         horizontal-stretch: 1;
@@ -316,14 +322,14 @@ export component Timeline inherits Rectangle {
                         }
                     }
                 }
-                if root.clips[root.chosen].paired && !root.solo: Text {
+                if root.clips[root.chosen].paired && !root.solo && !root.copying: Text {
                     height: 22px;
                     text: "       Alt right click changes only this clip";
                     color: Theme.faint;
                     font-size: 11px;
                     vertical-alignment: center;
                 }
-                Rectangle {
+                if !root.copying: Rectangle {
                     height: 9px;
                     Rectangle {
                         height: 1px;
@@ -614,6 +620,7 @@ export component Timeline inherits Rectangle {
                             background: clip.audio ? Theme.rack : Theme.raised;
                             border-width: 1px;
                             border-color: current || clip.picked ? Theme.accent : linked ? Theme.accent.with-alpha(0.5) : Theme.seam;
+                            opacity: root.copying && clip.still ? 0.3 : 1;
                             clip: true;
                             if clip.audio: Rectangle {
                                 background: lane.muted ? Theme.void.with-alpha(0.3) : Theme.ghost;
@@ -644,7 +651,7 @@ export component Timeline inherits Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 0;
                                     Rectangle {
-                                        height: max(1px, min(1, peak * pow(10, clip.gain / 20)) * parent.height);
+                                        height: max(1px, min(1, peak * (root.copying ? 1 : pow(10, clip.gain / 20))) * parent.height);
                                         background: lane.muted ? Theme.faint : Theme.accent.with-alpha(0.7);
                                     }
                                 }
@@ -654,24 +661,44 @@ export component Timeline inherits Rectangle {
                                 width: min(parent.width, clip.fade-in / root.extent * inner.width);
                                 curve: clip.ease-in;
                                 edge: parent.border-color;
+                                off: root.copying;
                             }
                             if clip.fade-out > 0 && clip.cross-out == 0: Fade {
                                 x: parent.width - self.width;
                                 width: min(parent.width, clip.fade-out / root.extent * inner.width);
                                 curve: clip.ease-out;
                                 edge: parent.border-color;
+                                off: root.copying;
                                 out: true;
                             }
                             if clip.cross-in > 0: Cross {
+                                opacity: root.copying ? 0.3 : 1;
                                 x: 0;
                                 width: before;
                                 curve: clip.ease-cross;
                             }
                             if clip.cross-out > 0: Cross {
+                                opacity: root.copying ? 0.3 : 1;
                                 x: parent.width - self.width;
                                 width: after;
                                 curve: clip.ease-after;
                                 out: true;
+                            }
+                            if root.copying && !clip.audio && !clip.still: Rectangle {
+                                y: parent.height - 11px;
+                                height: 10px;
+                                background: Theme.void.with-alpha(0.75);
+                                Rectangle {
+                                    x: -clip.cut-in * whole;
+                                    width: whole;
+                                    for key in clip.keys: Rectangle {
+                                        x: key / clip.length * parent.width;
+                                        y: 1px;
+                                        width: 1px;
+                                        height: 8px;
+                                        background: Theme.ink;
+                                    }
+                                }
                             }
                             Rectangle {
                                 x: 0;

@@ -1,5 +1,5 @@
 import { Action, Dropdown, Field, Label, Note, Number, Row, Scroll, Section, Segment, SliderRow, Switch, Theme } from "widgets.slint";
-import { Clip, Settings } from "types.slint";
+import { Clip, Fact, Settings } from "types.slint";
 
 component Curve inherits Rectangle {
     in property <[float]> weights;
@@ -68,6 +68,8 @@ export component Panel inherits Rectangle {
     in property <[float]> weights;
     in property <string> summary;
     in property <bool> lossless;
+    in-out property <bool> copying;
+    in property <[Fact]> left;
     in property <string> estimate;
     in property <bool> separate;
     in property <bool> rendering;
@@ -96,6 +98,42 @@ export component Panel inherits Rectangle {
     background: Theme.rack;
     VerticalLayout {
         HorizontalLayout {
+            height: 54px;
+            padding: 10px;
+            for mode[index] in ["Render", "Lossless cut"]: Rectangle {
+                property <bool> active: (index == 1) == root.copying;
+                accessible-role: button;
+                accessible-label: mode;
+                accessible-checkable: true;
+                accessible-checked: active;
+                accessible-action-default => {
+                    touch.clicked();
+                }
+                border-width: 1px;
+                border-color: active ? Theme.accent : Theme.seam;
+                background: active ? Theme.ghost : touch.has-hover ? Theme.raised : transparent;
+                animate background, border-color { duration: Theme.quick; }
+                Text {
+                    text: mode;
+                    color: active ? Theme.ink : Theme.muted;
+                    font-size: 13px;
+                }
+                touch := TouchArea {
+                    mouse-cursor: pointer;
+                    enabled: !root.rendering;
+                    clicked => {
+                        root.copying = index == 1;
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.seam;
+        }
+
+        if !root.copying: HorizontalLayout {
             height: 42px;
             padding: 10px;
             spacing: 10px;
@@ -150,12 +188,12 @@ export component Panel inherits Rectangle {
             }
         }
 
-        Rectangle {
+        if !root.copying: Rectangle {
             height: 1px;
             background: Theme.seam;
         }
 
-        if root.clips.length > 0: HorizontalLayout {
+        if root.clips.length > 0 && !root.copying: HorizontalLayout {
             height: 34px;
             padding-left: 10px;
             padding-right: 10px;
@@ -175,13 +213,56 @@ export component Panel inherits Rectangle {
                 }
             }
         }
-        if root.clips.length > 0: Rectangle {
+        if root.clips.length > 0 && !root.copying: Rectangle {
             height: 1px;
             background: Theme.seam;
         }
 
-        Scroll {
+        if root.copying: VerticalLayout {
             vertical-stretch: 1;
+            alignment: start;
+            padding-top: 10px;
+            Note {
+                text: "No re-encode. Cuts start on keyframes.";
+            }
+            if root.estimate != "": Row {
+                label: "Size";
+                Rectangle { }
+                Label {
+                    text: root.estimate;
+                }
+            }
+            if root.left.length > 0: Rectangle {
+                height: 17px;
+                Rectangle {
+                    height: 1px;
+                    background: Theme.seam;
+                }
+            }
+            if root.left.length > 0: HorizontalLayout {
+                height: 28px;
+                padding-left: 28px;
+                Text {
+                    text: "Left out";
+                    color: Theme.ink;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                }
+            }
+            for fact in root.left: Row {
+                label: fact.name;
+                Rectangle { }
+                Label {
+                    text: fact.value;
+                }
+            }
+        }
+
+        // the sections stay as they are while a copy hides them
+        Scroll {
+            vertical-stretch: root.copying ? 0 : 1;
+            max-height: root.copying ? 0 : 100000px;
+            visible: !root.copying;
             Section {
                 title: "Dedup";
                 // a clip with repeats is the reason to turn this on
@@ -737,7 +818,7 @@ export component Panel inherits Rectangle {
                     background: Theme.ghost;
                 }
                 Text {
-                    text: root.rendering ? "Stop" : (root.lossless && (root.separate || root.videos < 2) ? "Export" : "Render") + (root.videos > 1 && root.separate ? " \{root.videos} clips" : "");
+                    text: root.rendering ? "Stop" : (root.copying || (root.lossless && (root.separate || root.videos < 2)) ? "Export" : "Render") + (root.videos > 1 && (root.separate || root.copying) ? " \{root.videos} clips" : "");
                     color: ready ? Theme.ink : Theme.faint;
                     font-size: 13px;
                 }

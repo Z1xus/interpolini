@@ -26,6 +26,8 @@ pub struct Job {
     pub config: Config,
     pub cut: Option<(f64, f64)>,
     pub muted: Vec<usize>,
+    // the streams are copied, whatever the config says
+    pub copy: bool,
     // the place on the timeline, for a render into one file
     pub at: f64,
     pub track: usize,
@@ -327,7 +329,7 @@ fn fit(
 
 fn render(job: &Job, clip: usize, output: &Path, sink: Sink, cancel: &AtomicBool) -> Result<()> {
     let untouched = job.place == Place::default();
-    if untouched && lossless(probe(&job.clip)?.fps, &job.config) {
+    if job.copy || (untouched && lossless(probe(&job.clip)?.fps, &job.config)) {
         return copy(job, output, sink, cancel);
     }
     fit(&[(clip, job)], None, output, sink, cancel)
@@ -366,7 +368,12 @@ pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, sink: Sink, cancel: &Atomic
         }
         sink(Event::Start { clip });
         let started = Instant::now();
-        let output = target(&job.clip, job.config.output.container.name());
+        // a copy stays in the container of its source, which can hold its streams
+        let source = job.clip.extension().unwrap_or_default().to_string_lossy();
+        let output = match job.copy {
+            true => target(&job.clip, &source),
+            false => target(&job.clip, job.config.output.container.name()),
+        };
         match render(job, clip, &output, sink, cancel) {
             Ok(()) => {
                 let seconds = started.elapsed().as_secs_f32();

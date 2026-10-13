@@ -3,6 +3,8 @@ import { IconButton, Icons, Slider, Theme } from "widgets.slint";
 export component Transport inherits Rectangle {
     in-out property <bool> transform;
     in property <bool> playing;
+    in property <bool> copying;
+    callback hop(bool);
     in-out property <float> volume;
     in-out property <bool> muted;
     in property <bool> rendering;
@@ -27,6 +29,7 @@ export component Transport inherits Rectangle {
                 IconButton {
                     shape: Icons.frame;
                     label: "Transform";
+                    enabled: !root.copying;
                     active: root.transform;
                     clicked => {
                         root.transform = !root.transform;
@@ -63,6 +66,22 @@ export component Transport inherits Rectangle {
                     keys: ["Right"];
                     clicked => {
                         root.step(1, 0);
+                    }
+                }
+                if root.copying: IconButton {
+                    shape: Icons.key-back;
+                    label: "Previous keyframe";
+                    keys: ["Alt Left"];
+                    clicked => {
+                        root.hop(false);
+                    }
+                }
+                if root.copying: IconButton {
+                    shape: Icons.key-forward;
+                    label: "Next keyframe";
+                    keys: ["Alt Right"];
+                    clicked => {
+                        root.hop(true);
                     }
                 }
                 Rectangle {

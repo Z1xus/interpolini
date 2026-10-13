@@ -2,14 +2,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use interpolini_core::config;
-use interpolini_core::{Place, Probe, probe};
+use interpolini_core::{Place, Probe, keyframes, probe};
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
 use crate::edit::overwrite;
 use crate::history::record;
 use crate::state::{Entry, STILL, Shared, lock};
-use crate::view::{fit, lanes, refresh};
+use crate::view::{fit, lanes, refresh, update};
 use crate::{App, Clip, preview};
 #[cfg(target_os = "linux")]
 use crate::{Ghost, drop, icon};
@@ -82,7 +82,8 @@ pub fn import(ui: Weak<App>, state: Shared, clips: Vec<PathBuf>, point: Option<(
 }
 
 pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32)>) {
-    let mut place = place;
+    // a copy has no timeline, so a new clip does not cut into the clips that are there
+    let mut place = place.filter(|_| !ui.get_copying());
     let rows = ui.get_clips();
     let Some(rows) = rows.as_any().downcast_ref::<VecModel<Clip>>() else {
         return;
@@ -172,6 +173,7 @@ pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32
                 cut,
                 seconds,
                 fps: probed.fps,
+                keys: Arc::default(),
                 at,
                 track,
                 still: probed.still,
@@ -203,12 +205,37 @@ pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32
         if pictured {
             preview::thumbs(ui.as_weak(), clip.clone(), config.clone(), places.clone());
         }
+        if pictured && !probed.still {
+            keys(ui.as_weak(), Arc::clone(state), clip.clone());
+        }
         if !probed.still {
             preview::waves(ui.as_weak(), clip, probed.seconds, places);
         }
     }
     fit(ui, state);
     refresh(ui, state);
+}
+
+fn keys(ui: Weak<App>, state: Shared, clip: PathBuf) {
+    std::thread::spawn(move || {
+        let Ok(keys) = keyframes(&clip) else {
+            return;
+        };
+        let _ = ui.upgrade_in_event_loop(move |ui| {
+            let marks: Vec<f32> = keys.iter().map(|key| *key as f32).collect();
+            let marks = ModelRc::new(VecModel::from(marks));
+            let keys: Arc<[f64]> = keys.into();
+            let mut guard = lock(&state);
+            for (index, entry) in guard.entries.iter_mut().enumerate() {
+                if entry.clip == clip && entry.audio.is_none() {
+                    entry.keys = Arc::clone(&keys);
+                    update(&ui, index, |row| row.keys = marks.clone());
+                }
+            }
+            drop(guard);
+            refresh(&ui, &state);
+        });
+    });
 }
 
 // counts the repeated frames of each video whose cut changed, in the part that is kept

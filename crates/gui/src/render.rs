@@ -70,7 +70,7 @@ fn show(ui: &App, event: Event, row: Option<usize>, current: usize, count: usize
     }
 }
 
-pub fn jobs(state: &State, separate: bool) -> (Vec<Job>, Vec<Sound>, Vec<usize>) {
+pub fn jobs(state: &State, separate: bool, copy: bool) -> (Vec<Job>, Vec<Sound>, Vec<usize>) {
     let heard = sounds(state);
     // an image goes into the file of the timeline, and has no file of its own
     let mut rows = state.videos();
@@ -98,6 +98,7 @@ pub fn jobs(state: &State, separate: bool) -> (Vec<Job>, Vec<Sound>, Vec<usize>)
                 )),
             },
             muted: (0..entry.streams).filter(|stream| !kept(stream)).collect(),
+            copy,
             at: if faded { span.at } else { entry.at },
             track: entry.track,
             place: entry.place,
@@ -118,12 +119,14 @@ pub fn jobs(state: &State, separate: bool) -> (Vec<Job>, Vec<Sound>, Vec<usize>)
 }
 
 fn render(ui: &App, shared: &Shared) {
-    let separate = ui.get_separate();
+    // a copy makes one file for each clip
+    let copy = ui.get_copying();
+    let separate = ui.get_separate() || copy;
     let (jobs, sounds, rows, cancel) = {
         let mut state = lock(shared);
         layout(ui, &mut state);
         state.cancel = Arc::new(AtomicBool::new(false));
-        let (jobs, sounds, rows) = jobs(&state, separate);
+        let (jobs, sounds, rows) = jobs(&state, separate, copy);
         (jobs, sounds, rows, Arc::clone(&state.cancel))
     };
     if ui.get_videos() == 0 {

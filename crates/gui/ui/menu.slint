@@ -11,6 +11,7 @@ export component Menu inherits Rectangle {
     in property <bool> components;
     in-out property <bool> updates;
     in-out property <bool> separate;
+    in property <bool> copying;
     callback add-clips();
     callback remove-clip();
     callback close-clips();
@@ -68,7 +69,8 @@ export component Menu inherits Rectangle {
                         }
                         MenuItem {
                             text: "Export each clip separately";
-                            checked: root.separate;
+                            checked: root.separate || root.copying;
+                            enabled: !root.copying;
                             clicked => {
                                 root.separate = !root.separate;
                                 root.save-preferences();

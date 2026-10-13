@@ -295,6 +295,7 @@ fn main() -> ExitCode {
             config: loaded.config,
             cut: (from > 0.0 || to.is_finite()).then_some((from, to)),
             muted: muted.clone(),
+            copy: false,
             at: 0.0,
             track: 0,
             place: Place::default(),

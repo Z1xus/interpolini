@@ -27,6 +27,8 @@ pub struct Entry {
     pub cut: (f32, f32),
     pub seconds: f64,
     pub fps: f64,
+    // the times of the keyframes of a video, empty until they are read
+    pub keys: Arc<[f64]>,
     pub at: f64,
     pub track: usize,
     pub still: bool,
@@ -292,6 +294,14 @@ impl State {
 impl Entry {
     pub fn kept(&self) -> f64 {
         self.seconds * f64::from(self.cut.1 - self.cut.0)
+    }
+
+    // the keyframe that is nearest to a time in the source, between two times
+    pub fn key(&self, time: f64, from: f64, to: f64) -> Option<f64> {
+        let inside = self.keys.iter().filter(|key| from <= **key && **key <= to);
+        inside
+            .min_by(|a, b| (*a - time).abs().total_cmp(&(*b - time).abs()))
+            .copied()
     }
 }
 
