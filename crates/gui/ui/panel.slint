@@ -762,7 +762,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Effort";
                     Segment {
-                        options: ["fast", "balanced", "best"];
+                        options: ["fastest", "fast", "balanced", "best"];
                         value <=> root.settings.effort;
                         changed => {
                             root.changed();

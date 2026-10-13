@@ -78,11 +78,13 @@ fn options(name: &str, output: &Output, sized: bool) -> Dictionary<'static> {
         _ => &[("crf", &quality)],
     };
     let presets = match family {
-        Some("nvenc") => Some(("preset", ["p4", "p6", "p7"])),
-        Some("amf") => Some(("quality", ["speed", "balanced", "quality"])),
-        Some("qsv") => Some(("preset", ["medium", "slow", "veryslow"])),
-        _ if name == "libsvtav1" => Some(("preset", ["10", "8", "6"])),
-        _ if name.starts_with("lib") => Some(("preset", ["veryfast", "medium", "slow"])),
+        Some("nvenc") => Some(("preset", ["p1", "p4", "p6", "p7"])),
+        Some("amf") => Some(("quality", ["speed", "speed", "balanced", "quality"])),
+        Some("qsv") => Some(("preset", ["veryfast", "medium", "slow", "veryslow"])),
+        _ if name == "libsvtav1" => Some(("preset", ["12", "10", "8", "6"])),
+        _ if name.starts_with("lib") => {
+            Some(("preset", ["superfast", "veryfast", "medium", "slow"]))
+        }
         _ => None,
     };
     let preset = presets.map(|(key, presets)| (key, presets[output.effort as usize]));

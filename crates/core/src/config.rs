@@ -63,7 +63,12 @@ named!(Method { Nearest = "nearest", Bilinear = "bilinear", Bicubic = "bicubic",
 named!(Codec { H264 = "h264", Hevc = "hevc", Av1 = "av1" });
 named!(Encoder { Auto = "auto", Hardware = "hardware", Software = "software" });
 named!(Target { Quality = "quality", Size = "size" });
-named!(Effort { Fast = "fast", Balanced = "balanced", Best = "best" });
+named!(Effort {
+    Fastest = "fastest",
+    Fast = "fast",
+    Balanced = "balanced",
+    Best = "best"
+});
 named!(Container { Mp4 = "mp4", Mkv = "mkv", Mov = "mov" });
 named!(Audio { Separate = "separate", Mix = "mix" });
 named!(Ease { Linear = "linear", Smooth = "smooth", EaseIn = "ease in", EaseOut = "ease out" });
