@@ -161,6 +161,10 @@ export component App inherits Window {
     callback show-components();
     callback save-frame();
     in-out property <bool> flash;
+    // the files that the notes name, a click shows them in their folder
+    in property <string> shot;
+    in property <string> rendered;
+    callback reveal(string);
 
     public function blur() {
         keys.focus();
@@ -412,6 +416,10 @@ export component App inherits Window {
                 }
                 rendering: root.rendering;
                 preview-note: root.preview-note;
+                shot: root.shot;
+                reveal(path) => {
+                    root.reveal(path);
+                }
                 details: root.details;
                 timecode: root.timecode;
                 step(frames, seconds) => {
@@ -556,6 +564,10 @@ export component App inherits Window {
             progress: root.progress;
             status: root.status;
             failed: root.failed;
+            rendered: root.rendered;
+            reveal(path) => {
+                root.reveal(path);
+            }
             version: root.version;
             update: root.update;
             copied: root.copied;

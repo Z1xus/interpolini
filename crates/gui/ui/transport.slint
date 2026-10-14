@@ -1,4 +1,4 @@
-import { IconButton, Icons, Slider, Theme } from "widgets.slint";
+import { Action, IconButton, Icons, Slider, Theme } from "widgets.slint";
 
 export component Transport inherits Rectangle {
     in-out property <bool> transform;
@@ -9,6 +9,8 @@ export component Transport inherits Rectangle {
     in-out property <bool> muted;
     in property <bool> rendering;
     in property <string> preview-note;
+    in property <string> shot;
+    callback reveal(string);
     in property <string> details;
     in property <string> timecode;
     callback step(int, float);
@@ -199,10 +201,16 @@ export component Transport inherits Rectangle {
                 text: root.preview-note;
                 color: Theme.accent;
                 font-size: 11px;
-                font-family: "monospace";
+                font-family: root.shot != "" ? "" : "monospace";
                 horizontal-alignment: right;
                 vertical-alignment: center;
                 overflow: elide;
+            }
+            if root.shot != "": Action {
+                text: "Show in folder";
+                clicked => {
+                    root.reveal(root.shot);
+                }
             }
             Text {
                 min-width: 0;

@@ -317,6 +317,8 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = slint::quit_event_loop();
     });
 
+    ui.on_reveal(|path| reveal(PathBuf::from(path.as_str())));
+
     ui.on_open(|url| {
         let program = match std::env::consts::OS {
             "windows" => "explorer",
@@ -366,4 +368,58 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = thread.join();
     }
     Ok(())
+}
+
+// the folder opens with the file selected
+#[cfg(windows)]
+fn reveal(path: PathBuf) {
+    use std::os::windows::process::CommandExt;
+    let select = format!("/select,\"{}\"", path.display());
+    let _ = std::process::Command::new("explorer")
+        .raw_arg(select)
+        .spawn();
+}
+
+#[cfg(target_os = "macos")]
+fn reveal(path: PathBuf) {
+    let _ = std::process::Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .spawn();
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn reveal(path: PathBuf) {
+    use std::os::unix::ffi::OsStrExt;
+    use std::process::{Command, Stdio};
+    let unreserved = |byte: &u8| byte.is_ascii_alphanumeric() || b"-._~/".contains(byte);
+    let uri: String = path
+        .as_os_str()
+        .as_bytes()
+        .iter()
+        .map(|byte| match unreserved(byte) {
+            true => char::from(*byte).to_string(),
+            false => format!("%{byte:02X}"),
+        })
+        .collect();
+    // the file managers of linux select a file through this call, it can wait for one to start
+    std::thread::spawn(move || {
+        let shown = Command::new("dbus-send")
+            .args([
+                "--session",
+                "--print-reply",
+                "--dest=org.freedesktop.FileManager1",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+            ])
+            .arg(format!("array:string:file://{uri}"))
+            .arg("string:")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if !shown.is_ok_and(|status| status.success()) {
+            let folder = path.parent().unwrap_or(&path);
+            let _ = Command::new("xdg-open").arg(folder).spawn();
+        }
+    });
 }

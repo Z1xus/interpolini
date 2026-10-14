@@ -288,6 +288,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
     curve(ui, &mut state);
     left(ui, &state);
     let snap = std::mem::take(&mut state.snap);
+    ui.set_shot("".into());
     // a render gets all of the gpu, so the preview closes its clips until the render is done
     if ui.get_rendering() {
         if let Some(preview) = &state.preview {

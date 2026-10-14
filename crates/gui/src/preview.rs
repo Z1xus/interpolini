@@ -87,18 +87,19 @@ fn picture(image: Image) -> slint::Image {
 type Held = (PathBuf, Config, Source);
 
 // the frame goes next to the video on top, named by its time in that video
-fn write(layers: &[Layer], image: &Image) -> Option<String> {
+fn write(layers: &[Layer], image: &Image) -> Option<PathBuf> {
     let layer = layers.iter().rev().find(|layer| !layer.still);
     let layer = layer.or(layers.last())?;
     let stem = layer.clip.file_stem()?.to_string_lossy();
     let name = format!("{stem} {}.png", clock(layer.start).replace(':', "-"));
-    let file = BufWriter::new(File::create(layer.clip.with_file_name(&name)).ok()?);
+    let path = layer.clip.with_file_name(name);
+    let file = BufWriter::new(File::create(&path).ok()?);
     let mut encoder = png::Encoder::new(file, image.width, image.height);
     encoder.set_color(png::ColorType::Rgba);
     let mut writer = encoder.write_header().ok()?;
     writer.write_image_data(&image.rgba).ok()?;
     writer.finish().ok()?;
-    Some(name)
+    Some(path)
 }
 
 fn plain(layer: &Layer) -> Config {
@@ -235,10 +236,11 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
             };
             if let Some(original) = save {
                 let image = compose(&mut open, canvas, &first.layers, original, 0.0, u32::MAX);
-                let name = image.ok().and_then(|image| write(&first.layers, &image));
-                let _ = ui.upgrade_in_event_loop(move |ui| match name {
-                    Some(name) => {
-                        ui.set_preview_note(format!("Saved {name}").into());
+                let path = image.ok().and_then(|image| write(&first.layers, &image));
+                let _ = ui.upgrade_in_event_loop(move |ui| match path {
+                    Some(path) => {
+                        ui.set_preview_note("Saved".into());
+                        ui.set_shot(path.to_string_lossy().as_ref().into());
                         ui.set_flash(true);
                     }
                     None => ui.set_preview_note("Could not save the frame".into()),

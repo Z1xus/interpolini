@@ -77,6 +77,8 @@ export component Panel inherits Rectangle {
     in property <float> progress;
     in property <string> status;
     in property <bool> failed;
+    in property <string> rendered;
+    callback reveal(string);
     in property <string> version;
     in property <string> update;
     in property <bool> copied;
@@ -842,15 +844,27 @@ export component Panel inherits Rectangle {
                     }
                 }
             }
-            Text {
+            HorizontalLayout {
                 height: 14px;
-                text: root.status;
-                color: root.failed ? Theme.accent : Theme.faint;
-                font-size: 11px;
-                font-family: "monospace";
-                overflow: elide;
-                accessible-role: text;
-                accessible-label: self.text;
+                spacing: 12px;
+                Text {
+                    horizontal-stretch: 1;
+                    min-width: 0;
+                    text: root.status;
+                    color: root.failed ? Theme.accent : Theme.faint;
+                    font-size: 11px;
+                    // the live numbers do not jitter in monospace, a finished line matches the action next to it
+                    font-family: root.rendering ? "monospace" : "";
+                    overflow: elide;
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
+                if root.rendered != "" && !root.failed && !root.rendering: Action {
+                    text: "Show in folder";
+                    clicked => {
+                        root.reveal(root.rendered);
+                    }
+                }
             }
             HorizontalLayout {
                 height: 14px;

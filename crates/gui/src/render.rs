@@ -57,10 +57,10 @@ fn show(ui: &App, event: Event, row: Option<usize>, current: usize, count: usize
                 row.progress = 0.0;
                 row.state = "Done".into();
             });
-            let name = output.file_name().unwrap_or_default().to_string_lossy();
             let size = megabytes(std::fs::metadata(&output).map_or(0, |file| file.len()));
             let took = seconds as u32;
-            ui.set_status(format!("{name}, {size}, took {}:{:02}", took / 60, took % 60).into());
+            ui.set_status(format!("{size} in {}:{:02}", took / 60, took % 60).into());
+            ui.set_rendered(output.to_string_lossy().as_ref().into());
         }
         Event::Failed { clip, error } => {
             update(ui, clip, |row| {
@@ -141,6 +141,7 @@ fn render(ui: &App, shared: &Shared) {
     ui.set_rendering(true);
     ui.set_log("".into());
     ui.set_failed(false);
+    ui.set_rendered("".into());
     ui.set_progress(0.0);
     ui.set_playing(false);
     refresh(ui, shared);
