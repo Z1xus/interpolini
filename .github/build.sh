@@ -15,7 +15,7 @@ xwin_version=v0.23.1
 xwin_package=c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360
 sdk_version=26.1
 sdk_package=beee7212d265a6d2867d0236cc069314b38d5fb3486a6515734e76fa210c784c
-svpflow_release=nightly-20261013-deadbad61cab
+svpflow_release=nightly-20261014-deadbadffd2e
 precotti_release=nightly-20261013-deadbaddc974
 inno_version=7.1.0
 inno_package=0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f
@@ -23,23 +23,23 @@ inno_package=0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f
 case "$target" in
   x86_64-unknown-linux-gnu)
     name=interpolini-linux-x86_64
-    svpflow_package=af53b3df32582c4653ce00f15a9956c2ad0c36d627a395911d2082356044ca0b
+    svpflow_package=c70682bd6ffd668aeecfb1f23386e39b56fc5949714939d1b838125b8d8afc02
     precotti_package=82732ded1ccd1f4b8bb6dfc886464024dcfb6a3915c60dad33286059801f90a0
     exe='' prefix=lib suffix=.so
     ;;
   x86_64-pc-windows-msvc)
     name=interpolini-windows-x86_64
-    svpflow_package=2d28735899a9fdd03986664b298d2397f0c90372712faeded0a512a4c1216dd5
+    svpflow_package=6ddd3f2a62ff6376cb038f75201893ae985481bebcd6495bc6145ab176784c39
     precotti_package=edc5f772e5332f281fffc34fcff306f9678e049344a4bd901eb822e92822a0ec
     exe=.exe prefix='' suffix=.dll
     ;;
   aarch64-apple-darwin | x86_64-apple-darwin)
     name=interpolini-macos-arm64
-    svpflow_package=adb58b9fb17e559d2003afb3e7f6fecb25637616c6c8017c2d7c7f24ebfd530d
+    svpflow_package=5b15bfadb57e27d4b2add847e89f38b2deb32ab2c3cdb06ba6a95c4b6a947c9a
     precotti_package=a43f6a1bc62bf792d237890140c904a228fb0d7c63a5dea236758a81d13e8f48
     if [[ "$target" == x86_64-* ]]; then
       name=interpolini-macos-x86_64
-      svpflow_package=9e073f1000752202b0e1a42b65bfad7e285894ebf5074366b3b998f1bdb6c3df
+      svpflow_package=94b864fe14d8d6bd2b12a7a86ee7947bbb81fcca775b0e8680492c8a093b8942
       precotti_package=87af97c69d86cdd58e1370826579cc7af9645faa0c58373bdca1c6250639ab71
     fi
     exe='' prefix=lib suffix=.dylib
