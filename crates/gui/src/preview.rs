@@ -1,3 +1,5 @@
+use std::fs::File;
+use std::io::BufWriter;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Sender, channel, sync_channel};
@@ -10,6 +12,7 @@ use interpolini_core::{Canvas, Event, Fade, Graph, Image, Place, Source, peaks};
 use slint::{Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel, Weak};
 
 use crate::App;
+use crate::view::clock;
 
 const WIDTH: u32 = 1280;
 const SHOWN_FPS: f64 = 60.0;
@@ -52,6 +55,8 @@ pub struct Request {
     pub original: bool,
     pub width: u32,
     pub total: f64,
+    // a frame to save at full size, the original or the result
+    pub save: Option<bool>,
 }
 
 struct Frame {
@@ -80,6 +85,21 @@ fn picture(image: Image) -> slint::Image {
 }
 
 type Held = (PathBuf, Config, Source);
+
+// the frame goes next to the video on top, named by its time in that video
+fn write(layers: &[Layer], image: &Image) -> Option<String> {
+    let layer = layers.iter().rev().find(|layer| !layer.still);
+    let layer = layer.or(layers.last())?;
+    let stem = layer.clip.file_stem()?.to_string_lossy();
+    let name = format!("{stem} {}.png", clock(layer.start).replace(':', "-"));
+    let file = BufWriter::new(File::create(layer.clip.with_file_name(&name)).ok()?);
+    let mut encoder = png::Encoder::new(file, image.width, image.height);
+    encoder.set_color(png::ColorType::Rgba);
+    let mut writer = encoder.write_header().ok()?;
+    writer.write_image_data(&image.rgba).ok()?;
+    writer.finish().ok()?;
+    Some(name)
+}
 
 fn plain(layer: &Layer) -> Config {
     match layer.still {
@@ -147,6 +167,7 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
                 original,
                 width,
                 total,
+                save,
             } = request;
             let note = |text: String| {
                 let _ = ui.upgrade_in_event_loop(move |ui| ui.set_preview_note(text.into()));
@@ -212,6 +233,18 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
                 failed.map(fail);
                 continue;
             };
+            if let Some(original) = save {
+                let image = compose(&mut open, canvas, &first.layers, original, 0.0, u32::MAX);
+                let name = image.ok().and_then(|image| write(&first.layers, &image));
+                let _ = ui.upgrade_in_event_loop(move |ui| match name {
+                    Some(name) => {
+                        ui.set_preview_note(format!("Saved {name}").into());
+                        ui.set_flash(true);
+                    }
+                    None => ui.set_preview_note("Could not save the frame".into()),
+                });
+                continue;
+            }
             let time = first.time;
             let width = if play { WIDTH } else { width };
             let (pictures, queue) = sync_channel(AHEAD);

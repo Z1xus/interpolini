@@ -159,6 +159,8 @@ export component App inherits Window {
     callback save-preferences();
     callback show-sheet(string);
     callback show-components();
+    callback save-frame();
+    in-out property <bool> flash;
 
     public function blur() {
         keys.focus();
@@ -209,6 +211,10 @@ export component App inherits Window {
             }
             if event.modifiers.control && (event.text == "k" || event.text == "b") && root.clips.length > 0 {
                 root.mark("split");
+                return accept;
+            }
+            if event.modifiers.control && (event.text == "E" || (event.text == "e" && event.modifiers.shift)) && root.clips.length > 0 && !root.rendering {
+                root.save-frame();
                 return accept;
             }
             if root.clips.length == 0 || event.modifiers.control {
@@ -293,6 +299,9 @@ export component App inherits Window {
         close-clips => {
             root.close-clips();
         }
+        save-frame => {
+            root.save-frame();
+        }
         undo => {
             root.undo();
         }
@@ -364,6 +373,10 @@ export component App inherits Window {
                 add-clips => {
                     root.add-clips();
                 }
+                save-frame => {
+                    root.save-frame();
+                }
+                flash <=> root.flash;
             }
 
             if root.clips.length > 0: Rectangle {

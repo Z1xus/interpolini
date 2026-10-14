@@ -27,6 +27,7 @@ export component Menu inherits Rectangle {
     callback show-sheet(string);
     callback show-components();
     callback quit();
+    callback save-frame();
 
     height: 26px;
     background: Theme.rack;
@@ -65,6 +66,14 @@ export component Menu inherits Rectangle {
                                 } else {
                                     root.render();
                                 }
+                            }
+                        }
+                        MenuItem {
+                            text: "Save frame";
+                            hint: "Ctrl Shift E";
+                            enabled: root.clips.length > 0 && !root.rendering;
+                            clicked => {
+                                root.save-frame();
                             }
                         }
                         MenuItem {

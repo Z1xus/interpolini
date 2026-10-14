@@ -93,6 +93,8 @@ pub struct State {
     pub spare: Option<bool>,
     pub cancel: Arc<AtomicBool>,
     pub render: Option<JoinHandle<()>>,
+    // the next picture also goes to a file
+    pub snap: bool,
 }
 
 impl State {

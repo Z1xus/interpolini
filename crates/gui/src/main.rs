@@ -121,7 +121,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_light_available(themes::has_light(theme));
     themes::apply(&ui, theme, ui.get_light());
 
-    const SHORTCUTS: [(&str, &str); 28] = [
+    const SHORTCUTS: [(&str, &str); 29] = [
         ("Play or pause", "Space, K"),
         ("Back or forward 1 second", "J, L"),
         ("Step 1 frame", "Left, Right"),
@@ -132,6 +132,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ("Set start or end", "I, O"),
         ("Restore full length", "X"),
         ("Split", "S, Ctrl K, Ctrl B"),
+        ("Save the frame", "Ctrl Shift E"),
         ("Remove clip", "Delete, Backspace"),
         ("Undo, redo", "Ctrl Z, Ctrl Y"),
         ("Zoom the timeline", "Ctrl wheel, Ctrl + and -"),
@@ -235,6 +236,7 @@ fn main() -> Result<(), slint::PlatformError> {
             audio: vec![(36.0, false)],
         },
         preview: Some(preview),
+        snap: false,
         ids: 0,
         held: None,
         touched: None,

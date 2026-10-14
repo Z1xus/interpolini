@@ -287,6 +287,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
     layout(ui, &mut state);
     curve(ui, &mut state);
     left(ui, &state);
+    let snap = std::mem::take(&mut state.snap);
     // a render gets all of the gpu, so the preview closes its clips until the render is done
     if ui.get_rendering() {
         if let Some(preview) = &state.preview {
@@ -298,6 +299,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
                 original: false,
                 width: 0,
                 total: 0.0,
+                save: None,
             });
         }
         return;
@@ -373,7 +375,11 @@ pub fn refresh(ui: &App, shared: &Shared) {
         let later = later.skip_while(move |other| other.start < end - 0.0005);
         later.take_while(|other| !other.clips.is_empty())
     };
-    let ask = |parts: Vec<preview::Stretch>, quiet: bool, original: bool, width: i32| {
+    let ask = |parts: Vec<preview::Stretch>,
+               quiet: bool,
+               original: bool,
+               width: i32,
+               save: Option<bool>| {
         let request = preview::Request {
             parts,
             canvas: base.clip.clone(),
@@ -382,6 +388,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
             original,
             width: width as u32,
             total: state.seconds(),
+            save,
         };
         if let Some(preview) = &state.preview {
             let _ = preview.send(request);
@@ -400,6 +407,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
                 true,
                 false,
                 0,
+                None,
             );
         }
         drop(state);
@@ -415,7 +423,8 @@ pub fn refresh(ui: &App, shared: &Shared) {
     let (original, width) = wanted(ui);
     ui.set_compared(original);
     ui.set_sharp(width);
-    ask(parts, false, original, width);
+    let view = !ui.get_copying() && (ui.get_view() == "original" || ui.get_held());
+    ask(parts, false, original, width, snap.then_some(view));
 }
 
 thread_local! {

@@ -10,6 +10,7 @@ build = "build.rs"
 [dependencies]
 cpal = "0.18.2"
 interpolini-core = { path = "../core" }
+png = "0.18.1"
 rfd = "0.17.2"
 sevenz-rust2 = { version = "0.23.0", default-features = false }
 sha2 = "0.11.0"

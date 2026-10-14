@@ -2437,6 +2437,7 @@ version = "0.1.14"
 dependencies = [
  "cpal",
  "interpolini-core",
+ "png",
  "rfd",
  "sevenz-rust2",
  "sha2",

@@ -1,4 +1,4 @@
-import { Action, Art, Icon, Icons, Piece, Tabs, Theme } from "widgets.slint";
+import { Action, Art, Icon, IconButton, Icons, Piece, Tabs, Theme } from "widgets.slint";
 import { Clip } from "types.slint";
 import { Frame } from "frame.slint";
 
@@ -110,6 +110,9 @@ export component Stage inherits Rectangle {
     callback placed();
     callback add-clips();
     callback viewed();
+    callback save-frame();
+    // a short light on the picture after a frame is saved
+    in-out property <bool> flash;
     background: Theme.void;
     if root.clips.length > 0: Rectangle {
         clip: true;
@@ -244,6 +247,28 @@ export component Stage inherits Rectangle {
             }
         }
         Rectangle {
+            background: white;
+            opacity: 0;
+            states [
+                lit when root.flash: {
+                    opacity: 0.25;
+                    out {
+                        animate opacity {
+                            duration: 300ms;
+                            easing: ease-out;
+                        }
+                    }
+                }
+            ]
+        }
+        Timer {
+            interval: 60ms;
+            running: root.flash;
+            triggered => {
+                root.flash = false;
+            }
+        }
+        Rectangle {
             x: (parent.width - self.width) / 2;
             y: 8px;
             width: strip.preferred-width;
@@ -259,6 +284,21 @@ export component Stage inherits Rectangle {
                     value <=> root.view;
                     changed => {
                         root.viewed();
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        width: 16px;
+                        height: 16px;
+                        background: transparent;
+                        shape: Icons.camera;
+                        label: "Save frame";
+                        keys: ["Ctrl Shift E"];
+                        enabled: root.preview.width > 0;
+                        clicked => {
+                            root.save-frame();
+                        }
                     }
                 }
                 Action {
