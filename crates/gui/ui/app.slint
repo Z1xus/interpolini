@@ -207,6 +207,10 @@ export component App inherits Window {
                 timeline.magnify(event.text == "-" ? 0.8 : 1.25);
                 return accept;
             }
+            if event.modifiers.control && (event.text == "k" || event.text == "b") && root.clips.length > 0 {
+                root.mark("split");
+                return accept;
+            }
             if root.clips.length == 0 || event.modifiers.control {
                 return reject;
             }
