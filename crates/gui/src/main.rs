@@ -222,7 +222,7 @@ fn main() -> Result<(), slint::PlatformError> {
             at: 0.0,
             track: 0,
             still: false,
-            repeats: 0.0,
+            differences: std::sync::Arc::default(),
             measured: None,
             size: (0, 0),
             place: interpolini_core::Place::default(),

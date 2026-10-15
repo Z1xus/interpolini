@@ -262,10 +262,12 @@ pub fn load(ui: &App, state: &mut State) {
 
 // the repeats of the clip that the settings are for, or of the worst clip when they are for all
 pub fn repeats(ui: &App, state: &State) -> f32 {
-    let all = state.entries.iter().map(|entry| entry.repeats);
+    let repeats = |entry: &crate::state::Entry| {
+        interpolini_core::repeats(&entry.differences, entry.config.dedup.threshold)
+    };
     match state.video(ui) {
-        Some(index) => state.entries[index].repeats,
-        None => all.fold(0.0, f32::max),
+        Some(index) => repeats(&state.entries[index]),
+        None => state.entries.iter().map(repeats).fold(0.0, f32::max),
     }
 }
 
@@ -287,6 +289,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
     layout(ui, &mut state);
     curve(ui, &mut state);
     left(ui, &state);
+    ui.set_repeats(repeats(ui, &state));
     let snap = std::mem::take(&mut state.snap);
     ui.set_shot("".into());
     // a render gets all of the gpu, so the preview closes its clips until the render is done

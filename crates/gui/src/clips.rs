@@ -177,7 +177,7 @@ pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32
                 at,
                 track,
                 still: probed.still,
-                repeats: 0.0,
+                differences: Arc::default(),
                 measured: None,
                 size: (probed.width, probed.height),
                 place: Place::default(),
@@ -238,7 +238,7 @@ fn keys(ui: Weak<App>, state: Shared, clip: PathBuf) {
     });
 }
 
-// counts the repeated frames of each video whose cut changed, in the part that is kept
+// measures the repeats of each video whose cut changed, in the part that is kept
 pub fn measure(ui: &App, state: &Shared) {
     let mut guard = lock(state);
     let video = |entry: &&mut Entry| entry.audio.is_none() && !entry.still;
@@ -252,16 +252,14 @@ pub fn measure(ui: &App, state: &Shared) {
             f64::from(entry.cut.0) * entry.seconds,
             f64::from(entry.cut.1) * entry.seconds,
         );
-        let threshold = entry.config.dedup.threshold;
-        preview::repeats(
+        preview::differences(
             ui.as_weak(),
             entry.clip.clone(),
-            threshold,
             part,
-            move |ui, repeats| {
+            move |ui, differences| {
                 let mut state = lock(&shared);
                 if let Some(entry) = state.entries.iter_mut().find(|entry| entry.id == id) {
-                    entry.repeats = repeats;
+                    entry.differences = differences.into();
                 }
                 ui.set_repeats(crate::view::repeats(ui, &state));
             },

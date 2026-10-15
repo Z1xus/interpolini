@@ -32,9 +32,9 @@ pub struct Entry {
     pub at: f64,
     pub track: usize,
     pub still: bool,
-    // the part of its frames that repeat the frame before them, 0 until it is measured
-    pub repeats: f32,
-    // the cut that the repeats were counted for
+    // how much its sampled frames differ from the frames before them, empty until it is measured
+    pub differences: Arc<[Vec<f32>]>,
+    // the cut that the differences were measured for
     pub measured: Option<(f32, f32)>,
     pub size: (u32, u32),
     pub place: Place,

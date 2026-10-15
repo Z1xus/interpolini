@@ -55,12 +55,10 @@ fn samples(width: usize, height: usize) -> f32 {
     (width.div_ceil(STEP) * height.div_ceil(STEP)) as f32
 }
 
-// the part of the frames between two times of a clip that repeat the frame before them
-// a long row of equal frames is a still picture and not a stutter, so it does not count
-pub fn repeats(clip: &Path, threshold: f32, from: f64, to: f64) -> Result<f32> {
+// how much each sampled frame differs from the frame before it, in rows of frames from three places
+pub fn differences(clip: &Path, from: f64, to: f64) -> Result<Vec<Vec<f32>>> {
     const SPOTS: i32 = 3;
     const SAMPLE: i32 = 100;
-    const STILL: i32 = 8;
     let mut decoder = Decoder::open(clip)?;
     let Meta {
         width,
@@ -74,10 +72,10 @@ pub fn repeats(clip: &Path, threshold: f32, from: f64, to: f64) -> Result<f32> {
     let mut pictures = [vec![0u8; luma * 3 / 2], vec![0u8; luma * 3 / 2]];
     let rate = fps.0 as f64 / fps.1 as f64;
     let (start, end) = ((from * rate) as i32, ((to * rate) as i32).min(frames));
-    let (mut checked, mut same) = (0, 0);
+    let mut spots = Vec::new();
     for spot in 1..=SPOTS {
         let first = (start + (end - start) * spot / (SPOTS + 1) - SAMPLE / 2).max(start);
-        let mut row = 0;
+        let mut row = Vec::new();
         for step in 0..SAMPLE.min(end - first) {
             let picture = pictures[step as usize % 2].as_mut_ptr();
             let planes = unsafe { [picture, picture.add(luma), picture.add(luma * 5 / 4)] };
@@ -89,12 +87,26 @@ pub fn repeats(clip: &Path, threshold: f32, from: f64, to: f64) -> Result<f32> {
             let total: u64 = lines
                 .map(|line| distance(&pictures[0][line.clone()], &pictures[1][line]))
                 .sum();
-            if step == 0 {
-                continue;
+            if step > 0 {
+                row.push(total as f32 / samples(width, height));
             }
+        }
+        spots.push(row);
+    }
+    Ok(spots)
+}
+
+// the part of the frames that repeat the frame before them at a threshold
+// a long row of equal frames is a still picture and not a stutter, so it does not count
+pub fn repeats(differences: &[Vec<f32>], threshold: f32) -> f32 {
+    const STILL: usize = 8;
+    let (mut checked, mut same) = (0, 0);
+    for spot in differences {
+        let mut row = 0;
+        for difference in spot {
             checked += 1;
             // a row counts when it ends, and only when it was short
-            match total as f32 / samples(width, height) < threshold {
+            match *difference < threshold {
                 true => row += 1,
                 false => {
                     same += if row <= STILL { row } else { 0 };
@@ -103,7 +115,7 @@ pub fn repeats(clip: &Path, threshold: f32, from: f64, to: f64) -> Result<f32> {
             }
         }
     }
-    Ok(same as f32 / checked.max(1) as f32)
+    same as f32 / checked.max(1) as f32
 }
 
 impl Reader for Dedup {

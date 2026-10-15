@@ -269,8 +269,8 @@ export component Panel inherits Rectangle {
             Section {
                 title: "Dedup";
                 open <=> root.sections.dedup;
-                // a clip with repeats is the reason to turn this on
-                hint: root.repeats >= 0.05 ? "\{round(root.repeats * 100)}% repeats" : "";
+                // a clip with repeats is the reason to turn this on, and when on it shows what the sensitivity catches
+                hint: root.settings.dedup || root.repeats >= 0.05 ? "\{round(root.repeats * 100)}% repeats" : "";
                 enabled <=> root.settings.dedup;
                 toggled => {
                     root.changed();

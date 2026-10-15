@@ -503,17 +503,16 @@ pub fn thumbs(
     });
 }
 
-// counts the repeated frames of a clip, which takes a moment
-pub fn repeats(
+// compares the frames of a clip for the repeats, which takes a moment
+pub fn differences(
     ui: Weak<App>,
     clip: PathBuf,
-    threshold: f32,
     part: (f64, f64),
-    done: impl FnOnce(&App, f32) + Send + 'static,
+    done: impl FnOnce(&App, Vec<Vec<f32>>) + Send + 'static,
 ) {
     queue(move || {
-        if let Ok(repeats) = interpolini_core::repeats(&clip, threshold, part.0, part.1) {
-            let _ = ui.upgrade_in_event_loop(move |ui| done(&ui, repeats));
+        if let Ok(differences) = interpolini_core::differences(&clip, part.0, part.1) {
+            let _ = ui.upgrade_in_event_loop(move |ui| done(&ui, differences));
         }
     });
 }

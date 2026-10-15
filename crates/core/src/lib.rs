@@ -45,7 +45,7 @@ pub use audio::{Mixer, RATE, Sound, peaks};
 pub use compose::{Canvas, Picture, Place, Source};
 pub use copy::keyframes;
 pub use decode::{Probe, probe};
-pub use dedup::repeats;
+pub use dedup::{differences, repeats};
 pub use error::{Error, Result};
 pub use estimate::estimate;
 pub use event::{Event, Sink};
