@@ -261,7 +261,8 @@ pub fn measure(ui: &App, state: &Shared) {
                 if let Some(entry) = state.entries.iter_mut().find(|entry| entry.id == id) {
                     entry.differences = differences.into();
                 }
-                ui.set_repeats(crate::view::repeats(ui, &state));
+                drop(state);
+                crate::view::refresh(ui, &shared);
             },
         );
     }

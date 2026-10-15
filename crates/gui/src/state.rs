@@ -48,6 +48,15 @@ pub struct Entry {
     pub eases: [Ease; 3],
 }
 
+impl Entry {
+    pub fn settled(&self) -> Config {
+        let mut config = self.config.clone();
+        let share = config.dedup.repeats / 100.0;
+        config.dedup.threshold = interpolini_core::threshold(&self.differences, share);
+        config
+    }
+}
+
 // where a clip plays, a crossfade makes it start early and end late
 pub struct Span {
     pub at: f64,

@@ -96,26 +96,50 @@ pub fn differences(clip: &Path, from: f64, to: f64) -> Result<Vec<Vec<f32>>> {
     Ok(spots)
 }
 
-// the part of the frames that repeat the frame before them at a threshold
-// a long row of equal frames is a still picture and not a stutter, so it does not count
-pub fn repeats(differences: &[Vec<f32>], threshold: f32) -> f32 {
-    const STILL: usize = 8;
-    let (mut checked, mut same) = (0, 0);
-    for spot in differences {
-        let mut row = 0;
-        for difference in spot {
-            checked += 1;
-            // a row counts when it ends, and only when it was short
-            match *difference < threshold {
-                true => row += 1,
-                false => {
-                    same += if row <= STILL { row } else { 0 };
-                    row = 0;
-                }
-            }
+fn gap(differences: &[Vec<f32>]) -> f32 {
+    // keeps exact copies finite
+    const SHIFT: f32 = 0.01;
+    const REPEAT: f32 = 0.1;
+    let mut logs: Vec<f32> = differences
+        .iter()
+        .flatten()
+        .map(|d| (d + SHIFT).ln())
+        .collect();
+    logs.sort_by(f32::total_cmp);
+    let (count, total) = (logs.len() as f32, logs.iter().sum::<f32>());
+    let (mut below, mut best) = (0.0, (0.0, 0.0, 0.0));
+    for i in 1..logs.len() {
+        below += logs[i - 1];
+        let (low, high) = (below / i as f32, (total - below) / (count - i as f32));
+        let share = i as f32 / count;
+        let spread = share * (1.0 - share) * (low - high).powi(2);
+        if spread > best.0 {
+            best = (spread, (logs[i - 1] + logs[i]) / 2.0, low);
         }
     }
-    same as f32 / checked.max(1) as f32
+    match best.2.exp() - SHIFT < REPEAT {
+        true => best.1.exp() - SHIFT,
+        false => 0.0,
+    }
+}
+
+pub fn repeats(differences: &[Vec<f32>]) -> f32 {
+    let gap = gap(differences);
+    let all = differences.iter().flatten();
+    let below = all.clone().filter(|difference| **difference < gap).count();
+    below as f32 / all.count().max(1) as f32
+}
+
+pub fn threshold(differences: &[Vec<f32>], share: f32) -> f32 {
+    let gap = gap(differences);
+    let all = differences.iter().flatten().copied();
+    let mut repeats: Vec<f32> = all.filter(|difference| *difference < gap).collect();
+    repeats.sort_by(f32::total_cmp);
+    match (share * repeats.len() as f32).round() as usize {
+        0 => 0.0,
+        count if count >= repeats.len() => gap,
+        count => repeats[count - 1].next_up(),
+    }
 }
 
 impl Reader for Dedup {

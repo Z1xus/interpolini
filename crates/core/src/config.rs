@@ -206,6 +206,7 @@ impl Value for Curve<'_> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Dedup {
     pub enabled: bool,
+    pub repeats: f32,
     pub threshold: f32,
 }
 
@@ -301,7 +302,8 @@ impl Default for Config {
         Self {
             dedup: Dedup {
                 enabled: true,
-                threshold: 0.5,
+                repeats: 100.0,
+                threshold: 0.0,
             },
             pre: Pre {
                 enabled: false,
@@ -389,11 +391,7 @@ impl Config {
         } = self;
         vec![
             field("dedup", "enabled", &mut dedup.enabled),
-            field(
-                "dedup",
-                "threshold",
-                Within(&mut dedup.threshold, 0.0, 255.0),
-            ),
+            field("dedup", "repeats", Within(&mut dedup.repeats, 0.0, 100.0)),
             field("pre-interpolation", "enabled", &mut pre.enabled),
             field("pre-interpolation", "fps", &mut pre.fps),
             field("interpolation", "enabled", &mut interpolation.enabled),
@@ -472,6 +470,8 @@ impl Config {
                 );
             }
         }
+        // set by configs before 0.1.16
+        values.remove(&("dedup".to_owned(), "threshold".to_owned()));
         let mut warnings = Vec::new();
         for (section, key, mut value) in self.fields() {
             if let Some(text) = values.remove(&(section.to_owned(), key.to_owned()))

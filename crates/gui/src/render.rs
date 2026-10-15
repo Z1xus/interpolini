@@ -94,7 +94,7 @@ pub fn jobs(state: &State, separate: bool, copy: bool) -> (Vec<Job>, Vec<Sound>,
         };
         Job {
             clip: entry.clip.clone(),
-            config: entry.config.clone(),
+            config: entry.settled(),
             cut: match faded {
                 true => Some((start, end.min(entry.seconds))),
                 false => (entry.cut != (0.0, 1.0)).then_some((

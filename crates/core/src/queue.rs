@@ -10,6 +10,7 @@ use crate::compose::{Canvas, Place, Source};
 use crate::config::{self, Audio, Config, Target};
 use crate::copy::copy;
 use crate::decode::{Meta, Probe, probe};
+use crate::dedup::{differences, threshold};
 use crate::encode::{Encoder, Plan};
 use crate::graph::lossless;
 use crate::segments::Made;
@@ -149,7 +150,13 @@ fn encode(
         if timeline.is_some() {
             sink(Event::Start { clip: index });
         }
-        Source::open(&job.clip, &job.config, probes[clip].still, sink)
+        let mut config = job.config.clone();
+        if config.dedup.enabled && config.dedup.threshold == 0.0 && !probes[clip].still {
+            let (from, to) = job.cut.unwrap_or((0.0, f64::MAX));
+            let share = config.dedup.repeats / 100.0;
+            config.dedup.threshold = threshold(&differences(&job.clip, from, to)?, share);
+        }
+        Source::open(&job.clip, &config, probes[clip].still, sink)
     };
     let base = base(jobs)?;
     let first = open(base)?;

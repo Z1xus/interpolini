@@ -262,9 +262,7 @@ pub fn load(ui: &App, state: &mut State) {
 
 // the repeats of the clip that the settings are for, or of the worst clip when they are for all
 pub fn repeats(ui: &App, state: &State) -> f32 {
-    let repeats = |entry: &crate::state::Entry| {
-        interpolini_core::repeats(&entry.differences, entry.config.dedup.threshold)
-    };
+    let repeats = |entry: &crate::state::Entry| interpolini_core::repeats(&entry.differences);
     match state.video(ui) {
         Some(index) => repeats(&state.entries[index]),
         None => state.entries.iter().map(repeats).fold(0.0, f32::max),
@@ -353,7 +351,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
                 clip: entry.clip.clone(),
                 config: match copying {
                     true => preview::source(&entry.config),
-                    false => entry.config.clone(),
+                    false => entry.settled(),
                 },
                 still: entry.still,
                 place: place(entry),

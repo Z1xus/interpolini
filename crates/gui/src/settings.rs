@@ -34,7 +34,7 @@ pub fn settings(config: &Config) -> Settings {
     let look = LOOKS.iter().find(|look| look.0 == interpolation.algorithm);
     Settings {
         dedup: dedup.enabled,
-        dedup_threshold: dedup.threshold,
+        dedup_repeats: dedup.repeats,
         pre: pre.enabled,
         pre_fps: pre.fps.to_string().into(),
         interpolate: interpolation.enabled,
@@ -93,7 +93,7 @@ pub fn apply(settings: &Settings, config: &mut Config) {
     } = config;
     let look = LOOKS.iter().find(|look| settings.algorithm == look.1);
     dedup.enabled = settings.dedup;
-    dedup.threshold = settings.dedup_threshold;
+    dedup.repeats = settings.dedup_repeats;
     pre.enabled = settings.pre;
     pre.fps = Rate::parse(&settings.pre_fps).unwrap_or(pre.fps);
     interpolation.enabled = settings.interpolate;
