@@ -350,6 +350,11 @@ fn fit(
 }
 
 fn render(job: &Job, clip: usize, output: &Path, sink: Sink, cancel: &AtomicBool) -> Result<()> {
+    // a file of its own starts with the clip, not at its place on the timeline
+    let job = &Job {
+        at: 0.0,
+        ..job.clone()
+    };
     let untouched = job.place == Place::default();
     if job.copy || (untouched && lossless(probe(&job.clip)?.fps, &job.config)) {
         return copy(job, output, sink, cancel);
