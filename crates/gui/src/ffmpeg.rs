@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use interpolini_core::config;
@@ -10,6 +11,7 @@ use crate::components::{Outcome, finish, restart, text};
 use crate::{App, Components};
 
 const FFMPEG: [&str; 5] = ["avcodec", "avformat", "avutil", "swscale", "swresample"];
+static LOADED: OnceLock<&str> = OnceLock::new();
 
 // the version of an ffmpeg library from its file name, as linux, windows and macos write it:
 // libavcodec.so.62, avcodec-62.dll and libavcodec.62.dylib
@@ -37,6 +39,7 @@ fn libraries(folder: &Path) -> Vec<PathBuf> {
 
 // the libraries that an earlier switch took out while the app had them open
 pub fn clean() {
+    LOADED.get_or_init(ffmpeg);
     let _ = fs::remove_dir_all(config::app_dir().join("ffmpeg-old"));
 }
 
@@ -140,7 +143,7 @@ pub fn wire(ui: &App, window: &Components) {
     window.on_use_ffmpeg(move |choice| {
         if let (Some(ui), Some(window)) = (weak.upgrade(), shown.upgrade()) {
             let outcome = use_ffmpeg(&choice, None);
-            window.set_restart(outcome.is_ok());
+            window.set_restart(outcome.is_ok() && LOADED.get() != Some(&ffmpeg()));
             finish(&ui, &window, outcome);
         }
     });

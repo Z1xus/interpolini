@@ -10,6 +10,7 @@
 - Fixed: Black at the start of the file
 - Fixed: Frozen frame in separate files
 - Fixed: Audio cut short at the end
+- Fixed: Restart note after switching FFmpeg back
 
 ## 0.1.15
 - New: Save the preview frame
