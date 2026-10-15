@@ -10,7 +10,7 @@ use crate::color::Grade;
 use crate::compose::Scaler;
 use crate::config::{self, Config, Engine, Masking};
 use crate::decode::{Decoder, Meta};
-use crate::dedup::{Dedup, Pick};
+use crate::dedup::Pick;
 use crate::encode::Spare;
 use crate::rife::Rife;
 use crate::segments::{Made, Segments};
@@ -233,43 +233,25 @@ impl Graph {
             weights,
         } = plan;
         let (pre, target, interpolate, blended) = (*pre, *target, *interpolate, *blended);
-        // svp skips a repeated frame by itself, the other paths get it replaced here
         let skipped = interpolate && interpolation.engine == Engine::Svp && pre.is_none();
-        if dedup.enabled && skipped {
-            sink(Event::Info("replacing repeated frames".into()));
-        } else if dedup.enabled {
-            let mut fills = Vec::new();
-            for offset in 0..2 {
-                let shape = Shape {
-                    fps: (fps.0, fps.1 * 2),
-                    frames: ((frames - offset + 1) / 2).max(1),
-                    ..shape
-                };
-                let pick = Pick {
-                    source: Arc::clone(&input),
-                    step: 2,
-                    offset,
-                    width: size.0,
-                    height: size.1,
-                };
-                let pick = svp.source(&shape, pick)?;
-                // without the still mask: over the double gap of these clips it leaves specks
-                let options =
-                    |gpu| Options::new(interpolation, "num:2,den:1", None, None, gpu, half);
-                let fill = svp.smooth(&pick, &options(true));
-                let fill = fill.or_else(|_| svp.smooth(&pick, &options(false)))?;
-                fills.push(fill.keep(pick));
-            }
-            let node = Dedup {
-                source: input,
-                fills: fills.try_into().map_err(|_| "dedup needs two clips")?,
-                threshold: dedup.threshold,
-                last: frames - 1,
-                width: size.0,
-                height: size.1,
+        let limit = dedup.enabled.then_some(dedup.threshold);
+        let mut fused = false;
+        if dedup.enabled && dedup.threshold > 0.0 && !skipped {
+            let rate = format!("num:{},den:{},abs:true", fps.0, fps.1);
+            let options = |gpu| Options::new(interpolation, &rate, mask, limit, gpu, half);
+            let last = !interpolate && pre.is_none();
+            let made = match blended && last {
+                true => svp.smooth_blend(&input, &options(true), weights, blending),
+                false => svp.smooth(&input, &options(true)),
             };
-            svp = host()?;
-            input = Arc::new(svp.source(&shape, node)?);
+            fused = blended && last && made.is_ok();
+            let clip = match made {
+                Ok(clip) => clip,
+                Err(_) => svp.smooth(&input, &options(false))?,
+            };
+            input = Arc::new(clip.keep(input));
+        }
+        if dedup.enabled {
             sink(Event::Info("replacing repeated frames".into()));
         }
 
@@ -314,7 +296,6 @@ impl Graph {
             input = Arc::new(pass(&mut svp, &input, fps, None)?);
             sink(Event::Info(format!("rife to {fps} fps first")));
         }
-        let mut fused = false;
         let derived = match interpolation.engine {
             _ if !interpolate => None,
             Engine::Rife => {
@@ -326,7 +307,7 @@ impl Graph {
             }
             Engine::Svp => {
                 let rate = format!("num:{target},den:1,abs:true");
-                let limit = (dedup.enabled && skipped).then_some(dedup.threshold);
+                let limit = limit.filter(|_| skipped);
                 let options = |gpu| Options::new(interpolation, &rate, mask, limit, gpu, half);
                 let made = match blended {
                     true => svp.smooth_blend(&input, &options(true), weights, blending),

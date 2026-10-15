@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::Result;
 use crate::decode::{Decoder, Meta};
-use crate::svp::{Clip, Frame, Reader};
+use crate::svp::{Clip, Reader};
 
 // every fourth sample of every fourth row is enough to find a repeated frame
 const STEP: usize = 4;
@@ -21,28 +21,6 @@ impl Reader for Pick {
         let frame = self.source.frame(n * self.step + self.offset)?;
         frame.copy(planes, strides, self.width, self.height);
         Ok(())
-    }
-}
-
-pub struct Dedup {
-    pub source: Arc<Clip>,
-    pub fills: [Clip; 2],
-    pub threshold: f32,
-    pub last: i32,
-    pub width: usize,
-    pub height: usize,
-}
-
-impl Dedup {
-    fn difference(&self, first: &Frame, second: &Frame) -> f32 {
-        let mut total = 0u64;
-        for y in (0..self.height).step_by(STEP) {
-            let row = |frame: &Frame| unsafe {
-                std::slice::from_raw_parts(frame.data(0).add(y * frame.stride(0)), self.width)
-            };
-            total += distance(row(first), row(second));
-        }
-        total as f32 / samples(self.width, self.height)
     }
 }
 
@@ -139,21 +117,5 @@ pub fn threshold(differences: &[Vec<f32>], share: f32) -> f32 {
         0 => 0.0,
         count if count >= repeats.len() => gap,
         count => repeats[count - 1].next_up(),
-    }
-}
-
-impl Reader for Dedup {
-    fn read(&mut self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
-        let mut frame = self.source.frame(n)?;
-        if n > 0
-            && n < self.last
-            && self.difference(&frame, &self.source.frame(n - 1)?) < self.threshold
-        {
-            // the middle of the frames around the repeat, from the clip that skips it
-            let before = n - 1;
-            frame = self.fills[before as usize % 2].frame(before / 2 * 2 + 1)?;
-        }
-        frame.copy(planes, strides, self.width, self.height);
-        Ok(())
     }
 }

@@ -87,7 +87,7 @@ pub struct Clip {
     svp: Arc<Svp>,
     raw: Raw,
     close: Option<Box<dyn Fn() + Send + Sync>>,
-    parents: Vec<Clip>,
+    parents: Vec<Arc<Clip>>,
 }
 
 unsafe impl Send for Clip {}
@@ -293,8 +293,8 @@ unsafe fn error(api: &Api) -> Error {
 }
 
 impl Clip {
-    pub fn keep(mut self, parent: Clip) -> Self {
-        self.parents.push(parent);
+    pub fn keep(mut self, parent: impl Into<Arc<Clip>>) -> Self {
+        self.parents.push(parent.into());
         self
     }
 
