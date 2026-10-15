@@ -83,6 +83,8 @@ fn options(name: &str, output: &Output, sized: bool) -> Dictionary<'static> {
         Some("nvenc") => Some(("preset", ["p1", "p4", "p6", "p7"])),
         Some("amf") => Some(("quality", ["speed", "speed", "balanced", "quality"])),
         Some("qsv") => Some(("preset", ["veryfast", "medium", "slow", "veryslow"])),
+        // 1 is the best, ffmpeg caps a level above the range of the driver
+        Some("vaapi") => Some(("compression_level", ["7", "4", "2", "1"])),
         _ if name == "libsvtav1" => Some(("preset", ["12", "10", "8", "6"])),
         _ if name.starts_with("lib") => {
             Some(("preset", ["superfast", "veryfast", "medium", "slow"]))
