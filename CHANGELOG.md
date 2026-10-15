@@ -4,6 +4,7 @@
 - New: Dedup is set by the share of repeats it replaces
 - New: "interpolini GUI" entry in Send to
 - Faster: Dedup without interpolation
+- Changed: Save frame is in the playback bar and the preview menu
 - Fixed: Crash when switching settings fast
 - Fixed: Size estimate counted empty space
 - Fixed: Black at the start of the file

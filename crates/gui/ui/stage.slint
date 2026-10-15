@@ -1,4 +1,4 @@
-import { Action, Art, Icon, IconButton, Icons, Piece, Tabs, Theme } from "widgets.slint";
+import { Action, Art, Icon, IconButton, Icons, MenuItem, MenuPanel, Piece, Tabs, Theme } from "widgets.slint";
 import { Clip } from "types.slint";
 import { Frame } from "frame.slint";
 
@@ -111,6 +111,26 @@ export component Stage inherits Rectangle {
     callback add-clips();
     callback viewed();
     callback save-frame();
+    property <length> menu-x;
+    property <length> menu-y;
+    menu := PopupWindow {
+        x: root.menu-x;
+        y: root.menu-y;
+        close-policy: close-on-click-outside;
+        MenuPanel {
+            VerticalLayout {
+                padding: 4px;
+                MenuItem {
+                    text: "Save frame";
+                    hint: "Ctrl Shift E";
+                    clicked => {
+                        root.save-frame();
+                        menu.close();
+                    }
+                }
+            }
+        }
+    }
     // a short light on the picture after a frame is saved
     in-out property <bool> flash;
     background: Theme.void;
@@ -191,6 +211,11 @@ export component Stage inherits Rectangle {
                 accept
             }
             pointer-event(event) => {
+                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down && root.preview.width > 0 {
+                    root.menu-x = self.absolute-position.x + self.mouse-x - root.absolute-position.x;
+                    root.menu-y = self.absolute-position.y + self.mouse-y - root.absolute-position.y;
+                    menu.show();
+                }
                 parent.pan(event, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, true);
             }
             changed has-hover => {
@@ -284,21 +309,6 @@ export component Stage inherits Rectangle {
                     value <=> root.view;
                     changed => {
                         root.viewed();
-                    }
-                }
-                VerticalLayout {
-                    alignment: center;
-                    IconButton {
-                        width: 16px;
-                        height: 16px;
-                        background: transparent;
-                        shape: Icons.camera;
-                        label: "Save frame";
-                        keys: ["Ctrl Shift E"];
-                        enabled: root.preview.width > 0;
-                        clicked => {
-                            root.save-frame();
-                        }
                     }
                 }
                 Action {

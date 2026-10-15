@@ -18,6 +18,7 @@ export component Transport inherits Rectangle {
     callback loudness();
     callback mark(string);
     callback add-clips();
+    callback save-frame();
     callback remove-clip();
     height: 36px;
     background: Theme.rack;
@@ -35,6 +36,15 @@ export component Transport inherits Rectangle {
                     active: root.transform;
                     clicked => {
                         root.transform = !root.transform;
+                    }
+                }
+                IconButton {
+                    shape: Icons.camera;
+                    label: "Save frame";
+                    keys: ["Ctrl Shift E"];
+                    enabled: !root.rendering;
+                    clicked => {
+                        root.save-frame();
                     }
                 }
                 Rectangle {
