@@ -31,11 +31,13 @@ Source: "{#output}\{#name}\*"; DestDir: "{app}"; Flags: recursesubdirs ignorever
 [Icons]
 Name: "{userprograms}\interpolini"; Filename: "{app}\interpolini.exe"; Tasks: startmenu
 Name: "{usersendto}\interpolini"; Filename: "{app}\interpolini-cli.exe"; IconFilename: "{app}\interpolini.exe"; Tasks: sendto
+Name: "{usersendto}\interpolini GUI"; Filename: "{app}\interpolini.exe"; Tasks: sendto
 Name: "{userdesktop}\interpolini"; Filename: "{app}\interpolini.exe"; Tasks: desktop
 
 [InstallDelete]
 Type: files; Name: "{userprograms}\interpolini.lnk"; Tasks: not startmenu
 Type: files; Name: "{usersendto}\interpolini.lnk"; Tasks: not sendto
+Type: files; Name: "{usersendto}\interpolini GUI.lnk"; Tasks: not sendto
 Type: files; Name: "{userdesktop}\interpolini.lnk"; Tasks: not desktop
 
 [Run]

@@ -16,7 +16,7 @@ Get the zip for your system from the [releases page](https://github.com/Z1xus/in
 
 ### Install (Windows only)
 
-If you're on Windows and you'd rather install it, good news, you can download `interpolini-windows-x86_64-setup.exe` from the same page. It also comes with a nice addition of a Send to option: right click a clip in Explorer and render it without opening the app.
+If you're on Windows and you'd rather install it, good news, you can download `interpolini-windows-x86_64-setup.exe` from the same page. It also comes with a nice addition of Send to options: right click a clip in Explorer and render it without opening the app, or open it in the app to cut it first.
 
 Uninstalling deletes the whole folder, including your configs and downloaded models.
 
