@@ -312,7 +312,6 @@ export component Stage inherits Rectangle {
                     }
                 }
                 Action {
-                    width: 30px;
                     text: root.scale == 1 && root.pan-x == 0 && root.pan-y == 0 ? "Fit" : "\{round(root.scale * 10) / 10}×";
                     clicked => {
                         root.scale = 1;
