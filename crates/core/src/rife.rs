@@ -1,4 +1,4 @@
-use std::ffi::{CString, c_char};
+use std::ffi::{CStr, CString, c_char};
 use std::sync::{Arc, OnceLock};
 
 use ffmpeg_next::ffi;
@@ -18,6 +18,7 @@ api! {
     prepare: b"rife_prepare\0" fn(Raw, i32, i32, Report, Raw) -> i32;
     process: b"rife_process\0" fn(Raw, *const u8, *const u8, i32, i32, f32, *mut u8) -> i32;
     destroy: b"rife_destroy\0" fn(Raw);
+    error: b"rife_error\0" fn() -> *const c_char;
 }
 
 type Report = unsafe extern "C" fn(Raw, f32);
@@ -111,6 +112,10 @@ impl Rife {
         let ready = unsafe { (api.prepare)(raw, width as i32, height as i32, report, user) };
         if ready != 0 {
             unsafe { (api.destroy)(raw) };
+            let error = unsafe { CStr::from_ptr((api.error)()) }.to_string_lossy();
+            if !error.is_empty() {
+                sink(Event::Warning(format!("tensorrt: {error}")));
+            }
             return Err("tensorrt could not make an engine for this size".into());
         }
         let size = width as usize * height as usize * 3;

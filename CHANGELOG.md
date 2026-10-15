@@ -5,6 +5,7 @@
 - New: "interpolini GUI" entry in Send to
 - New: Release notes in the update window
 - New: Encode effort on VAAPI
+- New: TensorRT errors in the log
 - Faster: Dedup without interpolation
 - Faster: RIFE on AMD
 - Changed: Save frame is in the playback bar and the preview menu
