@@ -6,6 +6,7 @@
 - New: Release notes in the update window
 - New: Encode effort on VAAPI
 - Faster: Dedup without interpolation
+- Faster: RIFE on AMD
 - Changed: Save frame is in the playback bar and the preview menu
 - Fixed: Crash when switching settings fast
 - Fixed: Size estimate counted empty space
@@ -13,6 +14,7 @@
 - Fixed: Frozen frame in separate files
 - Fixed: Audio cut short at the end
 - Fixed: Restart note after switching FFmpeg back
+- Fixed: TensorRT engine on Windows
 
 ## 0.1.15
 - New: Save the preview frame
