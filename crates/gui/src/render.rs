@@ -9,7 +9,7 @@ use crate::state::{Shared, State, lock, sounds};
 use crate::view::{layout, megabytes, refresh, update};
 
 // row is the clip that renders now, or none when all clips go into one file
-fn show(ui: &App, event: Event, row: Option<usize>, current: usize, count: usize) {
+fn show(ui: &App, event: Event, row: Option<usize>, lead: f32, current: usize, count: usize) {
     match event {
         Event::Start { clip } if row.is_some() => update(ui, clip, |row| row.state = "0%".into()),
         Event::Start { .. } => {}
@@ -30,7 +30,8 @@ fn show(ui: &App, event: Event, row: Option<usize>, current: usize, count: usize
                 let part = match row {
                     Some(row) if row == index => done,
                     Some(_) => continue,
-                    None => ((done * end - clip.at) / clip.kept.max(0.001)).clamp(0.0, 1.0),
+                    None => ((lead + done * (end - lead) - clip.at) / clip.kept.max(0.001))
+                        .clamp(0.0, 1.0),
                 };
                 update(ui, index, |row| {
                     row.progress = part;
@@ -74,8 +75,8 @@ fn show(ui: &App, event: Event, row: Option<usize>, current: usize, count: usize
     }
 }
 
-pub fn jobs(state: &State, separate: bool, copy: bool) -> (Vec<Job>, Vec<Sound>, Vec<usize>) {
-    let heard = sounds(state);
+pub fn jobs(state: &State, separate: bool, copy: bool) -> (Vec<Job>, Vec<Sound>, Vec<usize>, f64) {
+    let mut heard = sounds(state);
     // an image goes into the file of the timeline, and has no file of its own
     let mut rows = state.videos();
     rows.retain(|index| !separate || !state.entries[*index].still);
@@ -118,20 +119,28 @@ pub fn jobs(state: &State, separate: bool, copy: bool) -> (Vec<Job>, Vec<Sound>,
             },
         }
     };
-    let jobs = rows.iter().map(job).collect();
-    (jobs, heard, rows)
+    let mut jobs: Vec<Job> = rows.iter().map(job).collect();
+    // the file starts with the first clip, not with the empty start of the timeline
+    let places = jobs
+        .iter()
+        .map(|job| job.at)
+        .chain(heard.iter().map(|sound| sound.at));
+    let lead = places.min_by(f64::total_cmp).unwrap_or(0.0);
+    jobs.iter_mut().for_each(|job| job.at -= lead);
+    heard.iter_mut().for_each(|sound| sound.at -= lead);
+    (jobs, heard, rows, lead)
 }
 
 fn render(ui: &App, shared: &Shared) {
     // a copy makes one file for each clip
     let copy = ui.get_copying();
     let separate = ui.get_separate() || copy;
-    let (jobs, sounds, rows, cancel) = {
+    let (jobs, sounds, rows, lead, cancel) = {
         let mut state = lock(shared);
         layout(ui, &mut state);
         state.cancel = Arc::new(AtomicBool::new(false));
-        let (jobs, sounds, rows) = jobs(&state, separate, copy);
-        (jobs, sounds, rows, Arc::clone(&state.cancel))
+        let (jobs, sounds, rows, lead) = jobs(&state, separate, copy);
+        (jobs, sounds, rows, lead as f32, Arc::clone(&state.cancel))
     };
     if ui.get_videos() == 0 {
         ui.set_failed(true);
@@ -173,7 +182,7 @@ fn render(ui: &App, shared: &Shared) {
             };
             let current = current.load(Ordering::Relaxed);
             let row = separate.then_some(rows[current]);
-            let _ = ui.upgrade_in_event_loop(move |ui| show(&ui, event, row, current, count));
+            let _ = ui.upgrade_in_event_loop(move |ui| show(&ui, event, row, lead, current, count));
         };
         run(&jobs, (!separate).then_some(&sounds[..]), &sink, &cancel);
         let _ = ui.upgrade_in_event_loop(move |ui| {

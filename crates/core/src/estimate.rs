@@ -75,6 +75,17 @@ pub fn estimate(jobs: &[Job], timeline: Option<&[Sound]>, cancel: &AtomicBool) -
         }
     }
     let total: f64 = videos.iter().map(|video| video.1).sum();
+    // black between the clips costs almost nothing, so only the time with video counts
+    let mut spans: Vec<(f64, f64)> = videos
+        .iter()
+        .map(|(job, length)| (job.at, job.at + length))
+        .collect();
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (mut shown, mut reached) = (0.0, f64::MIN);
+    for (start, stop) in spans {
+        shown += (stop - start.max(reached)).max(0.0);
+        reached = reached.max(stop);
+    }
     let first = videos.first().ok_or("the timeline has no video")?.0;
     let mut rates = Vec::new();
     let mut before = 0.0;
@@ -101,7 +112,7 @@ pub fn estimate(jobs: &[Job], timeline: Option<&[Sound]>, cancel: &AtomicBool) -
     let (seconds, heard) = match timeline {
         Some(sounds) => {
             let mix = first.config.output.audio == Audio::Mix;
-            (end, Mixer::new(sounds, mix).lanes() as f64 * end)
+            (shown, Mixer::new(sounds, mix).lanes() as f64 * end)
         }
         None => (total, heard),
     };

@@ -81,7 +81,7 @@ fn measure(ui: &App, shared: &Shared) {
         });
     }
     let separate = ui.get_separate();
-    let (mut jobs, sounds, _) = jobs(&state, separate, false);
+    let (mut jobs, sounds, ..) = jobs(&state, separate, false);
     if state.current(ui).config.output.target == Target::Size || ui.get_lossless() {
         jobs.clear();
     }
