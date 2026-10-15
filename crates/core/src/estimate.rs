@@ -1,12 +1,12 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ffmpeg_next::{ffi, format};
+use ffmpeg_next::{ffi, format, frame};
 
 use crate::Result;
 use crate::audio::{BITRATE, Mixer, Sound};
-use crate::compose::Source;
+use crate::compose::{Canvas, Source};
 use crate::config::Audio;
-use crate::decode::probe;
+use crate::decode::{Meta, probe};
 use crate::encode::{Encoder, GOP, Plan};
 use crate::queue::{Job, kept};
 use crate::upscale::Upscaler;
@@ -30,11 +30,14 @@ fn void() -> Result<format::context::Output> {
     }
 }
 
-fn sample(source: &mut Source, job: &Job, time: f64, end: f64, cancel: &AtomicBool) -> Result<f64> {
-    let graph = source.graph().ok_or("the clip has no video")?;
-    let (fps, meta) = (graph.info.fps, graph.meta);
+fn encode(
+    meta: Meta,
+    fps: (i64, i64),
+    job: &Job,
+    mut picture: impl FnMut(i32) -> Result<frame::Video>,
+    cancel: &AtomicBool,
+) -> Result<f64> {
     let rate = fps.0 as f64 / fps.1 as f64;
-    let time = time.min(end - f64::from(FRAMES) / rate);
     let upscaler = Upscaler::new(&meta, &job.config.upscale);
     let encoded = upscaler.as_ref().map_or(meta, |upscaler| upscaler.meta);
     let plan = Plan::Encode { lanes: 0 };
@@ -43,7 +46,7 @@ fn sample(source: &mut Source, job: &Job, time: f64, end: f64, cancel: &AtomicBo
         if cancel.load(Ordering::Relaxed) {
             return Err("stopped".into());
         }
-        let picture = source.at(time + f64::from(n) / rate)?.0;
+        let picture = picture(n)?;
         let picture = match &upscaler {
             Some(upscaler) => upscaler.run(&picture)?,
             None => picture,
@@ -55,6 +58,15 @@ fn sample(source: &mut Source, job: &Job, time: f64, end: f64, cancel: &AtomicBo
     let mean = |(count, bytes): (u32, u64)| bytes as f64 / f64::from(count.max(1));
     let [rest, keys] = encoder.packets;
     Ok(rate * (mean(rest) + mean(keys) / f64::from(GOP)))
+}
+
+fn sample(source: &mut Source, job: &Job, time: f64, end: f64, cancel: &AtomicBool) -> Result<f64> {
+    let graph = source.graph().ok_or("the clip has no video")?;
+    let (fps, meta) = (graph.info.fps, graph.meta);
+    let rate = fps.0 as f64 / fps.1 as f64;
+    let time = time.min(end - f64::from(FRAMES) / rate);
+    let picture = |n| Ok(source.at(time + f64::from(n) / rate)?.0);
+    encode(meta, fps, job, picture, cancel)
 }
 
 pub fn estimate(jobs: &[Job], timeline: Option<&[Sound]>, cancel: &AtomicBool) -> Result<u64> {
@@ -75,7 +87,6 @@ pub fn estimate(jobs: &[Job], timeline: Option<&[Sound]>, cancel: &AtomicBool) -
         }
     }
     let total: f64 = videos.iter().map(|video| video.1).sum();
-    // black between the clips costs almost nothing, so only the time with video counts
     let mut spans: Vec<(f64, f64)> = videos
         .iter()
         .map(|(job, length)| (job.at, job.at + length))
@@ -87,7 +98,7 @@ pub fn estimate(jobs: &[Job], timeline: Option<&[Sound]>, cancel: &AtomicBool) -
         reached = reached.max(stop);
     }
     let first = videos.first().ok_or("the timeline has no video")?.0;
-    let mut rates = Vec::new();
+    let (mut rates, mut black) = (Vec::new(), 0.0);
     let mut before = 0.0;
     for (job, length) in videos {
         let spots = (0..SPOTS).map(|spot| total * (spot as f64 + 0.5) / SPOTS as f64 - before);
@@ -97,6 +108,12 @@ pub fn estimate(jobs: &[Job], timeline: Option<&[Sound]>, cancel: &AtomicBool) -
             continue;
         }
         let mut source = Source::open(&job.clip, &job.config, false, &|_| {})?;
+        let graph = source.graph().ok_or("the clip has no video")?;
+        if timeline.is_some() && black == 0.0 && end > shown {
+            let (meta, fps) = (graph.meta, graph.info.fps);
+            let picture = Canvas::new(meta).black((meta.width, meta.height));
+            black = encode(meta, fps, job, |_| Ok(picture.clone()), cancel)?;
+        }
         let start = job.cut.map_or(0.0, |cut| cut.0);
         for time in spots {
             rates.push(sample(
@@ -116,5 +133,6 @@ pub fn estimate(jobs: &[Job], timeline: Option<&[Sound]>, cancel: &AtomicBool) -
         }
         None => (total, heard),
     };
-    Ok((picture * seconds + heard * BITRATE as f64 / 8.0) as u64)
+    let empty = black * (end - shown).max(0.0);
+    Ok((picture * seconds + empty + heard * BITRATE as f64 / 8.0) as u64)
 }

@@ -250,7 +250,7 @@ impl Canvas {
         (self.meta.width, self.meta.height)
     }
 
-    fn black(&self, size: (u32, u32)) -> frame::Video {
+    pub(crate) fn black(&self, size: (u32, u32)) -> frame::Video {
         let mut picture = frame::Video::new(Pixel::YUV420P, size.0, size.1);
         // 16 is black in the limited range, and 128 is no color
         picture
