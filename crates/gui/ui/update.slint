@@ -1,4 +1,10 @@
-import { Button, Theme } from "widgets.slint";
+import { Button, Scroll, Theme } from "widgets.slint";
+
+export struct Change {
+    heading: bool,
+    kind: string,
+    text: string,
+}
 
 export component Update inherits Window {
     in property <string> version;
@@ -8,6 +14,7 @@ export component Update inherits Window {
     in-out property <string> progress;
     in-out property <float> fraction;
     in-out property <string> note;
+    in property <[Change]> changes;
     property <bool> status: root.busy || root.done || root.note != "";
     callback install();
     callback cancel();
@@ -17,7 +24,8 @@ export component Update inherits Window {
     background: Theme.rack;
     default-font-size: 12px;
     width: 420px;
-    height: root.status ? 136px : 108px;
+    property <length> notes: min(notes.content-height, 220px);
+    height: (root.status ? 136px : 108px) + (root.changes.length > 0 ? root.notes + 12px : 0px);
     VerticalLayout {
         padding: 16px;
         HorizontalLayout {
@@ -39,6 +47,41 @@ export component Update inherits Window {
                     text: "You have \{root.current}";
                     color: Theme.faint;
                     font-size: 11px;
+                }
+            }
+        }
+        VerticalLayout {
+            padding-top: root.changes.length > 0 ? 12px : 0px;
+            Rectangle {
+                height: root.notes;
+                notes := Scroll {
+                    for change in root.changes: HorizontalLayout {
+                        padding-top: change.heading ? 6px : 0px;
+                        spacing: 8px;
+                        if change.heading: Text {
+                            height: 20px;
+                            text: change.text;
+                            color: Theme.faint;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                        if !change.heading: Text {
+                            width: 46px;
+                            text: change.kind;
+                            color: Theme.muted;
+                            font-size: 11px;
+                        }
+                        if !change.heading: Text {
+                            text: change.text;
+                            color: Theme.ink;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                if notes.more: Rectangle {
+                    y: parent.height - self.height;
+                    height: 32px;
+                    background: @linear-gradient(180deg, Theme.rack.with-alpha(0) 0%, Theme.rack 100%);
                 }
             }
         }

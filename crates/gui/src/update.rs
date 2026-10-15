@@ -10,10 +10,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use interpolini_core::config;
 use sha2::{Digest, Sha256};
-use slint::ComponentHandle;
+use slint::{ComponentHandle, ModelRc, VecModel};
 
 use crate::components::{Outcome, Report, download, hex, present, restart, text};
-use crate::{App, Theme, Update, themes};
+use crate::{App, Change, Theme, Update, themes};
 
 const RELEASES: &str = "https://github.com/Z1xus/interpolini/releases";
 const DAMAGED: &str = "The download is damaged. Try again.";
@@ -59,6 +59,37 @@ fn newest() -> Option<String> {
     let location = response.headers().get("location")?.to_str().ok()?;
     let version = location.rsplit_once("/tag/")?.1.trim_start_matches('v');
     (numbers(version)? > numbers(CURRENT)?).then(|| version.to_owned())
+}
+
+fn changelog(version: &str) -> Option<String> {
+    let response = ureq::get(format!("{RELEASES}/download/v{version}/CHANGELOG.md")).call();
+    response.ok()?.into_body().read_to_string().ok()
+}
+
+// the sections after this version, up to the new one
+fn changes(text: &str, version: &str) -> Vec<Change> {
+    let (mut changes, mut shown) = (Vec::new(), false);
+    for line in text.lines() {
+        if let Some(heading) = line.strip_prefix("## ") {
+            let number = numbers(heading.trim());
+            shown = number > numbers(CURRENT) && number <= numbers(version);
+            if shown {
+                changes.push(Change {
+                    heading: true,
+                    kind: "".into(),
+                    text: heading.trim().into(),
+                });
+            }
+        } else if let Some(entry) = line.strip_prefix("- ").filter(|_| shown) {
+            let (kind, text) = entry.split_once(": ").unwrap_or(("", entry));
+            changes.push(Change {
+                heading: false,
+                kind: kind.into(),
+                text: text.into(),
+            });
+        }
+    }
+    changes
 }
 
 pub fn check(ui: &App) {
@@ -311,8 +342,17 @@ pub fn wire(ui: &App) {
         let Some(window) = made.as_ref() else {
             return;
         };
-        window.set_version(ui.get_update());
+        let version = ui.get_update().to_string();
+        window.set_version(version.clone().into());
         window.set_current(CURRENT.into());
+        let weak = window.as_weak();
+        std::thread::spawn(move || {
+            let changes = changelog(&version).map(|text| changes(&text, &version));
+            let changes = changes.unwrap_or_default();
+            let _ = weak.upgrade_in_event_loop(move |window| {
+                window.set_changes(ModelRc::new(VecModel::from(changes)));
+            });
+        });
         themes::paint(&window.global::<Theme>(), &ui.get_theme(), ui.get_light());
         present(window);
     });

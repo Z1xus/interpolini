@@ -3,6 +3,7 @@
 ## 0.1.16
 - New: Dedup is set by the share of repeats it replaces
 - New: "interpolini GUI" entry in Send to
+- New: Release notes in the update window
 - Faster: Dedup without interpolation
 - Changed: Save frame is in the playback bar and the preview menu
 - Fixed: Crash when switching settings fast

@@ -543,6 +543,8 @@ export global System {
 }
 
 export component Scroll inherits Rectangle {
+    out property <length> content-height: content.preferred-height;
+    out property <bool> more: root.offset < root.limit;
     property <length> offset;
     property <length> limit: max(0px, content.preferred-height - self.height);
     clip: true;

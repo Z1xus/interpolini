@@ -88,6 +88,11 @@ jobs:
       - uses: actions/download-artifact@v8.0.2
         with:
           merge-multiple: true
+      - uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+          path: source
       - name: Package
         env:
           TZ: UTC
@@ -105,5 +110,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.exe dist/SHA256SUMS \
-            --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          awk -v version="## ${GITHUB_REF_NAME#v}" '$0 == version {on = 1; next} /^## / {on = 0} on' \
+            source/CHANGELOG.md > notes.md
+          notes=(--generate-notes)
+          [[ -n "$(tr -d '[:space:]' < notes.md)" ]] && notes=(--notes-file notes.md)
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.exe dist/SHA256SUMS source/CHANGELOG.md \
+            --verify-tag --title "$GITHUB_REF_NAME" "${notes[@]}"
