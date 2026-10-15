@@ -41,6 +41,14 @@ impl Track {
             _ => ChannelLayout::default(i32::from(decoded.channels())),
         };
         decoded.set_channel_layout(layout);
+        let kind = (decoded.format(), layout, decoded.rate());
+        let changed = self.resampler.as_ref().is_some_and(|resampler| {
+            let input = resampler.input();
+            (input.format, input.channel_layout, input.rate) != kind
+        });
+        if changed {
+            self.flush()?;
+        }
         if self.resampler.is_none() {
             let resampler = resampling::Context::get(
                 decoded.format(),
@@ -60,17 +68,34 @@ impl Track {
                 samples.extend(std::iter::repeat_n(0.0, late));
             }
         }
-        let skip = *self
-            .skip
+        self.skip
             .get_or_insert(((start - time).max(0.0) * f64::from(RATE)) as usize);
-        let mut output = frame::Audio::empty();
         if let Some(resampler) = &mut self.resampler {
+            // the default room is the input size, so a higher rate leaves samples behind
+            let held = resampler.delay().map_or(0, |delay| delay.output as usize);
+            let made = decoded.samples() * RATE as usize / decoded.rate() as usize;
+            let mut output = frame::Audio::new(FORMAT, held + made + 1, ChannelLayout::STEREO);
             resampler.run(decoded, &mut output)?;
+            self.keep(&output);
         }
+        Ok(())
+    }
+
+    fn keep(&mut self, output: &frame::Audio) {
+        let skip = self.skip.unwrap_or(0);
         let dropped = skip.min(output.samples());
         self.skip = Some(skip - dropped);
         for (channel, samples) in self.samples.iter_mut().enumerate() {
             samples.extend(&output.plane::<f32>(channel)[dropped..output.samples()]);
+        }
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if let Some(mut resampler) = self.resampler.take() {
+            let held = resampler.delay().map_or(0, |delay| delay.output as usize);
+            let mut output = frame::Audio::new(FORMAT, held + 1, ChannelLayout::STEREO);
+            resampler.flush(&mut output)?;
+            self.keep(&output);
         }
         Ok(())
     }
@@ -121,23 +146,29 @@ impl Source {
         let short = |tracks: &[Track]| tracks.iter().any(|track| track.samples[0].len() < count);
         let mut decoded = frame::Audio::empty();
         while !self.ended && short(&self.tracks) {
-            if crate::decode::next(&mut self.packet, &mut self.input).is_err() {
-                self.ended = true;
-                break;
+            let ended = crate::decode::next(&mut self.packet, &mut self.input).is_err();
+            for track in &mut self.tracks {
+                let stream = track.stream;
+                if !ended && stream != self.packet.stream() {
+                    continue;
+                }
+                let base = self
+                    .input
+                    .stream(stream)
+                    .map_or(Rational(1, 1), |stream| stream.time_base());
+                // a broken packet must not stop the clip
+                let _ = match ended {
+                    true => track.decoder.send_eof(),
+                    false => track.decoder.send_packet(&self.packet),
+                };
+                while track.decoder.receive_frame(&mut decoded).is_ok() {
+                    track.push(&mut decoded, self.start, base)?;
+                }
+                if ended {
+                    track.flush()?;
+                }
             }
-            let stream = self.packet.stream();
-            let Some(track) = self.tracks.iter_mut().find(|track| track.stream == stream) else {
-                continue;
-            };
-            let base = self
-                .input
-                .stream(stream)
-                .map_or(Rational(1, 1), |stream| stream.time_base());
-            // a broken packet must not stop the clip
-            let _ = track.decoder.send_packet(&self.packet);
-            while track.decoder.receive_frame(&mut decoded).is_ok() {
-                track.push(&mut decoded, self.start, base)?;
-            }
+            self.ended = ended;
         }
         Ok(())
     }
