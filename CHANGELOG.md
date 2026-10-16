@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.19
+- Fixed: Freeze with the peel mask on high frame rate video
+- Fixed: Crash when TensorRT is selected on a fresh install
+
 ## 0.1.18
 - New: 4:4:4 support, full color detail from input to output
 - Faster: RIFE on Vulkan, about twice as fast
