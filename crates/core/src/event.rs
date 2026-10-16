@@ -7,6 +7,8 @@ pub enum Event {
     },
     Info(String),
     Warning(String),
+    // tensorrt engine build, 0 to 1
+    Preparing(f32),
     Progress {
         frame: u32,
         frames: u32,

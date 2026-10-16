@@ -26,8 +26,7 @@ type Report = unsafe extern "C" fn(Raw, f32);
 // the plugin tells how far the build of a tensorrt engine is, and the sink shows it
 unsafe extern "C" fn report(sink: Raw, done: f32) {
     let sink = unsafe { *sink.cast::<Sink>() };
-    let text = format!("Preparing TensorRT, {:.0}%", done * 100.0);
-    sink(Event::Warning(text));
+    sink(Event::Preparing(done));
 }
 
 // the libraries keep gpu state, so they stay loaded

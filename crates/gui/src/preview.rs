@@ -196,10 +196,13 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
                     .any(|wanted| same(held, &wanted))
             };
             open.retain(soon);
-            let warn = |event| {
-                if let Event::Warning(text) = event {
-                    note(text);
-                }
+            let warn = |event| match event {
+                Event::Warning(text) => note(text),
+                Event::Preparing(done) => note(format!(
+                    "Preparing TensorRT for first use, {:.0}%",
+                    done * 100.0
+                )),
+                _ => {}
             };
             let mut failed = None;
             for wanted in &wanted(&first.layers) {

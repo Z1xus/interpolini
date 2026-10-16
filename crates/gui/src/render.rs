@@ -17,6 +17,9 @@ fn show(ui: &App, event: Event, row: Option<usize>, lead: f32, current: usize, c
             ui.set_log(format!("{}{text}\n", ui.get_log()).into());
             ui.set_status(text.into());
         }
+        Event::Preparing(done) => {
+            ui.set_status(format!("Preparing TensorRT for first use, {:.0}%", done * 100.0).into());
+        }
         Event::Progress { frame, frames, fps } => {
             let done = frame as f32 / frames as f32;
             let rows = ui.get_clips();

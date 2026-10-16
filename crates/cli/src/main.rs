@@ -41,6 +41,7 @@ fn json(event: &Event, jobs: &[Job]) -> String {
         Event::Start { clip: index } => format!(r#"{{"event":"start","clip":{}}}"#, clip(*index)),
         Event::Info(text) => format!(r#"{{"event":"info","message":{}}}"#, quote(text)),
         Event::Warning(text) => format!(r#"{{"event":"warning","message":{}}}"#, quote(text)),
+        Event::Preparing(done) => format!(r#"{{"event":"preparing","done":{done:.3}}}"#),
         Event::Progress { frame, frames, fps } => {
             format!(r#"{{"event":"progress","frame":{frame},"frames":{frames},"fps":{fps:.1}}}"#)
         }
@@ -118,6 +119,13 @@ fn print(event: &Event, jobs: &[Job], live: bool) {
             return;
         }
         Event::Progress { .. } => return,
+        Event::Preparing(_) if !live => return,
+        Event::Preparing(done) => {
+            let text = format!("Preparing TensorRT for first use, {:.0}%", done * 100.0);
+            eprint!("{clear}{}", line('*', &text));
+            let _ = std::io::stderr().flush();
+            return;
+        }
         Event::Done {
             output, seconds, ..
         } => {
