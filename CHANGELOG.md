@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.18
+- New: 4:4:4 support, full color detail from input to output
+- Faster: RIFE on Vulkan, about twice as fast
+- Faster: RIFE on TensorRT
+- Changed: TensorRT builds once per model, not for each video size
+- Fixed: TensorRT progress stuck at 67%
+- Fixed: Less precise RIFE motion on Vulkan in wide videos
+- Fixed: Crash on exit after RIFE on Vulkan
+- Fixed: Rare crash with the peel mask
+- Fixed: Wrong colors from RGB sources
+
 ## 0.1.17
 - Fixed: Slow dedup on CPUs with many threads
 - Fixed: Zoom label cut off
