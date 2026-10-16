@@ -29,9 +29,23 @@ pub struct Meta {
     pub transfer: color::TransferCharacteristic,
     pub still: bool,
     pub codec: &'static str,
+    // the color planes are as large as the picture
+    pub yuv444: bool,
 }
 
 impl Meta {
+    pub fn pixel(&self) -> Pixel {
+        match self.yuv444 {
+            true => Pixel::YUV444P,
+            false => Pixel::YUV420P,
+        }
+    }
+
+    // the step from a luma size to a color plane size
+    pub fn shift(&self) -> usize {
+        usize::from(!self.yuv444)
+    }
+
     pub fn bt601(&self) -> bool {
         match self.space {
             color::Space::BT470BG | color::Space::SMPTE170M => true,
@@ -104,6 +118,7 @@ pub struct Probe {
     pub height: u32,
     // an image has no length and no frame rate
     pub still: bool,
+    pub yuv444: bool,
 }
 
 // a file with sound only has a frame rate of 0
@@ -146,6 +161,7 @@ pub fn probe(path: &Path) -> Result<Probe> {
         width: meta.map_or(0, |meta| meta.width),
         height: meta.map_or(0, |meta| meta.height),
         still: meta.is_some_and(|meta| meta.still),
+        yuv444: meta.is_some_and(|meta| meta.yuv444),
     })
 }
 
@@ -250,8 +266,23 @@ fn nvidia() -> bool {
     })
 }
 
-fn full(format: Pixel) -> bool {
+// rgb counts too, it has a full color sample for each pixel
+fn whole(format: Pixel) -> bool {
+    let descriptor = unsafe { ffi::av_pix_fmt_desc_get(format.into()).as_ref() };
+    descriptor
+        .is_some_and(|descriptor| descriptor.log2_chroma_w == 0 && descriptor.log2_chroma_h == 0)
+}
+
+pub fn yuv444(format: Pixel) -> bool {
     matches!(format, Pixel::YUV444P | Pixel::YUVJ444P)
+}
+
+// the pictures that go through as they are, in the planes of the pipeline
+fn native(format: Pixel, full: bool) -> bool {
+    match full {
+        true => yuv444(format),
+        false => matches!(format, Pixel::YUV420P | Pixel::YUVJ420P),
+    }
 }
 
 fn rgb(format: Pixel) -> bool {
@@ -341,7 +372,8 @@ impl Decoder {
         if gpu.is_some() && !(exact && matches!(format, Pixel::YUV420P | Pixel::YUVJ420P)) {
             return Err("the gpu does not decode this clip".into());
         }
-        let limited = format != Pixel::YUVJ420P && decoder.color_range() != color::Range::JPEG;
+        let jpeg = matches!(format, Pixel::YUVJ420P | Pixel::YUVJ444P);
+        let limited = !jpeg && decoder.color_range() != color::Range::JPEG;
         let meta = Meta {
             width: decoder.width() & !1,
             height: decoder.height() & !1,
@@ -357,6 +389,7 @@ impl Decoder {
             transfer: decoder.color_transfer_characteristic(),
             still,
             codec: decoder.id().name(),
+            yuv444: whole(format),
         };
         if meta.width == 0 || meta.height == 0 {
             return Err("the clip has no picture size".into());
@@ -474,12 +507,12 @@ impl Decoder {
 
     fn scaler(&mut self) -> Result<Option<&mut scaling::Context>> {
         let format = self.frame.format();
-        if matches!(format, Pixel::YUV420P | Pixel::YUVJ420P) || full(format) {
+        if native(format, self.meta.yuv444) {
             return Ok(None);
         }
         if self.scaler.is_none() {
             let Meta { width, height, .. } = self.meta;
-            self.scaler = Some(self.meta.scaler(format, Pixel::YUV420P, width, height)?);
+            self.scaler = Some(self.meta.scaler(format, self.meta.pixel(), width, height)?);
         }
         Ok(self.scaler.as_mut())
     }
@@ -503,37 +536,17 @@ impl Decoder {
             }
             return Ok(());
         }
-        let full = full(self.frame.format());
+        let shift = self.meta.shift();
         for plane in 0..3 {
-            let (width, height) = if plane == 0 {
-                (width, height)
-            } else {
-                (width / 2, height / 2)
+            let (width, height) = match plane {
+                0 => (width, height),
+                _ => (width >> shift, height >> shift),
             };
             let line = source.linesize[plane] as isize;
             for y in 0..height as isize {
+                let row = unsafe { source.data[plane].offset(y * line) };
                 let target = unsafe { planes[plane].offset(y * strides[plane]) };
-                if plane == 0 || !full {
-                    let row = unsafe { source.data[plane].offset(y * line) };
-                    unsafe { std::ptr::copy_nonoverlapping(row, target, width) };
-                    continue;
-                }
-                // the scaler is many times slower here
-                let row = |y| unsafe {
-                    std::slice::from_raw_parts(source.data[plane].offset(y * line), width * 2)
-                };
-                let (above, below) = (
-                    row(y * 2).as_chunks::<2>().0,
-                    row(y * 2 + 1).as_chunks::<2>().0,
-                );
-                let target = unsafe { std::slice::from_raw_parts_mut(target, width) };
-                for (sample, (above, below)) in target.iter_mut().zip(above.iter().zip(below)) {
-                    let sum = u16::from(above[0])
-                        + u16::from(above[1])
-                        + u16::from(below[0])
-                        + u16::from(below[1]);
-                    *sample = ((sum + 2) >> 2) as u8;
-                }
+                unsafe { std::ptr::copy_nonoverlapping(row, target, width) };
             }
         }
         Ok(())
@@ -617,11 +630,11 @@ impl Decoder {
     pub fn picture(&mut self, n: i32) -> Result<frame::Video> {
         self.with(n, |decoder| {
             let format = decoder.frame.format();
-            if matches!(format, Pixel::YUV420P | Pixel::YUVJ420P | Pixel::NV12) {
+            if native(format, decoder.meta.yuv444) || format == Pixel::NV12 {
                 return Ok(share(&decoder.frame));
             }
             let Meta { width, height, .. } = decoder.meta;
-            let picture = frame::Video::new(Pixel::YUV420P, width, height);
+            let picture = frame::Video::new(decoder.meta.pixel(), width, height);
             let raw = unsafe { &*picture.as_ptr() };
             let strides = [0, 1, 2].map(|plane| raw.linesize[plane] as isize);
             decoder.store([raw.data[0], raw.data[1], raw.data[2]], strides)?;

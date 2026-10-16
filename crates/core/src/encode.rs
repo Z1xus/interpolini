@@ -372,10 +372,16 @@ fn context(
         .ok()?;
     video.set_width(meta.width);
     video.set_height(meta.height);
+    let yuv444 = codec
+        .video()
+        .ok()
+        .and_then(|video| video.formats())
+        .is_some_and(|mut formats| formats.any(|format| format == Pixel::YUV444P));
     let format = match name.rsplit('_').next() {
         Some("qsv") => Pixel::NV12,
         Some("vaapi") => Pixel::VAAPI,
         Some("vulkan") => Pixel::VULKAN,
+        _ if meta.yuv444 && yuv444 => Pixel::YUV444P,
         _ => Pixel::YUV420P,
     };
     video.set_format(format);
@@ -429,12 +435,13 @@ pub struct Encoder {
     lanes: Vec<Lane>,
     source: Option<Source>,
     mixer: Option<Mixer>,
-    nv12: Option<scaling::Context>,
+    convert: Option<scaling::Context>,
     packet: Packet,
     base: Rational,
     spare: Option<Spare>,
     busy: bool,
     pub name: String,
+    pub yuv444: bool,
     pub packets: [(u32, u64); 2],
 }
 
@@ -459,17 +466,27 @@ impl Encoder {
             None => candidates(config).collect(),
         };
         // the encoders that do not fit this computer fail without a word
+        // nvenc lists 4:4:4 for av1 as well, but the gpu has none, so each encoder tries 4:2:0 after it
+        let plain = Meta {
+            yuv444: false,
+            ..*meta
+        };
         let mut open = |level| {
             ffmpeg_next::log::set_level(level);
-            names.iter().find_map(
-                |&name| match context(name, meta, base, config, rate, header)? {
-                    Ok(encoder) => Some((name, encoder)),
-                    Err(error) => {
-                        failure = error;
-                        None
-                    }
-                },
-            )
+            names.iter().find_map(|&name| {
+                let mut tries = [meta, &plain]
+                    .into_iter()
+                    .take(1 + usize::from(meta.yuv444));
+                tries.find_map(
+                    |meta| match context(name, meta, base, config, rate, header)? {
+                        Ok(encoder) => Some((name, encoder)),
+                        Err(error) => {
+                            failure = error;
+                            None
+                        }
+                    },
+                )
+            })
         };
         let opened = open(Level::Quiet).or_else(|| open(Level::Error));
         ffmpeg_next::log::set_level(Level::Error);
@@ -496,35 +513,44 @@ impl Encoder {
             }
         };
         output.write_header()?;
-        // nvenc starts again after a flush, and a size target needs one encoder for the whole file
-        let spare = (name.ends_with("_nvenc") && rate.is_none() && engines() > 1).then(|| {
-            let (name, meta, config, first) =
-                (name.to_owned(), *meta, config.clone(), head(&encoder));
-            let spare: Spare = Arc::new(move || {
-                let video = context(&name, &meta, base, &config, None, header);
-                let video = video.ok_or("no encoder")??;
-                match head(&video) == first {
-                    true => Ok(video),
-                    false => Err("the encoders do not match".into()),
-                }
-            });
-            spare
-        });
-        let nv12 = if encoder.format() != Pixel::YUV420P {
-            let (width, height) = (meta.width, meta.height);
-            let flags = scaling::Flags::BILINEAR;
-            Some(scaling::Context::get(
-                Pixel::YUV420P,
-                width,
-                height,
-                Pixel::NV12,
-                width,
-                height,
-                flags,
-            )?)
-        } else {
-            None
+        // the gpu surfaces take nv12
+        let target = match encoder.format() {
+            Pixel::NV12 | Pixel::VAAPI | Pixel::VULKAN => Pixel::NV12,
+            format => format,
         };
+        let convert = match target == meta.pixel() {
+            true => None,
+            false => {
+                let (width, height) = (meta.width, meta.height);
+                let flags = scaling::Flags::BILINEAR;
+                Some(scaling::Context::get(
+                    meta.pixel(),
+                    width,
+                    height,
+                    target,
+                    width,
+                    height,
+                    flags,
+                )?)
+            }
+        };
+        // nvenc starts again after a flush, and a size target needs one encoder for the whole file
+        // the lanes give their pictures to it as they are, so it must take them without a change
+        let spare =
+            (name.ends_with("_nvenc") && rate.is_none() && engines() > 1 && convert.is_none())
+                .then(|| {
+                    let (name, meta, config, first) =
+                        (name.to_owned(), *meta, config.clone(), head(&encoder));
+                    let spare: Spare = Arc::new(move || {
+                        let video = context(&name, &meta, base, &config, None, header);
+                        let video = video.ok_or("no encoder")??;
+                        match head(&video) == first {
+                            true => Ok(video),
+                            false => Err("the encoders do not match".into()),
+                        }
+                    });
+                    spare
+                });
         Ok(Self {
             output,
             encoder,
@@ -532,12 +558,13 @@ impl Encoder {
             lanes,
             source: None,
             mixer,
-            nv12,
+            convert,
             packet: Packet::empty(),
             base,
             spare,
             busy: false,
             name: name.to_owned(),
+            yuv444: target == Pixel::YUV444P,
             packets: [(0, 0); 2],
         })
     }
@@ -608,7 +635,7 @@ impl Encoder {
     }
 
     pub fn write(&mut self, mut picture: frame::Video, n: i32) -> Result<()> {
-        if let Some(scaler) = &mut self.nv12 {
+        if let Some(scaler) = &mut self.convert {
             let mut converted = frame::Video::empty();
             scaler.run(&picture, &mut converted)?;
             picture = converted;

@@ -14,12 +14,13 @@ pub struct Pick {
     pub offset: i32,
     pub width: usize,
     pub height: usize,
+    pub chroma: usize,
 }
 
 impl Reader for Pick {
     fn read(&self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
         let frame = self.source.frame(n * self.step + self.offset)?;
-        frame.copy(planes, strides, self.width, self.height);
+        frame.copy(planes, strides, self.width, self.height, self.chroma);
         Ok(())
     }
 }
@@ -38,16 +39,18 @@ pub fn differences(clip: &Path, from: f64, to: f64) -> Result<Vec<Vec<f32>>> {
     const SPOTS: i32 = 3;
     const SAMPLE: i32 = 100;
     let mut decoder = Decoder::open(clip)?;
+    let meta = decoder.meta();
     let Meta {
         width,
         height,
         frames,
         fps,
         ..
-    } = decoder.meta();
+    } = meta;
     let (width, height) = (width as usize, height as usize);
     let luma = width * height;
-    let mut pictures = [vec![0u8; luma * 3 / 2], vec![0u8; luma * 3 / 2]];
+    let chroma = luma >> (meta.shift() * 2);
+    let mut pictures = [vec![0u8; luma + chroma * 2], vec![0u8; luma + chroma * 2]];
     let rate = fps.0 as f64 / fps.1 as f64;
     let (start, end) = ((from * rate) as i32, ((to * rate) as i32).min(frames));
     let mut spots = Vec::new();
@@ -56,8 +59,9 @@ pub fn differences(clip: &Path, from: f64, to: f64) -> Result<Vec<Vec<f32>>> {
         let mut row = Vec::new();
         for step in 0..SAMPLE.min(end - first) {
             let picture = pictures[step as usize % 2].as_mut_ptr();
-            let planes = unsafe { [picture, picture.add(luma), picture.add(luma * 5 / 4)] };
-            let strides = [width as isize, width as isize / 2, width as isize / 2];
+            let planes = unsafe { [picture, picture.add(luma), picture.add(luma + chroma)] };
+            let line = (width >> meta.shift()) as isize;
+            let strides = [width as isize, line, line];
             decoder.read(first + step, planes, strides)?;
             let lines = (0..height)
                 .step_by(STEP)

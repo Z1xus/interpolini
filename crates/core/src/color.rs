@@ -4,7 +4,7 @@ use ffmpeg_next::format::Pixel;
 use ffmpeg_next::frame;
 use rayon::prelude::*;
 
-use crate::decode::Meta;
+use crate::decode::{self, Meta};
 use crate::lut::Lut;
 use crate::{Result, config};
 
@@ -92,15 +92,40 @@ impl Grade {
 
     pub fn apply(&self, source: &frame::Video) -> frame::Video {
         let (width, height) = (source.width() as usize, source.height() as usize);
-        let output = frame::Video::new(Pixel::YUV420P, source.width(), source.height());
+        let yuv444 = decode::yuv444(source.format());
+        let format = if yuv444 {
+            Pixel::YUV444P
+        } else {
+            Pixel::YUV420P
+        };
+        let output = frame::Video::new(format, source.width(), source.height());
         let from: [(&[u8], usize); 3] =
             std::array::from_fn(|plane| (source.data(plane), source.stride(plane)));
         let strides: [usize; 3] = std::array::from_fn(|plane| output.stride(plane));
         let raw = unsafe { &*output.as_ptr() };
         let [y, u, v] = std::array::from_fn(|plane| {
-            let rows = if plane == 0 { height } else { height / 2 };
+            let rows = if plane == 0 || yuv444 {
+                height
+            } else {
+                height / 2
+            };
             unsafe { std::slice::from_raw_parts_mut(raw.data[plane], strides[plane] * rows) }
         });
+        if yuv444 {
+            y.par_chunks_mut(strides[0])
+                .zip(u.par_chunks_mut(strides[1]))
+                .zip(v.par_chunks_mut(strides[2]))
+                .enumerate()
+                .for_each(|(row, ((y, u), v))| {
+                    let line = |plane: usize| &from[plane].0[row * from[plane].1..][..width];
+                    self.pixels(
+                        (line(0), &mut y[..width]),
+                        (line(1), &mut u[..width]),
+                        (line(2), &mut v[..width]),
+                    );
+                });
+            return output;
+        }
         y.par_chunks_mut(strides[0] * 2)
             .zip(u.par_chunks_mut(strides[1]))
             .zip(v.par_chunks_mut(strides[2]))
@@ -123,6 +148,29 @@ impl Grade {
                 self.rows(pairs, u, v);
             });
         output
+    }
+
+    // each pixel has its own color sample
+    fn pixels(&self, luma: (&[u8], &mut [u8]), u: (&[u8], &mut [u8]), v: (&[u8], &mut [u8])) {
+        let (cos, sin) = self.turn;
+        for x in 0..luma.0.len() {
+            let y = self.luma[usize::from(luma.0[x])];
+            let cb = i32::from(u.0[x]) - 128;
+            let cr = i32::from(v.0[x]) - 128;
+            let (cb, cr) = ((cb * cos - cr * sin) / FIXED, (cb * sin + cr * cos) / FIXED);
+            let Some(lut) = &self.lut else {
+                luma.1[x] = y;
+                u.1[x] = (cb + 128).clamp(0, 255) as u8;
+                v.1[x] = (cr + 128).clamp(0, 255) as u8;
+                continue;
+            };
+            let [y, cb, cr] =
+                self.matrix
+                    .yuv(lut.sample(self.matrix.rgb(f32::from(y), cb as f32, cr as f32)));
+            luma.1[x] = byte(y);
+            u.1[x] = byte(cb + 128.0);
+            v.1[x] = byte(cr + 128.0);
+        }
     }
 
     fn rows(&self, luma: [(&[u8], &mut [u8]); 2], u: (&[u8], &mut [u8]), v: (&[u8], &mut [u8])) {

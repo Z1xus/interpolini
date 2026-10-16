@@ -390,7 +390,8 @@ impl Segments {
         let blend = move || Blend::new(&weights, fps, &blending, frames);
         let math = blend();
         let cores = std::thread::available_parallelism().map_or(1, usize::from);
-        let picture = width as usize * height as usize * 3 / 2;
+        let luma = width as usize * height as usize;
+        let picture = luma + 2 * (luma >> (meta.shift() * 2));
         // a quarter of the memory: half for the pictures of the lanes, half for the frames that wait
         let budget = memory().map_or(2 << 30, |memory| (memory / 4).clamp(1 << 30, 8 << 30));
         let lanes = budget / 2 / ((math.window() + HELD) * picture);

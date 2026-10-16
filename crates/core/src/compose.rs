@@ -153,11 +153,7 @@ fn image_file(path: &Path) -> Result<frame::Video> {
     let descriptor = unsafe { ffi::av_pix_fmt_desc_get(source.format().into()).as_ref() };
     let clear =
         descriptor.is_some_and(|format| format.flags & ffi::AV_PIX_FMT_FLAG_ALPHA as u64 != 0);
-    let format = if clear {
-        Pixel::YUVA420P
-    } else {
-        Pixel::YUV420P
-    };
+    let format = layout(meta.yuv444, clear);
     let mut picture = frame::Video::new(format, meta.width, meta.height);
     Meta {
         space: color::Space::BT709,
@@ -169,16 +165,38 @@ fn image_file(path: &Path) -> Result<frame::Video> {
     Ok(picture)
 }
 
+fn layout(yuv444: bool, clear: bool) -> Pixel {
+    match (yuv444, clear) {
+        (false, false) => Pixel::YUV420P,
+        (false, true) => Pixel::YUVA420P,
+        (true, false) => Pixel::YUV444P,
+        (true, true) => Pixel::YUVA444P,
+    }
+}
+
+fn clear(format: Pixel) -> bool {
+    matches!(format, Pixel::YUVA420P | Pixel::YUVA444P)
+}
+
+// the step from a luma size to a color plane size
+fn shift(format: Pixel) -> u32 {
+    u32::from(!matches!(
+        format,
+        Pixel::YUV444P | Pixel::YUVJ444P | Pixel::YUVA444P
+    ))
+}
+
 // a frame header for a part of a picture: left, top, right, bottom
 fn window(picture: &frame::Video, part: [u32; 4]) -> frame::Video {
     let mut view = frame::Video::empty();
+    let chroma = shift(picture.format());
     unsafe {
         let (from, to) = (&*picture.as_ptr(), &mut *view.as_mut_ptr());
         (to.format, to.colorspace, to.color_range) =
             (from.format, from.colorspace, from.color_range);
         (to.width, to.height) = ((part[2] - part[0]) as i32, (part[3] - part[1]) as i32);
         for plane in (0..4).filter(|plane| !from.data[*plane].is_null()) {
-            let shift = u32::from(plane == 1 || plane == 2);
+            let shift = if plane == 1 || plane == 2 { chroma } else { 0 };
             let stride = from.linesize[plane];
             let start = (part[1] >> shift) as isize * stride as isize + (part[0] >> shift) as isize;
             to.linesize[plane] = stride;
@@ -189,10 +207,11 @@ fn window(picture: &frame::Video, part: [u32; 4]) -> frame::Video {
 }
 
 fn paste(canvas: &mut frame::Video, picture: &frame::Video, left: u32, top: u32, opacity: f32) {
-    let clear = picture.format() == Pixel::YUVA420P;
+    let clear = clear(picture.format());
     let level = (opacity * 255.0).round() as u32;
+    let chroma = shift(picture.format()) as usize;
     for plane in 0..3 {
-        let shift = usize::from(plane > 0);
+        let shift = if plane > 0 { chroma } else { 0 };
         let (width, height) = (
             picture.width() as usize >> shift,
             picture.height() as usize >> shift,
@@ -251,7 +270,7 @@ impl Canvas {
     }
 
     pub(crate) fn black(&self, size: (u32, u32)) -> frame::Video {
-        let mut picture = frame::Video::new(Pixel::YUV420P, size.0, size.1);
+        let mut picture = frame::Video::new(self.meta.pixel(), size.0, size.1);
         // 16 is black in the limited range, and 128 is no color
         picture
             .data_mut(0)
@@ -280,8 +299,10 @@ impl Canvas {
         };
         let like = |picture: &frame::Video| {
             let same = (picture.width(), picture.height()) == full;
-            picture.format() == Pixel::YUV420P && same && tagged(picture)
+            picture.format() == self.meta.pixel() && same && tagged(picture)
         };
+        // the planes of the canvas, with the transparency of the picture
+        let fitted = |picture: &frame::Video| layout(self.meta.yuv444, clear(picture.format()));
         // a clip that is the canvas goes through as it is
         let whole = |layer: &(Picture, Place, f32)| {
             layer.1 == Place::default() && layer.2 >= 1.0 && like(&layer.0.0)
@@ -320,11 +341,13 @@ impl Canvas {
                 from(bottom, whole[1], whole[3], height, 2).max(first.1 + 2),
             ];
             let whole = part == [0, 0, width, height];
-            if whole && (right - left, bottom - top) == (width, height) && tagged(picture) {
+            let same = (right - left, bottom - top) == (width, height)
+                && picture.format() == fitted(picture);
+            if whole && same && tagged(picture) {
                 paste(&mut canvas, picture, left, top, *opacity);
                 continue;
             }
-            let mut scaled = frame::Video::new(picture.format(), right - left, bottom - top);
+            let mut scaled = frame::Video::new(fitted(picture), right - left, bottom - top);
             self.meta.tag(&mut scaled);
             self.scalers[index].run(&mut scaled, &window(picture, part))?;
             paste(&mut canvas, &scaled, left, top, *opacity);

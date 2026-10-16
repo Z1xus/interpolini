@@ -1,4 +1,3 @@
-use ffmpeg_next::format::Pixel;
 use ffmpeg_next::{ffi, frame};
 
 use crate::Result;
@@ -36,7 +35,7 @@ impl Upscaler {
     }
 
     pub fn run(&self, picture: &frame::Video) -> Result<frame::Video> {
-        let mut scaled = frame::Video::new(Pixel::YUV420P, self.meta.width, self.meta.height);
+        let mut scaled = frame::Video::new(self.meta.pixel(), self.meta.width, self.meta.height);
         self.meta.tag(&mut scaled);
         self.scaler.run(&mut scaled, picture)?;
         Ok(scaled)

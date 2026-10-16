@@ -28,7 +28,7 @@ impl Picture {
 
 api! {
     create: b"rife_create\0" fn(*const c_char) -> Raw;
-    prepare: b"rife_prepare\0" fn(Raw, i32, i32, i32, i32, Report, Raw) -> i32;
+    prepare: b"rife_prepare\0" fn(Raw, i32, i32, i32, i32, i32, Report, Raw) -> i32;
     process: b"rife_process\0" fn(Raw, *const Picture, *const Picture, f32, *const Picture) -> i32;
     destroy: b"rife_destroy\0" fn(Raw);
     error: b"rife_error\0" fn() -> *const c_char;
@@ -56,6 +56,7 @@ pub struct Rife {
     last: i32,
     width: usize,
     height: usize,
+    chroma: usize,
 }
 
 // the plugin is thread safe
@@ -118,9 +119,9 @@ impl Rife {
         let Meta { width, height, .. } = *meta;
         // its a looooong one
         let user = std::ptr::from_ref(&sink).cast_mut().cast();
-        let (bt601, full) = (i32::from(meta.bt601()), i32::from(meta.full()));
-        let ready =
-            unsafe { (api.prepare)(raw, width as i32, height as i32, bt601, full, report, user) };
+        let [bt601, full, yuv444] = [meta.bt601(), meta.full(), meta.yuv444].map(i32::from);
+        let (width, height) = (width as i32, height as i32);
+        let ready = unsafe { (api.prepare)(raw, width, height, bt601, full, yuv444, report, user) };
         if ready != 0 {
             unsafe { (api.destroy)(raw) };
             let error = unsafe { CStr::from_ptr((api.error)()) }.to_string_lossy();
@@ -133,8 +134,9 @@ impl Rife {
         let step = (from.fps.0, from.fps.1 * i64::from(fps));
         let shape = Shape {
             deep: false,
-            width,
-            height,
+            yuv444: meta.yuv444,
+            width: width as u32,
+            height: height as u32,
             fps: (i64::from(fps), 1),
             frames: (i64::from(from.frames) * step.1 / step.0) as i32,
         };
@@ -147,6 +149,7 @@ impl Rife {
             last: from.frames - 1,
             width: width as usize,
             height: height as usize,
+            chroma: meta.shift(),
         };
         svp.source(&shape, rife)
     }
@@ -171,7 +174,7 @@ impl Reader for Rife {
         if time == 0.0 || index == self.last || !self.used(n) {
             // a source frame goes through as it is
             let frame = self.source.frame(index)?;
-            frame.copy(planes, strides, self.width, self.height);
+            frame.copy(planes, strides, self.width, self.height, self.chroma);
             return Ok(());
         }
         let frames = (self.source.frame(index)?, self.source.frame(index + 1)?);

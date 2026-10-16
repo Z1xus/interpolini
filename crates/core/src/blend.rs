@@ -7,6 +7,7 @@ use rayon::prelude::*;
 use crate::Result;
 use crate::compose::share;
 use crate::config::Blending;
+use crate::decode;
 
 const SHIFT: u32 = 15;
 
@@ -95,9 +96,17 @@ impl Blend {
             })
             .collect::<Result<_>>()?;
 
-        let mut output = frame::Video::new(Pixel::YUV420P, width, height);
+        let yuv444 = held
+            .first()
+            .is_some_and(|(_, picture)| decode::yuv444(picture.format()));
+        let format = if yuv444 {
+            Pixel::YUV444P
+        } else {
+            Pixel::YUV420P
+        };
+        let mut output = frame::Video::new(format, width, height);
         for plane in 0..3 {
-            let shift = usize::from(plane > 0);
+            let shift = usize::from(plane > 0 && !yuv444);
             let (width, height) = (width as usize >> shift, height as usize >> shift);
             let stride = output.stride(plane);
             let rows = output

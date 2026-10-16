@@ -161,7 +161,9 @@ fn encode(
     let base = base(jobs)?;
     let first = open(base)?;
     let graph = first.graph().ok_or("the timeline has no video")?;
-    let (fps, meta) = (graph.info.fps, graph.meta);
+    let (fps, mut meta) = (graph.info.fps, graph.meta);
+    // one video in 4:4:4 makes the whole file 4:4:4, an image follows the videos
+    meta.yuv444 = probes.iter().any(|probe| probe.yuv444 && !probe.still);
     let rate = fps.0 as f64 / fps.1 as f64;
     let end = parts.last().map_or(0.0, |part| part.end);
     // a whole clip on its own gives each of its frames one time
@@ -207,7 +209,15 @@ fn encode(
     }
     let encoded = upscaler.as_ref().map_or(meta, |upscaler| upscaler.meta);
     let mut encoder = Encoder::open(format::output(output)?, &encoded, fps, config, bits, plan)?;
-    sink(Event::Info(format!("encoding with {}", encoder.name)));
+    let fallback = if meta.yuv444 && !encoder.yuv444 {
+        " in 4:2:0, it has no 4:4:4"
+    } else {
+        ""
+    };
+    sink(Event::Info(format!(
+        "encoding with {}{fallback}",
+        encoder.name
+    )));
     let from = ((start - job.at) * rate).round().max(0.0) as i32;
     let alone = timeline.is_none() && upscaler.is_none() && job.fade.none();
     let alone = alone && job.place == Place::default();

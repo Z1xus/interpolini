@@ -8,7 +8,9 @@ use crate::config::{Algorithm, Blending, Interpolation, Mask, Masking, Speed, Tu
 use crate::{Error, Result};
 
 const YUV420P8: i32 = 0;
+const YUV444P8: i32 = 1;
 const YUV420P16: i32 = 3;
+const YUV444P16: i32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -130,9 +132,16 @@ impl Frame {
         unsafe { (self.svp.api.frame_stride)(self.raw, plane as i32) as usize }
     }
 
-    pub fn copy(&self, planes: [*mut u8; 3], strides: [isize; 3], width: usize, height: usize) {
+    pub fn copy(
+        &self,
+        planes: [*mut u8; 3],
+        strides: [isize; 3],
+        width: usize,
+        height: usize,
+        chroma: usize,
+    ) {
         for plane in 0..3 {
-            let shift = usize::from(plane > 0);
+            let shift = if plane > 0 { chroma } else { 0 };
             for y in 0..height >> shift {
                 unsafe {
                     std::ptr::copy_nonoverlapping(
@@ -148,6 +157,7 @@ impl Frame {
 
 pub struct Shape {
     pub deep: bool,
+    pub yuv444: bool,
     pub width: u32,
     pub height: u32,
     pub fps: (i64, i64),
@@ -183,7 +193,12 @@ impl Svp {
 
     pub fn source<R: Reader>(self: &Arc<Self>, shape: &Shape, reader: R) -> Result<Clip> {
         let info = VideoInfo {
-            format: if shape.deep { YUV420P16 } else { YUV420P8 },
+            format: match (shape.deep, shape.yuv444) {
+                (false, false) => YUV420P8,
+                (false, true) => YUV444P8,
+                (true, false) => YUV420P16,
+                (true, true) => YUV444P16,
+            },
             width: shape.width as i32,
             height: shape.height as i32,
             fps_num: shape.fps.0,
@@ -311,7 +326,8 @@ impl Clip {
         let mut info = VideoInfo::default();
         unsafe { (self.svp.api.clip_info)(self.raw, &raw mut info) };
         Shape {
-            deep: info.format == YUV420P16,
+            deep: matches!(info.format, YUV420P16 | YUV444P16),
+            yuv444: matches!(info.format, YUV444P8 | YUV444P16),
             width: info.width as u32,
             height: info.height as u32,
             fps: (info.fps_num, info.fps_den),

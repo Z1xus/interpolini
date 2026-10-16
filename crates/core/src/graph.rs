@@ -102,11 +102,11 @@ unsafe extern "C" fn release(holder: *mut c_void, _: *mut u8) {
     drop(unsafe { Box::from_raw(holder.cast::<Frame>()) });
 }
 
-fn wrap(source: Frame, width: u32, height: u32) -> frame::Video {
+fn wrap(source: Frame, width: u32, height: u32, format: Pixel) -> frame::Video {
     let mut picture = frame::Video::empty();
     unsafe {
         let raw = &mut *picture.as_mut_ptr();
-        raw.format = ffi::AVPixelFormat::from(Pixel::YUV420P) as i32;
+        raw.format = ffi::AVPixelFormat::from(format) as i32;
         raw.width = width as i32;
         raw.height = height as i32;
         for plane in 0..3 {
@@ -218,6 +218,7 @@ impl Graph {
         let mut svp = host()?;
         let shape = Shape {
             deep: false,
+            yuv444: meta.yuv444,
             width,
             height,
             fps,
@@ -242,9 +243,11 @@ impl Graph {
             let last = !interpolate && pre.is_none();
             let made = match blended && last {
                 true => svp.smooth_blend(&input, &options(true), weights, blending),
-                false => svp.smooth(&input, &options(true)),
+                false => Err("no blend".into()),
             };
-            fused = blended && last && made.is_ok();
+            fused = made.is_ok();
+            // the blend on the gpu takes fewer formats than the gpu itself
+            let made = made.or_else(|_| svp.smooth(&input, &options(true)));
             let clip = match made {
                 Ok(clip) => clip,
                 Err(_) => svp.smooth(&input, &options(false))?,
@@ -263,6 +266,7 @@ impl Graph {
                 offset: 0,
                 width: size.0 * scale,
                 height: size.1 * scale,
+                chroma: meta.shift(),
             };
             svp.source(&source.shape(), relay)
         };
@@ -311,9 +315,10 @@ impl Graph {
                 let options = |gpu| Options::new(interpolation, &rate, mask, limit, gpu, half);
                 let made = match blended {
                     true => svp.smooth_blend(&input, &options(true), weights, blending),
-                    false => svp.smooth(&input, &options(true)),
+                    false => Err("no blend".into()),
                 };
-                fused = blended && made.is_ok();
+                fused = made.is_ok();
+                let made = made.or_else(|_| svp.smooth(&input, &options(true)));
                 let clip = match made {
                     Ok(clip) => clip,
                     Err(_) => {
@@ -338,7 +343,7 @@ impl Graph {
             }
             Feed::Host { derived, input } => {
                 let clip = derived.as_ref().unwrap_or(input);
-                let source = |n| Ok(wrap(clip.frame(n)?, width, height));
+                let source = |n| Ok(wrap(clip.frame(n)?, width, height, self.meta.pixel()));
                 match &self.blend {
                     Some(blend) => blend.frame(source, n, width, height)?,
                     None => source(n)?,
