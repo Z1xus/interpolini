@@ -379,7 +379,11 @@ impl Decoder {
             height: decoder.height() & !1,
             fps: (rate.numerator().into(), rate.denominator().into()),
             frames: i32::try_from(frames).unwrap_or(i32::MAX).max(1),
-            space: decoder.color_space(),
+            // the scaler turns rgb into bt709 yuv
+            space: match rgb(format) {
+                true => color::Space::BT709,
+                false => decoder.color_space(),
+            },
             range: if limited || rgb(format) {
                 color::Range::MPEG
             } else {
