@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 use std::ffi::CStr;
 use std::path::Path;
-use std::sync::OnceLock;
 use std::sync::mpsc::{self, TryRecvError};
+use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 use ffmpeg_next::codec::{self, threading};
@@ -610,6 +610,10 @@ impl Decoder {
         result
     }
 
+    pub fn read(&mut self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
+        self.with(n, |decoder| decoder.store(planes, strides))
+    }
+
     pub fn picture(&mut self, n: i32) -> Result<frame::Video> {
         self.with(n, |decoder| {
             let format = decoder.frame.format();
@@ -689,8 +693,9 @@ impl Drop for Ahead {
     }
 }
 
-impl Reader for Decoder {
-    fn read(&mut self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
-        self.with(n, |decoder| decoder.store(planes, strides))
+impl Reader for Mutex<Decoder> {
+    fn read(&self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
+        let mut decoder = self.lock().unwrap_or_else(|poison| poison.into_inner());
+        decoder.read(n, planes, strides)
     }
 }

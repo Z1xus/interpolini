@@ -1,22 +1,35 @@
 use std::ffi::{CStr, CString, c_char};
 use std::sync::{Arc, OnceLock};
 
-use ffmpeg_next::ffi;
-use ffmpeg_next::format::Pixel;
-use ffmpeg_next::frame;
 use libloading::Library;
 
-use crate::compose::Scaler;
 use crate::config::{self, Backend};
 use crate::decode::Meta;
-use crate::svp::{Clip, Raw, Reader, Shape, Svp};
+use crate::svp::{Clip, Frame, Raw, Reader, Shape, Svp};
 use crate::tensorrt::{Support, support};
 use crate::{Event, Result, Sink};
 
+#[repr(C)]
+struct Picture {
+    data: [*mut u8; 3],
+    stride: [isize; 3],
+    id: i32,
+}
+
+impl Picture {
+    fn of(frame: &Frame, id: i32) -> Self {
+        Self {
+            data: std::array::from_fn(|plane| frame.data(plane).cast_mut()),
+            stride: std::array::from_fn(|plane| frame.stride(plane) as isize),
+            id,
+        }
+    }
+}
+
 api! {
     create: b"rife_create\0" fn(*const c_char) -> Raw;
-    prepare: b"rife_prepare\0" fn(Raw, i32, i32, Report, Raw) -> i32;
-    process: b"rife_process\0" fn(Raw, *const u8, *const u8, i32, i32, f32, *mut u8) -> i32;
+    prepare: b"rife_prepare\0" fn(Raw, i32, i32, i32, i32, Report, Raw) -> i32;
+    process: b"rife_process\0" fn(Raw, *const Picture, *const Picture, f32, *const Picture) -> i32;
     destroy: b"rife_destroy\0" fn(Raw);
     error: b"rife_error\0" fn() -> *const c_char;
 }
@@ -37,11 +50,6 @@ pub struct Rife {
     api: &'static Api,
     raw: Raw,
     source: Arc<Clip>,
-    meta: Meta,
-    to_rgb: Scaler,
-    to_yuv: Scaler,
-    frames: [(i32, Vec<u8>); 2],
-    output: Vec<u8>,
     step: (i64, i64),
     // the radius of the blend that reads this clip, and the frame rates around it
     blend: Option<(i64, i64, i64)>,
@@ -50,7 +58,9 @@ pub struct Rife {
     height: usize,
 }
 
+// the plugin is thread safe
 unsafe impl Send for Rife {}
+unsafe impl Sync for Rife {}
 
 impl Drop for Rife {
     fn drop(&mut self) {
@@ -108,16 +118,17 @@ impl Rife {
         let Meta { width, height, .. } = *meta;
         // its a looooong one
         let user = std::ptr::from_ref(&sink).cast_mut().cast();
-        let ready = unsafe { (api.prepare)(raw, width as i32, height as i32, report, user) };
+        let (bt601, full) = (i32::from(meta.bt601()), i32::from(meta.full()));
+        let ready =
+            unsafe { (api.prepare)(raw, width as i32, height as i32, bt601, full, report, user) };
         if ready != 0 {
             unsafe { (api.destroy)(raw) };
             let error = unsafe { CStr::from_ptr((api.error)()) }.to_string_lossy();
             if !error.is_empty() {
                 sink(Event::Warning(format!("tensorrt: {error}")));
             }
-            return Err("tensorrt could not make an engine for this size".into());
+            return Err("tensorrt could not prepare the model".into());
         }
-        let size = width as usize * height as usize * 3;
         let from = source.shape();
         let step = (from.fps.0, from.fps.1 * i64::from(fps));
         let shape = Shape {
@@ -131,11 +142,6 @@ impl Rife {
             api,
             raw,
             source,
-            meta: *meta,
-            to_rgb: Scaler::new(),
-            to_yuv: Scaler::new(),
-            frames: [(-1, vec![0; size]), (-1, vec![0; size])],
-            output: vec![0; size],
             step,
             blend,
             last: from.frames - 1,
@@ -143,32 +149,6 @@ impl Rife {
             height: height as usize,
         };
         svp.source(&shape, rife)
-    }
-
-    fn wrap(&self, format: Pixel, planes: [*mut u8; 3], strides: [i32; 3]) -> frame::Video {
-        let mut wrapped = frame::Video::empty();
-        let raw = unsafe { &mut *wrapped.as_mut_ptr() };
-        raw.format = ffi::AVPixelFormat::from(format) as i32;
-        (raw.width, raw.height) = (self.width as i32, self.height as i32);
-        raw.data[..3].copy_from_slice(&planes);
-        raw.linesize[..3].copy_from_slice(&strides);
-        match format {
-            Pixel::RGB24 => {
-                raw.colorspace = ffi::AVColorSpace::AVCOL_SPC_RGB;
-                raw.color_range = ffi::AVColorRange::AVCOL_RANGE_JPEG;
-            }
-            _ => self.meta.tag(&mut wrapped),
-        }
-        wrapped
-    }
-
-    fn rgb(&self, pixels: *const u8) -> frame::Video {
-        let planes = [
-            pixels.cast_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        ];
-        self.wrap(Pixel::RGB24, planes, [self.width as i32 * 3, 0, 0])
     }
 
     fn used(&self, n: i32) -> bool {
@@ -179,24 +159,12 @@ impl Rife {
         let nearest = n * to / from;
         (nearest - 1..=nearest + 1).any(|output| (n - output * from / to).abs() <= radius)
     }
-
-    fn load(&mut self, index: i32) -> Result<()> {
-        if self.frames[index as usize % 2].0 == index {
-            return Ok(());
-        }
-        let frame = self.source.frame(index)?;
-        let planes = std::array::from_fn(|plane| frame.data(plane).cast_mut());
-        let strides = std::array::from_fn(|plane| frame.stride(plane) as i32);
-        let from = self.wrap(Pixel::YUV420P, planes, strides);
-        let slot = &mut self.frames[index as usize % 2];
-        slot.0 = index;
-        let mut to = self.rgb(self.frames[index as usize % 2].1.as_ptr());
-        self.to_rgb.run(&mut to, &from)
-    }
 }
 
 impl Reader for Rife {
-    fn read(&mut self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
+    const PARALLEL: bool = true;
+
+    fn read(&self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
         let position = i64::from(n) * self.step.0;
         let index = ((position / self.step.1) as i32).min(self.last);
         let time = (position % self.step.1) as f32 / self.step.1 as f32;
@@ -206,32 +174,18 @@ impl Reader for Rife {
             frame.copy(planes, strides, self.width, self.height);
             return Ok(());
         }
-        self.load(index)?;
-        self.load(index + 1)?;
-        let [first, second] = &self.frames;
-        let (first, second) = if index % 2 == 0 {
-            (first, second)
-        } else {
-            (second, first)
+        let frames = (self.source.frame(index)?, self.source.frame(index + 1)?);
+        let first = Picture::of(&frames.0, index);
+        let second = Picture::of(&frames.1, index + 1);
+        let output = Picture {
+            data: planes,
+            stride: strides,
+            id: -1,
         };
-        let (width, height) = (self.width as i32, self.height as i32);
-        let output = self.output.as_mut_ptr();
-        let code = unsafe {
-            (self.api.process)(
-                self.raw,
-                first.1.as_ptr(),
-                second.1.as_ptr(),
-                width,
-                height,
-                time,
-                output,
-            )
-        };
+        let code = unsafe { (self.api.process)(self.raw, &first, &second, time, &output) };
         if code != 0 {
             return Err("rife could not render the frame".into());
         }
-        let strides = strides.map(|stride| stride as i32);
-        let mut to = self.wrap(Pixel::YUV420P, planes, strides);
-        self.to_yuv.run(&mut to, &self.rgb(self.output.as_ptr()))
+        Ok(())
     }
 }

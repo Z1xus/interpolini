@@ -17,7 +17,7 @@ pub struct Pick {
 }
 
 impl Reader for Pick {
-    fn read(&mut self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
+    fn read(&self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
         let frame = self.source.frame(n * self.step + self.offset)?;
         frame.copy(planes, strides, self.width, self.height);
         Ok(())

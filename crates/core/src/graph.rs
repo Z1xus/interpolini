@@ -223,7 +223,7 @@ impl Graph {
             fps,
             frames,
         };
-        let mut input = Arc::new(svp.source(&shape, decoder)?);
+        let mut input = Arc::new(svp.source(&shape, Mutex::new(decoder))?);
 
         let Plan {
             pre,

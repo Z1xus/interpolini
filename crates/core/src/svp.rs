@@ -1,6 +1,6 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 
 use libloading::Library;
 
@@ -31,6 +31,7 @@ api! {
     create: b"osvp_create\0" fn(Text, i32) -> Raw;
     destroy: b"osvp_destroy\0" fn(Raw);
     source: b"osvp_source\0" fn(Raw, *const VideoInfo, ReadFn, ReleaseFn, Raw) -> Raw;
+    parallel: b"osvp_source_parallel\0" fn(Raw, *const VideoInfo, ReadFn, ReleaseFn, Raw) -> Raw;
     smooth_fps: b"osvp_smooth_fps\0" fn(Raw, Raw, Text, Text, Text, i32) -> Raw;
     smooth_fps_blend: b"osvp_smooth_fps_blend\0"
         fn(Raw, Raw, Text, Text, Text, i32, *const f64, i32, i64, i64, f64) -> Raw;
@@ -60,8 +61,11 @@ impl Drop for Svp {
     }
 }
 
-pub trait Reader: Send + 'static {
-    fn read(&mut self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()>;
+pub trait Reader: Send + Sync + 'static {
+    // frames in any order, on many threads
+    const PARALLEL: bool = false;
+
+    fn read(&self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()>;
 }
 
 unsafe extern "C" fn read<R: Reader>(
@@ -70,17 +74,17 @@ unsafe extern "C" fn read<R: Reader>(
     planes: *const *mut u8,
     strides: *const isize,
 ) -> i32 {
-    let cell = unsafe { &*user.cast::<Mutex<Option<R>>>() };
+    let cell = unsafe { &*user.cast::<RwLock<Option<R>>>() };
     let (planes, strides) = unsafe { (*planes.cast(), *strides.cast()) };
-    let mut reader = cell.lock().unwrap_or_else(|poison| poison.into_inner());
+    let reader = cell.read().unwrap_or_else(|poison| poison.into_inner());
     let done = reader
-        .as_mut()
+        .as_ref()
         .is_some_and(|reader| reader.read(n, planes, strides).is_ok());
     i32::from(!done)
 }
 
 unsafe extern "C" fn release<R: Reader>(user: Raw) {
-    drop(unsafe { Box::from_raw(user.cast::<Mutex<Option<R>>>()) });
+    drop(unsafe { Box::from_raw(user.cast::<RwLock<Option<R>>>()) });
 }
 
 pub struct Clip {
@@ -186,15 +190,20 @@ impl Svp {
             fps_den: shape.fps.1,
             num_frames: shape.frames,
         };
-        let cell = Box::into_raw(Box::new(Mutex::new(Some(reader)))) as usize;
+        let cell = Box::into_raw(Box::new(RwLock::new(Some(reader)))) as usize;
         let (read, release) = (read::<R>, release::<R>);
         let user = cell as Raw;
-        let raw = unsafe { (self.api.source)(self.context, &raw const info, read, release, user) };
+        let source = if R::PARALLEL {
+            self.api.parallel
+        } else {
+            self.api.source
+        };
+        let raw = unsafe { source(self.context, &raw const info, read, release, user) };
         // the host frees the cell with the clip, but not when it makes no clip
         let mut clip = self.clip(raw).inspect_err(|_| unsafe { release(user) })?;
         clip.close = Some(Box::new(move || {
-            let cell = unsafe { &*(cell as *const Mutex<Option<R>>) };
-            drop(cell.lock().map(|mut reader| reader.take()));
+            let cell = unsafe { &*(cell as *const RwLock<Option<R>>) };
+            drop(cell.write().map(|mut reader| reader.take()));
         }));
         Ok(clip)
     }
