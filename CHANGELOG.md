@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.17
+- Fixed: Slow dedup on CPUs with many threads
+- Fixed: Zoom label cut off
+
 ## 0.1.16
 - New: Dedup is set by the share of repeats it replaces
 - New: "interpolini GUI" entry in Send to
