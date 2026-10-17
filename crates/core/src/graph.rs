@@ -27,6 +27,7 @@ pub struct Info {
 
 enum Feed {
     File(Box<Mutex<Segments>>),
+    Plain(Box<Mutex<Decoder>>),
     Host {
         derived: Option<Clip>,
         input: Arc<Clip>,
@@ -144,12 +145,16 @@ impl Graph {
             blended, weights, ..
         } = &plan;
         let blending = &config.blending;
-        let (feed, fused) = match *blended && plain {
-            true => {
+        let (feed, fused) = match (plain, *blended) {
+            (true, true) => {
                 let segments = Segments::new(clip, decoder, weights, blending);
                 (Feed::File(Box::new(Mutex::new(segments))), false)
             }
-            false => Self::host(decoder, config, &plan, sink)?,
+            (true, false) => {
+                let decoder = Decoder::threaded(clip, 0)?;
+                (Feed::Plain(Box::new(Mutex::new(decoder))), false)
+            }
+            (false, _) => Self::host(Decoder::threaded(clip, 0)?, config, &plan, sink)?,
         };
         let blend = match &feed {
             Feed::Host { derived, input } if *blended && !fused => {
@@ -176,6 +181,7 @@ impl Graph {
                 let shape = derived.as_ref().unwrap_or(input).shape();
                 (shape.fps, shape.frames)
             }
+            (Feed::Plain(_), None) => (fps, frames),
         };
         let info = Info {
             width,
@@ -341,6 +347,10 @@ impl Graph {
                 let mut segments = segments.lock().unwrap_or_else(|poison| poison.into_inner());
                 segments.frame(n)?
             }
+            Feed::Plain(decoder) => {
+                let mut decoder = decoder.lock().unwrap_or_else(|poison| poison.into_inner());
+                decoder.picture(n)?
+            }
             Feed::Host { derived, input } => {
                 let clip = derived.as_ref().unwrap_or(input);
                 let source = |n| Ok(wrap(clip.frame(n)?, width, height, self.meta.pixel()));
@@ -388,7 +398,7 @@ impl Graph {
                 let segments = segments.lock().unwrap_or_else(|poison| poison.into_inner());
                 Some(segments.lanes())
             }
-            Feed::Host { .. } => None,
+            Feed::Plain(_) | Feed::Host { .. } => None,
         }
     }
 

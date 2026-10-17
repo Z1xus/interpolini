@@ -292,7 +292,7 @@ fn rgb(format: Pixel) -> bool {
 
 impl Decoder {
     pub fn open(path: &Path) -> Result<Self> {
-        Self::start(path, 0, None)
+        Self::start(path, 1, None)
     }
 
     // 0 lets ffmpeg take one thread for each core, up to 16

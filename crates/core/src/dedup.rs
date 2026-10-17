@@ -38,7 +38,7 @@ fn samples(width: usize, height: usize) -> f32 {
 pub fn differences(clip: &Path, from: f64, to: f64) -> Result<Vec<Vec<f32>>> {
     const SPOTS: i32 = 3;
     const SAMPLE: i32 = 100;
-    let mut decoder = Decoder::open(clip)?;
+    let mut decoder = Decoder::threaded(clip, 0)?;
     let meta = decoder.meta();
     let Meta {
         width,
