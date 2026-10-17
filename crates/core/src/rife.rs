@@ -1,5 +1,7 @@
 use std::ffi::{CStr, CString, c_char};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
+use std::time::Duration;
 
 use libloading::Library;
 
@@ -38,6 +40,7 @@ type Report = unsafe extern "C" fn(Raw, f32);
 
 // the plugin tells how far the build of a tensorrt engine is, and the sink shows it
 unsafe extern "C" fn report(sink: Raw, done: f32) {
+    DONE.store(done.to_bits(), Ordering::Relaxed);
     let sink = unsafe { *sink.cast::<Sink>() };
     sink(Event::Preparing(done));
 }
@@ -45,6 +48,26 @@ unsafe extern "C" fn report(sink: Raw, done: f32) {
 // the libraries keep gpu state, so they stay loaded
 static VULKAN: OnceLock<Option<Api>> = OnceLock::new();
 static TENSORRT: OnceLock<Option<Api>> = OnceLock::new();
+
+// one tensorrt engine builds at a time, and the graphs that wait for it show how far it is
+static PREPARE: Mutex<()> = Mutex::new(());
+// below 0 when no engine builds
+static DONE: AtomicU32 = AtomicU32::new((-1.0f32).to_bits());
+
+fn wait(sink: Sink) -> MutexGuard<'static, ()> {
+    loop {
+        match PREPARE.try_lock() {
+            Ok(guard) => return guard,
+            Err(TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        let done = f32::from_bits(DONE.load(Ordering::Relaxed));
+        if done >= 0.0 {
+            sink(Event::Preparing(done));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
 
 pub struct Rife {
     api: &'static Api,
@@ -121,7 +144,11 @@ impl Rife {
         let user = std::ptr::from_ref(&sink).cast_mut().cast();
         let [bt601, full, yuv444] = [meta.bt601(), meta.full(), meta.yuv444].map(i32::from);
         let (width, height) = (width as i32, height as i32);
+        let guard = tensorrt.then(|| wait(sink));
         let ready = unsafe { (api.prepare)(raw, width, height, bt601, full, yuv444, report, user) };
+        if let Some(_guard) = guard {
+            DONE.store((-1.0f32).to_bits(), Ordering::Relaxed);
+        }
         if ready != 0 {
             unsafe { (api.destroy)(raw) };
             let error = unsafe { CStr::from_ptr((api.error)()) }.to_string_lossy();
