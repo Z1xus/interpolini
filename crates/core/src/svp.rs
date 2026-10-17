@@ -1,6 +1,6 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use libloading::Library;
 
@@ -50,7 +50,7 @@ api! {
 }
 
 pub struct Svp {
-    api: Api,
+    api: &'static Api,
     context: Raw,
 }
 
@@ -166,22 +166,27 @@ pub struct Shape {
 
 impl Svp {
     pub fn load(directory: &Path) -> Result<Arc<Self>> {
-        let path = directory.join(libloading::library_filename("open_svpflow"));
-        let library = unsafe { Library::new(&path) }
-            .map_err(|error| format!("cannot load {}: {error}", path.display()))?;
-        let api = Api::load(library).map_err(|error| error.to_string())?;
+        // stays loaded, the threads of a host outlive it
+        static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
+        let api = API.get_or_init(|| {
+            let path = directory.join(libloading::library_filename("open_svpflow"));
+            let library = unsafe { Library::new(&path) }
+                .map_err(|error| format!("cannot load {}: {error}", path.display()))?;
+            Api::load(library).map_err(|error| error.to_string())
+        });
+        let api = api.as_ref().map_err(Clone::clone)?;
         let directory = CString::new(directory.to_string_lossy().as_bytes())
             .map_err(|error| error.to_string())?;
         let context = unsafe { (api.create)(directory.as_ptr(), 0) };
         if context.is_null() {
-            return Err(unsafe { error(&api) });
+            return Err(unsafe { error(api) });
         }
         Ok(Arc::new(Self { api, context }))
     }
 
     fn clip(self: &Arc<Self>, raw: Raw) -> Result<Clip> {
         if raw.is_null() {
-            return Err(unsafe { error(&self.api) });
+            return Err(unsafe { error(self.api) });
         }
         Ok(Clip {
             svp: Arc::clone(self),
@@ -338,7 +343,7 @@ impl Clip {
     pub fn frame(&self, n: i32) -> Result<Frame> {
         let raw = unsafe { (self.svp.api.get_frame)(self.raw, n) };
         if raw.is_null() {
-            return Err(unsafe { error(&self.svp.api) });
+            return Err(unsafe { error(self.svp.api) });
         }
         Ok(Frame {
             svp: Arc::clone(&self.svp),
