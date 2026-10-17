@@ -1,4 +1,5 @@
 use std::ffi::{CStr, CString, c_char, c_void};
+use std::mem::ManuallyDrop;
 use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -27,13 +28,19 @@ pub type Raw = *mut c_void;
 type Text = *const c_char;
 type ReadFn = unsafe extern "C" fn(Raw, i32, *const *mut u8, *const isize) -> i32;
 type ReleaseFn = unsafe extern "C" fn(Raw);
+type NeedFn = unsafe extern "C" fn(Raw, i32, *mut i32) -> i32;
+type RenderFn =
+    unsafe extern "C" fn(Raw, i32, *const Raw, i32, *const *mut u8, *const isize) -> i32;
+
+// the most input frames that a map reads for one frame
+const NEEDED: usize = 8;
 
 api! {
     error: b"osvp_error\0" fn() -> Text;
-    create: b"osvp_create\0" fn(Text, i32) -> Raw;
+    create: b"osvp_create\0" fn(Text) -> Raw;
     destroy: b"osvp_destroy\0" fn(Raw);
     source: b"osvp_source\0" fn(Raw, *const VideoInfo, ReadFn, ReleaseFn, Raw) -> Raw;
-    parallel: b"osvp_source_parallel\0" fn(Raw, *const VideoInfo, ReadFn, ReleaseFn, Raw) -> Raw;
+    map: b"osvp_map\0" fn(Raw, *const VideoInfo, Raw, NeedFn, RenderFn, ReleaseFn, Raw) -> Raw;
     smooth_fps: b"osvp_smooth_fps\0" fn(Raw, Raw, Text, Text, Text, i32) -> Raw;
     smooth_fps_blend: b"osvp_smooth_fps_blend\0"
         fn(Raw, Raw, Text, Text, Text, i32, *const f64, i32, i64, i64, f64) -> Raw;
@@ -64,10 +71,30 @@ impl Drop for Svp {
 }
 
 pub trait Reader: Send + Sync + 'static {
-    // frames in any order, on many threads
-    const PARALLEL: bool = false;
-
     fn read(&self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()>;
+}
+
+pub trait Map: Send + Sync + 'static {
+    fn need(&self, n: i32) -> Vec<i32>;
+
+    fn render(
+        &self,
+        n: i32,
+        inputs: &[&Frame],
+        planes: [*mut u8; 3],
+        strides: [isize; 3],
+    ) -> Result<()>;
+}
+
+type Cell<T> = RwLock<Option<(&'static Api, T)>>;
+
+fn run<T>(user: Raw, call: impl FnOnce(&'static Api, &T) -> Result<()>) -> i32 {
+    let cell = unsafe { &*user.cast::<Cell<T>>() };
+    let value = cell.read().unwrap_or_else(|poison| poison.into_inner());
+    let done = value
+        .as_ref()
+        .is_some_and(|(api, value)| call(api, value).is_ok());
+    i32::from(!done)
 }
 
 unsafe extern "C" fn read<R: Reader>(
@@ -76,17 +103,45 @@ unsafe extern "C" fn read<R: Reader>(
     planes: *const *mut u8,
     strides: *const isize,
 ) -> i32 {
-    let cell = unsafe { &*user.cast::<RwLock<Option<R>>>() };
     let (planes, strides) = unsafe { (*planes.cast(), *strides.cast()) };
-    let reader = cell.read().unwrap_or_else(|poison| poison.into_inner());
-    let done = reader
-        .as_ref()
-        .is_some_and(|reader| reader.read(n, planes, strides).is_ok());
-    i32::from(!done)
+    run(user, |_, reader: &R| reader.read(n, planes, strides))
 }
 
-unsafe extern "C" fn release<R: Reader>(user: Raw) {
-    drop(unsafe { Box::from_raw(user.cast::<RwLock<Option<R>>>()) });
+unsafe extern "C" fn need<M: Map>(user: Raw, n: i32, frames: *mut i32) -> i32 {
+    let cell = unsafe { &*user.cast::<Cell<M>>() };
+    let value = cell.read().unwrap_or_else(|poison| poison.into_inner());
+    let needed = value
+        .as_ref()
+        .map(|(_, map)| map.need(n))
+        .unwrap_or_default();
+    let count = needed.len().min(NEEDED);
+    unsafe { std::ptr::copy_nonoverlapping(needed.as_ptr(), frames, count) };
+    count as i32
+}
+
+unsafe extern "C" fn render<M: Map>(
+    user: Raw,
+    n: i32,
+    inputs: *const Raw,
+    count: i32,
+    planes: *const *mut u8,
+    strides: *const isize,
+) -> i32 {
+    let inputs = unsafe { std::slice::from_raw_parts(inputs, count as usize) };
+    let (planes, strides) = unsafe { (*planes.cast(), *strides.cast()) };
+    run(user, |api, map: &M| {
+        // lent by the host
+        let inputs: Vec<_> = inputs
+            .iter()
+            .map(|&raw| ManuallyDrop::new(Frame { api, raw }))
+            .collect();
+        let inputs: Vec<&Frame> = inputs.iter().map(|frame| &**frame).collect();
+        map.render(n, &inputs, planes, strides)
+    })
+}
+
+unsafe extern "C" fn release<T>(user: Raw) {
+    drop(unsafe { Box::from_raw(user.cast::<Cell<T>>()) });
 }
 
 pub struct Clip {
@@ -110,7 +165,7 @@ impl Drop for Clip {
 }
 
 pub struct Frame {
-    svp: Arc<Svp>,
+    api: &'static Api,
     raw: Raw,
 }
 
@@ -119,17 +174,17 @@ unsafe impl Sync for Frame {}
 
 impl Drop for Frame {
     fn drop(&mut self) {
-        unsafe { (self.svp.api.frame_free)(self.raw) };
+        unsafe { (self.api.frame_free)(self.raw) };
     }
 }
 
 impl Frame {
     pub fn data(&self, plane: usize) -> *const u8 {
-        unsafe { (self.svp.api.frame_data)(self.raw, plane as i32) }
+        unsafe { (self.api.frame_data)(self.raw, plane as i32) }
     }
 
     pub fn stride(&self, plane: usize) -> usize {
-        unsafe { (self.svp.api.frame_stride)(self.raw, plane as i32) as usize }
+        unsafe { (self.api.frame_stride)(self.raw, plane as i32) as usize }
     }
 
     pub fn copy(
@@ -164,6 +219,24 @@ pub struct Shape {
     pub frames: i32,
 }
 
+impl Shape {
+    fn info(&self) -> VideoInfo {
+        VideoInfo {
+            format: match (self.deep, self.yuv444) {
+                (false, false) => YUV420P8,
+                (false, true) => YUV444P8,
+                (true, false) => YUV420P16,
+                (true, true) => YUV444P16,
+            },
+            width: self.width as i32,
+            height: self.height as i32,
+            fps_num: self.fps.0,
+            fps_den: self.fps.1,
+            num_frames: self.frames,
+        }
+    }
+}
+
 impl Svp {
     pub fn load(directory: &Path) -> Result<Arc<Self>> {
         // stays loaded, the threads of a host outlive it
@@ -177,7 +250,7 @@ impl Svp {
         let api = api.as_ref().map_err(Clone::clone)?;
         let directory = CString::new(directory.to_string_lossy().as_bytes())
             .map_err(|error| error.to_string())?;
-        let context = unsafe { (api.create)(directory.as_ptr(), 0) };
+        let context = unsafe { (api.create)(directory.as_ptr()) };
         if context.is_null() {
             return Err(unsafe { error(api) });
         }
@@ -196,36 +269,46 @@ impl Svp {
         })
     }
 
-    pub fn source<R: Reader>(self: &Arc<Self>, shape: &Shape, reader: R) -> Result<Clip> {
-        let info = VideoInfo {
-            format: match (shape.deep, shape.yuv444) {
-                (false, false) => YUV420P8,
-                (false, true) => YUV444P8,
-                (true, false) => YUV420P16,
-                (true, true) => YUV444P16,
-            },
-            width: shape.width as i32,
-            height: shape.height as i32,
-            fps_num: shape.fps.0,
-            fps_den: shape.fps.1,
-            num_frames: shape.frames,
-        };
-        let cell = Box::into_raw(Box::new(RwLock::new(Some(reader)))) as usize;
-        let (read, release) = (read::<R>, release::<R>);
-        let user = cell as Raw;
-        let source = if R::PARALLEL {
-            self.api.parallel
-        } else {
-            self.api.source
-        };
-        let raw = unsafe { source(self.context, &raw const info, read, release, user) };
-        // the host frees the cell with the clip, but not when it makes no clip
-        let mut clip = self.clip(raw).inspect_err(|_| unsafe { release(user) })?;
+    // the host frees the cell with the clip, but not when it makes no clip
+    fn attach<T: Send + Sync + 'static>(
+        self: &Arc<Self>,
+        value: T,
+        make: impl FnOnce(Raw) -> Raw,
+    ) -> Result<Clip> {
+        let cell = Box::into_raw(Box::new(RwLock::new(Some((self.api, value))))) as usize;
+        let raw = make(cell as Raw);
+        let mut clip = self
+            .clip(raw)
+            .inspect_err(|_| unsafe { release::<T>(cell as Raw) })?;
         clip.close = Some(Box::new(move || {
-            let cell = unsafe { &*(cell as *const RwLock<Option<R>>) };
-            drop(cell.write().map(|mut reader| reader.take()));
+            let cell = unsafe { &*(cell as *const Cell<T>) };
+            drop(cell.write().map(|mut value| value.take()));
         }));
         Ok(clip)
+    }
+
+    pub fn source<R: Reader>(self: &Arc<Self>, shape: &Shape, reader: R) -> Result<Clip> {
+        let info = shape.info();
+        self.attach(reader, |user| unsafe {
+            (self.api.source)(self.context, &raw const info, read::<R>, release::<R>, user)
+        })
+    }
+
+    pub fn map<M: Map>(self: &Arc<Self>, shape: &Shape, input: Arc<Clip>, map: M) -> Result<Clip> {
+        let info = shape.info();
+        let (need, render, release) = (need::<M>, render::<M>, release::<M>);
+        let clip = self.attach(map, |user| unsafe {
+            (self.api.map)(
+                self.context,
+                &raw const info,
+                input.raw,
+                need,
+                render,
+                release,
+                user,
+            )
+        })?;
+        Ok(clip.keep(input))
     }
 
     pub fn smooth(self: &Arc<Self>, source: &Clip, options: &Options) -> Result<Clip> {
@@ -277,11 +360,11 @@ impl Svp {
         })
     }
 
-    pub fn still(self: &Arc<Self>, clip: Clip, source: &Clip, mask: &Mask) -> Result<Clip> {
+    pub fn still(self: &Arc<Self>, clip: Clip, source: &Arc<Clip>, mask: &Mask) -> Result<Clip> {
         let [limit, edge, tolerance] = [mask.limit, mask.edge, mask.tolerance].map(f64::from);
         let raw =
             unsafe { (self.api.still)(self.context, clip.raw, source.raw, limit, edge, tolerance) };
-        Ok(self.clip(raw)?.keep(clip))
+        Ok(self.clip(raw)?.keep(clip).keep(Arc::clone(source)))
     }
 
     pub fn layer(self: &Arc<Self>, source: &Clip, options: &Options, limit: f32) -> Result<Clip> {
@@ -307,9 +390,15 @@ impl Svp {
         self.clip(unsafe { (self.api.peel)(self.context, source.raw, layer.raw) })
     }
 
-    pub fn unpeel(self: &Arc<Self>, clip: Clip, source: Clip, layer: Clip) -> Result<Clip> {
+    pub fn unpeel(
+        self: &Arc<Self>,
+        clip: Clip,
+        source: &Arc<Clip>,
+        layer: &Arc<Clip>,
+    ) -> Result<Clip> {
         let raw = unsafe { (self.api.unpeel)(self.context, clip.raw, source.raw, layer.raw) };
-        Ok(self.clip(raw)?.keep(clip).keep(source).keep(layer))
+        let clip = self.clip(raw)?.keep(clip);
+        Ok(clip.keep(Arc::clone(source)).keep(Arc::clone(layer)))
     }
 }
 
@@ -346,7 +435,7 @@ impl Clip {
             return Err(unsafe { error(self.svp.api) });
         }
         Ok(Frame {
-            svp: Arc::clone(&self.svp),
+            api: self.svp.api,
             raw,
         })
     }

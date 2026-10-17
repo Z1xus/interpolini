@@ -10,7 +10,6 @@ use crate::color::Grade;
 use crate::compose::Scaler;
 use crate::config::{self, Config, Engine, Masking};
 use crate::decode::{Decoder, Meta};
-use crate::dedup::Pick;
 use crate::encode::Spare;
 use crate::rife::Rife;
 use crate::segments::{Made, Segments};
@@ -217,11 +216,8 @@ impl Graph {
         } = config;
         let mask = config.mask.enabled.then_some(&config.mask);
         let half = interpolation.half && width % 4 == 0 && height % 4 == 0;
-        let size = (width as usize, height as usize);
 
-        // a source that reads other clips starves the pool of their host, so it gets its own
-        let host = || Svp::load(&config::app_dir());
-        let mut svp = host()?;
+        let svp = Svp::load(&config::app_dir())?;
         let shape = Shape {
             deep: false,
             yuv444: meta.yuv444,
@@ -264,21 +260,9 @@ impl Graph {
             sink(Event::Info("replacing repeated frames".into()));
         }
 
-        // the layer of peel is a 16-bit clip of double height
-        let relay = |svp: &Arc<Svp>, source: &Arc<Clip>, scale: usize| {
-            let relay = Pick {
-                source: Arc::clone(source),
-                step: 1,
-                offset: 0,
-                width: size.0 * scale,
-                height: size.1 * scale,
-                chroma: meta.shift(),
-            };
-            svp.source(&source.shape(), relay)
-        };
-        let pass = |svp: &mut Arc<Svp>, input: &Arc<Clip>, fps, blend| -> Result<Clip> {
-            let open = |svp: &Arc<Svp>, source: &Arc<Clip>| {
-                Rife::open(svp, Arc::clone(source), &meta, fps, rife, blend, sink)
+        let pass = |input: &Arc<Clip>, fps, blend| -> Result<Clip> {
+            let open = |source: &Arc<Clip>| {
+                Rife::open(&svp, Arc::clone(source), &meta, fps, rife, blend, sink)
             };
             match mask {
                 Some(mask) if mask.method == Masking::Peel => {
@@ -287,23 +271,14 @@ impl Graph {
                     let layer = layer.or_else(|_| svp.layer(input, &options(false), mask.peel))?;
                     let layer = Arc::new(layer);
                     let bare = Arc::new(svp.peel(input, &layer)?);
-                    *svp = host()?;
-                    let clip = open(svp, &bare)?;
-                    svp.unpeel(clip, relay(svp, input, 1)?, relay(svp, &layer, 2)?)
+                    svp.unpeel(open(&bare)?, input, &layer)
                 }
-                Some(mask) => {
-                    *svp = host()?;
-                    let relay = relay(svp, input, 1)?;
-                    Ok(svp.still(open(svp, input)?, &relay, mask)?.keep(relay))
-                }
-                None => {
-                    *svp = host()?;
-                    open(svp, input)
-                }
+                Some(mask) => svp.still(open(input)?, input, mask),
+                None => open(input),
             }
         };
         if let Some(fps) = pre {
-            input = Arc::new(pass(&mut svp, &input, fps, None)?);
+            input = Arc::new(pass(&input, fps, None)?);
             sink(Event::Info(format!("rife to {fps} fps first")));
         }
         let derived = match interpolation.engine {
@@ -311,7 +286,7 @@ impl Graph {
             Engine::Rife => {
                 let radius = (weights.len() / 2) as i64;
                 let blend = blended.then_some((radius, i64::from(target), i64::from(blending.fps)));
-                let clip = pass(&mut svp, &input, target, blend)?;
+                let clip = pass(&input, target, blend)?;
                 sink(Event::Info(format!("rife to {target} fps")));
                 Some(clip)
             }

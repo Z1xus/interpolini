@@ -1,4 +1,6 @@
 use std::ffi::{CStr, CString, c_char};
+use std::mem::ManuallyDrop;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::Duration;
@@ -7,7 +9,7 @@ use libloading::Library;
 
 use crate::config::{self, Backend};
 use crate::decode::Meta;
-use crate::svp::{Clip, Frame, Raw, Reader, Shape, Svp};
+use crate::svp::{Clip, Frame, Map, Raw, Shape, Svp};
 use crate::tensorrt::{Support, support};
 use crate::{Event, Result, Sink};
 
@@ -69,10 +71,29 @@ fn wait(sink: Sink) -> MutexGuard<'static, ()> {
     }
 }
 
-pub struct Rife {
+struct Engine {
     api: &'static Api,
     raw: Raw,
-    source: Arc<Clip>,
+    models: PathBuf,
+}
+
+unsafe impl Send for Engine {}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        unsafe { (self.api.destroy)(self.raw) };
+    }
+}
+
+// engines of closed clips, for the next clip with the same model
+static IDLE: Mutex<Vec<Engine>> = Mutex::new(Vec::new());
+
+fn idle() -> MutexGuard<'static, Vec<Engine>> {
+    IDLE.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+pub struct Rife {
+    engine: ManuallyDrop<Engine>,
     step: (i64, i64),
     // the radius of the blend that reads this clip, and the frame rates around it
     blend: Option<(i64, i64, i64)>,
@@ -88,7 +109,7 @@ unsafe impl Sync for Rife {}
 
 impl Drop for Rife {
     fn drop(&mut self) {
-        unsafe { (self.api.destroy)(self.raw) };
+        idle().push(unsafe { ManuallyDrop::take(&mut self.engine) });
     }
 }
 
@@ -128,16 +149,32 @@ impl Rife {
             Api::load(unsafe { Library::new(path) }.ok()?).ok()
         });
         let api = api.as_ref().ok_or("rife is not installed")?;
-        let path =
-            CString::new(models.to_string_lossy().as_bytes()).map_err(|error| error.to_string())?;
-        let raw = unsafe { (api.create)(path.as_ptr()) };
-        if raw.is_null() {
-            return Err(match tensorrt {
-                true => "tensorrt could not start",
-                false => "rife needs a vulkan gpu",
-            }
-            .into());
+        let mut idle = idle();
+        let kept = idle
+            .iter()
+            .position(|engine| std::ptr::eq(engine.api, api) && engine.models == models);
+        let kept = kept.map(|index| idle.swap_remove(index));
+        // another model frees the gpu first
+        if kept.is_none() {
+            idle.clear();
         }
+        drop(idle);
+        let engine = match kept {
+            Some(engine) => engine,
+            None => {
+                let path = CString::new(models.to_string_lossy().as_bytes())
+                    .map_err(|error| error.to_string())?;
+                let raw = unsafe { (api.create)(path.as_ptr()) };
+                if raw.is_null() {
+                    return Err(match tensorrt {
+                        true => "tensorrt could not start",
+                        false => "rife needs a vulkan gpu",
+                    }
+                    .into());
+                }
+                Engine { api, raw, models }
+            }
+        };
 
         let Meta { width, height, .. } = *meta;
         // its a looooong one
@@ -145,12 +182,13 @@ impl Rife {
         let [bt601, full, yuv444] = [meta.bt601(), meta.full(), meta.yuv444].map(i32::from);
         let (width, height) = (width as i32, height as i32);
         let guard = tensorrt.then(|| wait(sink));
+        let raw = engine.raw;
         let ready = unsafe { (api.prepare)(raw, width, height, bt601, full, yuv444, report, user) };
         if let Some(_guard) = guard {
             DONE.store((-1.0f32).to_bits(), Ordering::Relaxed);
         }
         if ready != 0 {
-            unsafe { (api.destroy)(raw) };
+            drop(engine);
             let error = unsafe { CStr::from_ptr((api.error)()) }.to_string_lossy();
             if !error.is_empty() {
                 sink(Event::Warning(format!("tensorrt: {error}")));
@@ -168,9 +206,7 @@ impl Rife {
             frames: (i64::from(from.frames) * step.1 / step.0) as i32,
         };
         let rife = Self {
-            api,
-            raw,
-            source,
+            engine: ManuallyDrop::new(engine),
             step,
             blend,
             last: from.frames - 1,
@@ -178,41 +214,60 @@ impl Rife {
             height: height as usize,
             chroma: meta.shift(),
         };
-        svp.source(&shape, rife)
+        svp.map(&shape, source, rife)
     }
 
-    fn used(&self, n: i32) -> bool {
-        let Some((radius, from, to)) = self.blend else {
-            return true;
-        };
-        let n = i64::from(n);
-        let nearest = n * to / from;
-        (nearest - 1..=nearest + 1).any(|output| (n - output * from / to).abs() <= radius)
-    }
-}
-
-impl Reader for Rife {
-    const PARALLEL: bool = true;
-
-    fn read(&self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
+    fn place(&self, n: i32) -> (i32, f32) {
         let position = i64::from(n) * self.step.0;
         let index = ((position / self.step.1) as i32).min(self.last);
         let time = (position % self.step.1) as f32 / self.step.1 as f32;
-        if time == 0.0 || index == self.last || !self.used(n) {
-            // a source frame goes through as it is
-            let frame = self.source.frame(index)?;
+        (index, time)
+    }
+
+    fn made(&self, n: i32) -> bool {
+        let (index, time) = self.place(n);
+        let Some((radius, from, to)) = self.blend else {
+            return time != 0.0 && index != self.last;
+        };
+        let n = i64::from(n);
+        let nearest = n * to / from;
+        let used =
+            (nearest - 1..=nearest + 1).any(|output| (n - output * from / to).abs() <= radius);
+        time != 0.0 && index != self.last && used
+    }
+}
+
+impl Map for Rife {
+    fn need(&self, n: i32) -> Vec<i32> {
+        let index = self.place(n).0;
+        match self.made(n) {
+            true => vec![index, index + 1],
+            false => vec![index],
+        }
+    }
+
+    fn render(
+        &self,
+        n: i32,
+        inputs: &[&Frame],
+        planes: [*mut u8; 3],
+        strides: [isize; 3],
+    ) -> Result<()> {
+        let (index, time) = self.place(n);
+        let [first, second] = inputs else {
+            let frame = inputs.first().ok_or("no source frame")?;
             frame.copy(planes, strides, self.width, self.height, self.chroma);
             return Ok(());
-        }
-        let frames = (self.source.frame(index)?, self.source.frame(index + 1)?);
-        let first = Picture::of(&frames.0, index);
-        let second = Picture::of(&frames.1, index + 1);
+        };
+        let first = Picture::of(first, index);
+        let second = Picture::of(second, index + 1);
         let output = Picture {
             data: planes,
             stride: strides,
             id: -1,
         };
-        let code = unsafe { (self.api.process)(self.raw, &first, &second, time, &output) };
+        let Engine { api, raw, .. } = *self.engine;
+        let code = unsafe { (api.process)(raw, &first, &second, time, &output) };
         if code != 0 {
             return Err("rife could not render the frame".into());
         }
