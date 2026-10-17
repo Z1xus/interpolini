@@ -3,6 +3,8 @@
 ## 0.1.20
 - Fixed: Crash on Windows when moving the playhead or changing settings
 - Faster: Preview when moving the playhead between clips
+- Faster: Less memory and fewer threads in the preview and renders
+- Faster: RIFE starts sooner on the next clip
 
 ## 0.1.19
 - Fixed: Freeze with the peel mask on high frame rate video
