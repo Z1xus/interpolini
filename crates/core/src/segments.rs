@@ -250,6 +250,19 @@ fn same(clip: &Path, gpu: Gpu, size: (u32, u32), at: i32) -> bool {
     hard.is_some() && hard == picture(Decoder::threaded(clip, 1))
 }
 
+// the answer for each clip, a check opens two decoders
+fn decoder(clip: &Path, size: (u32, u32), at: i32) -> Option<Gpu> {
+    static FOUND: Mutex<Vec<(PathBuf, Option<Gpu>)>> = Mutex::new(Vec::new());
+    let mut found = FOUND.lock().unwrap_or_else(|poison| poison.into_inner());
+    if let Some((_, gpu)) = found.iter().find(|found| found.0 == clip) {
+        return *gpu;
+    }
+    let works = |gpu: &Gpu| same(clip, *gpu, size, at);
+    let gpu = gpus().into_iter().find(works);
+    found.push((clip.to_owned(), gpu));
+    gpu
+}
+
 struct Lane {
     clip: PathBuf,
     blend: Blend,
@@ -273,10 +286,9 @@ fn work(lane: Lane) -> JoinHandle<()> {
         meta,
     } = lane;
     std::thread::spawn(move || {
-        let mut gpu = place.as_ref().and_then(|(_, shared, at)| {
-            let works = |gpu: &Gpu| same(&clip, *gpu, size, *at);
-            *shared.gpu.get_or_init(|| gpus().into_iter().find(works))
-        });
+        let mut gpu = place
+            .as_ref()
+            .and_then(|(_, shared, at)| *shared.gpu.get_or_init(|| decoder(&clip, size, *at)));
         let mut decoder = gpu.and_then(|gpu| feed(&clip, GPU, Some(gpu)).ok());
         let shared = place.as_ref().map(|place| Arc::clone(&place.1));
         let shared = shared.unwrap_or_default();
