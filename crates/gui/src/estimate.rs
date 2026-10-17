@@ -1,23 +1,16 @@
 use std::cell::RefCell;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Sender, channel};
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use interpolini_core::Job;
 use interpolini_core::config::Target;
-use interpolini_core::{Job, Sound, estimate};
-use slint::{ComponentHandle, Weak};
+use slint::ComponentHandle;
 
-use crate::App;
 use crate::render::jobs;
 use crate::state::{Shared, lock};
 use crate::view::megabytes;
-
-struct Request {
-    jobs: Vec<Job>,
-    sounds: Option<Vec<Sound>>,
-    stop: Arc<AtomicBool>,
-}
+use crate::{App, preview};
 
 struct Asked {
     jobs: Vec<Job>,
@@ -29,32 +22,6 @@ struct Asked {
 thread_local! {
     static WAIT: slint::Timer = slint::Timer::default();
     static ASKED: RefCell<Option<Asked>> = const { RefCell::new(None) };
-}
-
-fn send(ui: Weak<App>, request: Request) {
-    static REQUESTS: OnceLock<Sender<Request>> = OnceLock::new();
-    let requests = REQUESTS.get_or_init(|| {
-        let (sender, receiver) = channel::<Request>();
-        std::thread::spawn(move || {
-            for Request { jobs, sounds, stop } in receiver {
-                let text = match estimate(&jobs, sounds.as_deref(), &stop) {
-                    Ok(bytes) => format!("about {}", megabytes(bytes)),
-                    Err(_) => String::new(),
-                };
-                let _ = ui.upgrade_in_event_loop(move |ui| {
-                    ASKED.with_borrow_mut(|asked| {
-                        let own = |asked: &&mut Asked| Arc::ptr_eq(&asked.stop, &stop);
-                        if let Some(asked) = asked.as_mut().filter(own) {
-                            asked.done = true;
-                            ui.set_estimate(text.into());
-                        }
-                    });
-                });
-            }
-        });
-        sender
-    });
-    let _ = requests.send(request);
 }
 
 fn measure(ui: &App, shared: &Shared) {
@@ -101,8 +68,28 @@ fn measure(ui: &App, shared: &Shared) {
         return ui.set_estimate("".into());
     }
     ui.set_estimate("Measuring…".into());
-    let sounds = (!separate).then_some(sounds);
-    send(ui.as_weak(), Request { jobs, sounds, stop });
+    let (weak, own) = (ui.as_weak(), Arc::clone(&stop));
+    let done = move |bytes: Option<u64>| {
+        let text = bytes.map_or(String::new(), |bytes| format!("about {}", megabytes(bytes)));
+        let _ = weak.upgrade_in_event_loop(move |ui| {
+            ASKED.with_borrow_mut(|asked| {
+                let own = |asked: &&mut Asked| Arc::ptr_eq(&asked.stop, &own);
+                if let Some(asked) = asked.as_mut().filter(own) {
+                    asked.done = true;
+                    ui.set_estimate(text.into());
+                }
+            });
+        });
+    };
+    let measure = preview::Measure {
+        jobs,
+        sounds: (!separate).then_some(sounds),
+        stop,
+        done: Box::new(done),
+    };
+    if let Some(preview) = &lock(shared).preview {
+        let _ = preview.send(preview::Request::Measure(measure));
+    }
 }
 
 pub fn ask(ui: &App, shared: &Shared) {

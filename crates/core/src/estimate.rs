@@ -4,7 +4,7 @@ use ffmpeg_next::{ffi, format, frame};
 
 use crate::Result;
 use crate::audio::{BITRATE, Mixer, Sound};
-use crate::compose::{Canvas, Source};
+use crate::compose::{Canvas, Source, Sources};
 use crate::config::Audio;
 use crate::decode::{Meta, probe};
 use crate::encode::{Encoder, GOP, Plan};
@@ -69,7 +69,12 @@ fn sample(source: &mut Source, job: &Job, time: f64, end: f64, cancel: &AtomicBo
     encode(meta, fps, job, picture, cancel)
 }
 
-pub fn estimate(jobs: &[Job], timeline: Option<&[Sound]>, cancel: &AtomicBool) -> Result<u64> {
+pub fn estimate(
+    jobs: &[Job],
+    timeline: Option<&[Sound]>,
+    cancel: &AtomicBool,
+    sources: &mut Sources,
+) -> Result<u64> {
     let mut videos = Vec::new();
     let (mut end, mut heard) = (0.0, 0.0);
     for job in jobs {
@@ -107,23 +112,19 @@ pub fn estimate(jobs: &[Job], timeline: Option<&[Sound]>, cancel: &AtomicBool) -
         if spots.is_empty() {
             continue;
         }
-        let mut source = Source::open(&job.clip, &job.config, false, &|_| {})?;
-        let graph = source.graph().ok_or("the clip has no video")?;
-        if timeline.is_some() && black == 0.0 && end > shown {
-            let (meta, fps) = (graph.meta, graph.info.fps);
-            let picture = Canvas::new(meta).black((meta.width, meta.height));
-            black = encode(meta, fps, job, |_| Ok(picture.clone()), cancel)?;
-        }
-        let start = job.cut.map_or(0.0, |cut| cut.0);
-        for time in spots {
-            rates.push(sample(
-                &mut source,
-                job,
-                start + time,
-                start + length,
-                cancel,
-            )?);
-        }
+        sources.with(&job.clip, &job.config, |source| {
+            let graph = source.graph().ok_or("the clip has no video")?;
+            if timeline.is_some() && black == 0.0 && end > shown {
+                let (meta, fps) = (graph.meta, graph.info.fps);
+                let picture = Canvas::new(meta).black((meta.width, meta.height));
+                black = encode(meta, fps, job, |_| Ok(picture.clone()), cancel)?;
+            }
+            let start = job.cut.map_or(0.0, |cut| cut.0);
+            for time in spots {
+                rates.push(sample(source, job, start + time, start + length, cancel)?);
+            }
+            Ok(())
+        })?;
     }
     let picture = rates.iter().sum::<f64>() / rates.len() as f64;
     let (seconds, heard) = match timeline {

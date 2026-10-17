@@ -293,7 +293,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
     // a render gets all of the gpu, so the preview closes its clips until the render is done
     if ui.get_rendering() {
         if let Some(preview) = &state.preview {
-            let _ = preview.send(preview::Request {
+            let _ = preview.send(preview::Request::Show(preview::Show {
                 parts: Vec::new(),
                 canvas: Default::default(),
                 play: false,
@@ -302,7 +302,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
                 width: 0,
                 total: 0.0,
                 save: None,
-            });
+            }));
         }
         return;
     }
@@ -382,7 +382,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
                original: bool,
                width: i32,
                save: Option<bool>| {
-        let request = preview::Request {
+        let request = preview::Request::Show(preview::Show {
             parts,
             canvas: base.clip.clone(),
             play: ui.get_playing(),
@@ -391,7 +391,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
             width: width as u32,
             total: state.seconds(),
             save,
-        };
+        });
         if let Some(preview) = &state.preview {
             let _ = preview.send(request);
         }

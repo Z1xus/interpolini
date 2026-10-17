@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::{color, ffi, frame};
@@ -143,6 +143,63 @@ impl Source {
             self.held = Some((n, graph.frame(n)?));
         }
         Ok(Picture(share(&self.held.as_ref().ok_or("no picture")?.1)))
+    }
+}
+
+#[derive(Default)]
+pub struct Sources(Vec<(PathBuf, Config, Source)>);
+
+impl Sources {
+    fn find(&self, clip: &Path, config: &Config) -> Option<usize> {
+        let held = |held: &(PathBuf, Config, Source)| held.0 == clip && held.1 == *config;
+        self.0.iter().position(held)
+    }
+
+    pub fn get(&self, clip: &Path, config: &Config) -> Option<&Source> {
+        Some(&self.0[self.find(clip, config)?].2)
+    }
+
+    pub fn get_mut(&mut self, clip: &Path, config: &Config) -> Option<&mut Source> {
+        let index = self.find(clip, config)?;
+        Some(&mut self.0[index].2)
+    }
+
+    pub fn open(&mut self, clip: &Path, config: &Config, still: bool, sink: Sink) -> Result<()> {
+        if self.find(clip, config).is_none() {
+            let source = Source::open(clip, config, still, sink)?;
+            self.add(clip.to_owned(), config.clone(), source);
+        }
+        Ok(())
+    }
+
+    pub fn add(&mut self, clip: PathBuf, config: Config, source: Source) {
+        self.0.push((clip, config, source));
+    }
+
+    pub fn keys(&self) -> Vec<(PathBuf, Config)> {
+        let key = |held: &(PathBuf, Config, Source)| (held.0.clone(), held.1.clone());
+        self.0.iter().map(key).collect()
+    }
+
+    // the caller closes the sources that keep turns down
+    pub fn split(&mut self, keep: impl Fn(&Path, &Config) -> bool) -> Sources {
+        let held = std::mem::take(&mut self.0).into_iter();
+        let (kept, gone) = held.partition(|held| keep(&held.0, &held.1));
+        self.0 = kept;
+        Sources(gone)
+    }
+
+    // a clip that is not open opens only for the call
+    pub fn with<R>(
+        &mut self,
+        clip: &Path,
+        config: &Config,
+        run: impl FnOnce(&mut Source) -> Result<R>,
+    ) -> Result<R> {
+        match self.find(clip, config) {
+            Some(index) => run(&mut self.0[index].2),
+            None => run(&mut Source::open(clip, config, false, &|_| {})?),
+        }
     }
 }
 
