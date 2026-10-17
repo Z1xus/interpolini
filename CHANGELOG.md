@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.20
+- Fixed: Crash on Windows when moving the playhead or changing settings
+- Faster: Preview when moving the playhead between clips
+
 ## 0.1.19
 - Fixed: Freeze with the peel mask on high frame rate video
 - Fixed: Crash when TensorRT is selected on a fresh install
