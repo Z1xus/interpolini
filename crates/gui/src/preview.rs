@@ -155,6 +155,7 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
     let thread = std::thread::spawn(move || {
         let mut open: Vec<Held> = Vec::new();
         let mut canvas: Option<(PathBuf, Canvas)> = None;
+        let mut recent: Vec<(PathBuf, Config)> = Vec::new();
         let mut waiting = None;
         while let Some(mut request) = waiting.take().or_else(|| receiver.recv().ok()) {
             while let Ok(newer) = receiver.try_recv() {
@@ -183,6 +184,7 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
             };
             let Some(first) = parts.first() else {
                 open.clear();
+                recent.clear();
                 note(String::new());
                 continue;
             };
@@ -192,10 +194,15 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
             // the old graphs must free the gpu first
             let soon = |held: &Held| {
                 let near = parts.iter().take(2);
-                near.flat_map(|stretch| wanted(&stretch.layers))
-                    .any(|wanted| same(held, &wanted))
+                let mut near = near.flat_map(|stretch| wanted(&stretch.layers));
+                near.any(|wanted| same(held, &wanted))
+                    || recent.iter().any(|key| held.0 == key.0 && held.1 == key.1)
             };
             open.retain(soon);
+            recent = wanted(&first.layers)
+                .into_iter()
+                .map(|(layer, config)| (layer.clip.clone(), config))
+                .collect();
             let warn = |event| match event {
                 Event::Warning(text) => note(text),
                 Event::Preparing(done) => note(format!(
@@ -322,12 +329,11 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
                                     Err(_) => break 'play,
                                 }
                             }
-                            // a graph closes slowly, so on another thread
                             let (kept, old) = std::mem::take(&mut open)
                                 .into_iter()
                                 .partition(|held| needs.iter().any(|wanted| same(held, wanted)));
                             open = kept;
-                            std::thread::spawn(move || drop::<Vec<Held>>(old));
+                            close(old);
                             current.store(index, Ordering::Relaxed);
                         }
                         // the video on top gives the details and the speed
@@ -447,6 +453,17 @@ pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
         }
     });
     (sender, thread)
+}
+
+// a graph closes slowly
+fn close(old: Vec<Held>) {
+    static CLOSE: OnceLock<Sender<Vec<Held>>> = OnceLock::new();
+    let close = CLOSE.get_or_init(|| {
+        let (sender, receiver) = channel::<Vec<Held>>();
+        std::thread::spawn(move || receiver.into_iter().for_each(drop));
+        sender
+    });
+    let _ = close.send(old);
 }
 
 // the work for the clips waits here: each job opens a decoder, and a thread for each one fills the memory
