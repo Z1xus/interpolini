@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use ffmpeg_next::format;
 
-use crate::audio::{BITRATE, Mixer, Sound};
+use crate::audio::{BITRATE, Mixer, Sound, keep};
 use crate::compose::{Canvas, Place, Setup, Source};
 use crate::config::{self, Audio, Config, Target};
 use crate::copy::copy;
@@ -142,12 +142,28 @@ fn encode(
     cancel: &Cancel,
 ) -> Result<()> {
     let mut most = 0;
+    let mut silenced = Vec::new();
     let mut placed = Vec::new();
     let mut probes = Vec::new();
     for (_, job) in jobs {
         let probe = probe(&job.clip)?;
-        let heard = |track: &usize| !job.muted.contains(track);
-        most = most.max((0..probe.tracks.len()).filter(heard).count());
+        let heard: Vec<usize> = (0..probe.tracks.len())
+            .filter(|track| !job.muted.contains(track))
+            .collect();
+        // a track that repeats the others does not play when mixing
+        let mixed = timeline.is_none() && job.config.output.audio == Audio::Mix;
+        let heard = if mixed {
+            keep(&job.clip, &heard)
+        } else {
+            heard
+        };
+        most = most.max(heard.len());
+        silenced.push(match mixed {
+            true => (0..probe.tracks.len())
+                .filter(|track| !heard.contains(track))
+                .collect(),
+            false => job.muted.clone(),
+        });
         placed.push(Placed {
             at: job.at,
             length: kept(job, &probe),
@@ -210,7 +226,7 @@ fn encode(
         None => Plan::Copy {
             clip: &job.clip,
             start,
-            muted: &job.muted,
+            muted: &silenced[base],
         },
     };
     let lanes = match &plan {
@@ -254,7 +270,7 @@ fn encode(
         _ => frames,
     };
     if timeline.is_none() {
-        encoder.begin(&job.clip, start, &job.muted)?;
+        encoder.begin(&job.clip, start, &silenced[base])?;
     }
     let mut canvas = Canvas::new(meta, setup.background);
     let size = canvas.size();

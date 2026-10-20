@@ -1,6 +1,7 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::f64::consts::FRAC_PI_2;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use ffmpeg_next::format::sample::Type;
 use ffmpeg_next::format::{self, Sample};
@@ -14,6 +15,12 @@ use crate::work::Cancel;
 pub const RATE: u32 = 48_000;
 pub const BITRATE: usize = 192_000;
 const FORMAT: Sample = Sample::F32(Type::Planar);
+// seconds of each track to compare
+const WINDOW: usize = 60;
+// the share of energy that may differ between a track and what it repeats, lossy encoding leaves under 0.005
+const SAME: f64 = 0.05;
+// the energy per sample under which a track is silent
+const SILENT: f64 = 1e-8;
 
 struct Track {
     stream: usize,
@@ -209,6 +216,87 @@ pub fn peaks(clip: &Path, seconds: f64, count: usize, cancel: &Cancel) -> Result
     Ok(tracks)
 }
 
+fn signals(clip: &Path, streams: &[usize]) -> Result<Vec<Vec<f32>>> {
+    let mut source = Source::open(clip, 0.0, |track| streams.contains(&track))?;
+    let mut signals = vec![Vec::new(); source.tracks.len()];
+    for _ in 0..WINDOW {
+        for (track, signal) in signals.iter_mut().enumerate() {
+            let [left, right] = source.take(Some(track), RATE as usize)?;
+            signal.extend(left.iter().zip(&right).map(|(l, r)| (l + r) / 2.0));
+        }
+    }
+    Ok(signals)
+}
+
+// the share of the energy of a that the sum of the others does not explain
+fn gap(a: &[f32], others: &[&Vec<f32>]) -> f64 {
+    let (mut off, mut first, mut second) = (0.0, 0.0, 0.0);
+    for (index, a) in a.iter().enumerate() {
+        let sum: f32 = others.iter().map(|other| other[index]).sum();
+        let (a, sum) = (f64::from(*a), f64::from(sum));
+        (off, first, second) = (off + (a - sum).powi(2), first + a * a, second + sum * sum);
+    }
+    off / first.max(second).max(f64::MIN_POSITIVE)
+}
+
+type Key = (PathBuf, Vec<usize>);
+
+// the tracks of a clip to play together, without a track that sums the others or repeats a louder one
+pub fn keep(clip: &Path, streams: &[usize]) -> Vec<usize> {
+    static CACHE: Mutex<BTreeMap<Key, Vec<usize>>> = Mutex::new(BTreeMap::new());
+    let key = (clip.to_path_buf(), streams.to_vec());
+    if let Some(kept) = CACHE.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
+        return kept.clone();
+    }
+    let kept = match streams.len() {
+        0 | 1 => streams.to_vec(),
+        _ => signals(clip, streams).map_or(streams.to_vec(), |signals| {
+            let energy: Vec<f64> = signals
+                .iter()
+                .map(|signal| {
+                    signal.iter().map(|x| f64::from(x * x)).sum::<f64>()
+                        / signal.len().max(1) as f64
+                })
+                .collect();
+            let loud = |track: &usize| energy[*track] > SILENT;
+            let mut live: Vec<usize> = (0..signals.len()).filter(loud).collect();
+            let silent: Vec<usize> = (0..signals.len()).filter(|t| !live.contains(t)).collect();
+            loop {
+                let rest = |skip: usize| -> Vec<&Vec<f32>> {
+                    live.iter()
+                        .filter(|t| **t != skip)
+                        .map(|t| &signals[*t])
+                        .collect()
+                };
+                if live.len() > 2
+                    && let Some(master) =
+                        live.iter().find(|t| gap(&signals[**t], &rest(**t)) < SAME)
+                {
+                    live = vec![*master];
+                    break;
+                }
+                let pairs =
+                    (0..live.len()).flat_map(|later| (0..later).map(move |first| (first, later)));
+                let copy = pairs.into_iter().find(|(first, later)| {
+                    gap(&signals[live[*later]], &[&signals[live[*first]]]) < SAME
+                });
+                let Some((first, later)) = copy else { break };
+                // the louder of two copies has more in it, a tie keeps the earlier
+                let louder = energy[live[later]] > energy[live[first]] * 1.01;
+                live.remove(if louder { first } else { later });
+            }
+            let mut kept: Vec<usize> = live.into_iter().chain(silent).collect();
+            kept.sort_unstable();
+            kept.into_iter().map(|track| streams[track]).collect()
+        }),
+    };
+    CACHE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key, kept.clone());
+    kept
+}
+
 #[derive(Clone, Debug)]
 pub struct Sound {
     pub clip: PathBuf,
@@ -242,7 +330,23 @@ impl Mixer {
                 .unwrap_or(0),
         };
         let mut lanes: Vec<Vec<Playing>> = (0..count).map(|_| Vec::new()).collect();
+        let mut kept = BTreeMap::new();
         for sound in sounds {
+            if mix {
+                let kept = kept.entry(&sound.clip).or_insert_with(|| {
+                    let mut streams: Vec<usize> = sounds
+                        .iter()
+                        .filter(|other| other.clip == sound.clip)
+                        .map(|other| other.stream)
+                        .collect();
+                    streams.sort_unstable();
+                    streams.dedup();
+                    keep(&sound.clip, &streams)
+                });
+                if !kept.contains(&sound.stream) {
+                    continue;
+                }
+            }
             let lane = if mix { 0 } else { sound.track };
             lanes[lane].push(Playing {
                 sound: sound.clone(),
