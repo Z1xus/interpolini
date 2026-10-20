@@ -441,16 +441,13 @@ pub fn wire(ui: &App, state: &Shared) {
 
 #[cfg(target_os = "linux")]
 thread_local! {
-    static PUMP: slint::Timer = slint::Timer::default();
+    static LOOK: slint::Timer = slint::Timer::default();
 }
 
-// the toplevel exists only after the event loop has shown the window, so a timer looks for it
-// the events of a drag come in through the connection of the window and nothing tells when, so
-// the timer is quick while events come and slow when they do not, and it ends when there is nothing to look for
+// the toplevel exists only after the window shows, so a timer looks for it
 #[cfg(target_os = "linux")]
 pub fn drops(ui: &App, state: &Shared) {
-    const QUICK: std::time::Duration = std::time::Duration::from_millis(30);
-    const SLOW: std::time::Duration = std::time::Duration::from_millis(250);
+    const EVERY: std::time::Duration = std::time::Duration::from_millis(30);
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     let dropped: drop::Dropped = Arc::new(move |clips, point| {
         let point = Some((point.0 as f32, point.1 as f32));
@@ -489,35 +486,25 @@ pub fn drops(ui: &App, state: &Shared) {
         });
     });
     let weak = ui.as_weak();
-    let mut drops = None;
     let mut iconed = false;
-    let mut quiet = 0;
+    let mut listening = false;
     // a compositor without these protocols must not be asked forever (fuck you gnome)
     let mut tries = 30;
-    PUMP.with(|pump| {
-        pump.start(slint::TimerMode::Repeated, QUICK, move || {
+    LOOK.with(|look| {
+        look.start(slint::TimerMode::Repeated, EVERY, move || {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            tries = i32::max(tries - 1, 0);
-            if !iconed && tries > 0 {
-                iconed = icon::set(ui.window()).is_some();
+            tries -= 1;
+            iconed = iconed || icon::set(ui.window()).is_some();
+            if !listening {
+                let hovered = Arc::clone(&hovered);
+                let drops = drop::Drops::listen(ui.window(), Arc::clone(&dropped), hovered);
+                listening = drops.is_some();
+                services::with(|services| services.drops = drops);
             }
-            match &mut drops {
-                Some(drops) => {
-                    quiet = if drop::Drops::pump(drops) {
-                        0
-                    } else {
-                        quiet + 1
-                    };
-                    let wait = if quiet > 60 { SLOW } else { QUICK };
-                    PUMP.with(|pump| pump.set_interval(wait));
-                }
-                None if tries > 0 => {
-                    let hovered = Arc::clone(&hovered);
-                    drops = drop::Drops::listen(ui.window(), Arc::clone(&dropped), hovered)
-                }
-                None => PUMP.with(slint::Timer::stop),
+            if tries == 0 || (iconed && listening) {
+                LOOK.with(slint::Timer::stop);
             }
         });
     });

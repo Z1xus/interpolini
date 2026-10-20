@@ -2439,6 +2439,7 @@ dependencies = [
  "interpolini-core",
  "png",
  "rfd",
+ "rustix 1.1.5",
  "sevenz-rust2",
  "sha2",
  "slint",

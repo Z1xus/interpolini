@@ -1,11 +1,15 @@
-use std::io::Read;
+use std::io::{PipeReader, PipeWriter, Read, Write};
 use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread::JoinHandle;
+
+use interpolini_core::work;
+use rustix::event::{PollFd, PollFlags, poll};
 
 use slint::winit_030::WinitWindowAccessor;
 use slint::winit_030::winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-use wayland_client::backend::Backend;
+use wayland_client::backend::{Backend, WaylandError};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_data_device::{self, WlDataDevice};
 use wayland_client::protocol::wl_data_device_manager::{DndAction, WlDataDeviceManager};
@@ -38,11 +42,10 @@ struct State {
     copies: bool,
 }
 
-// winit has no drag and drop on wayland :|
+// winit has no drag and drop on wayland, so a thread waits on the window connection
 pub struct Drops {
-    queue: EventQueue<State>,
-    state: State,
-    _device: WlDataDevice,
+    stop: PipeWriter,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
@@ -211,7 +214,7 @@ impl Drops {
         let handle = queue.handle();
         let manager: WlDataDeviceManager = globals.bind(&handle, 1..=3, ()).ok()?;
         let seat: wl_seat::WlSeat = globals.bind(&handle, 1..=1, ()).ok()?;
-        let device = manager.get_data_device(&seat, &handle, ());
+        manager.get_data_device(&seat, &handle, ());
         let mut state = State {
             connection,
             dropped,
@@ -222,17 +225,54 @@ impl Drops {
             copies: false,
         };
         queue.roundtrip(&mut state).ok()?;
+        let (stopped, stop) = std::io::pipe().ok()?;
+        let thread = work::spawn("drops", move || wait(&mut queue, &mut state, &stopped));
         Some(Self {
-            queue,
-            state,
-            _device: device,
+            stop,
+            thread: Some(thread),
         })
     }
+}
 
-    // true when events came
-    pub fn pump(&mut self) -> bool {
-        let events = self.queue.dispatch_pending(&mut self.state);
-        let _ = self.state.connection.flush();
-        events.is_ok_and(|events| events > 0)
+impl Drop for Drops {
+    fn drop(&mut self) {
+        let _ = self.stop.write_all(&[0]);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
+}
+
+// winit reads the same connection, and the guard stops it from taking an event of this queue unseen
+fn wait(queue: &mut EventQueue<State>, state: &mut State, stopped: &PipeReader) {
+    loop {
+        let dispatched = queue.dispatch_pending(state);
+        let flushed = queue.flush().is_err_and(|error| !would_block(&error));
+        if dispatched.is_err() || flushed {
+            return;
+        }
+        let Some(guard) = queue.prepare_read() else {
+            continue;
+        };
+        let connection = guard.connection_fd();
+        let mut fds = [
+            PollFd::new(&connection, PollFlags::IN),
+            PollFd::new(stopped, PollFlags::IN),
+        ];
+        let _ = poll(&mut fds, None);
+        let (events, over) = (
+            fds[0].revents().contains(PollFlags::IN),
+            !fds[1].revents().is_empty(),
+        );
+        if over {
+            return;
+        }
+        if events && guard.read().is_err_and(|error| !would_block(&error)) {
+            return;
+        }
+    }
+}
+
+fn would_block(error: &WaylandError) -> bool {
+    matches!(error, WaylandError::Io(error) if error.kind() == std::io::ErrorKind::WouldBlock)
 }

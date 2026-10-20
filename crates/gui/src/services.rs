@@ -14,6 +14,8 @@ use crate::sound::Audio;
 
 // the fields stop in the order that they are here: a render and the preview first, the sound last
 pub struct Services {
+    #[cfg(target_os = "linux")]
+    pub drops: Option<crate::drop::Drops>,
     pub render: Slot,
     pub preview: Slot,
     pub measure: Slot,
@@ -40,6 +42,8 @@ fn held() -> MutexGuard<'static, Option<Services>> {
 
 pub fn start(ui: Weak<App>) {
     *held() = Some(Services {
+        #[cfg(target_os = "linux")]
+        drops: None,
         render: Slot::new(Class::Render),
         preview: Slot::new(Class::Interactive),
         measure: Slot::new(Class::Interactive),

@@ -23,6 +23,7 @@ slint-build = "1.18.1"
 winresource = "0.1.31"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1.5", features = ["event"] }
 wayland-backend = { version = "0.3.17", features = ["client_system"] }
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
