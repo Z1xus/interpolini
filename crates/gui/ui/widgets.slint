@@ -262,8 +262,11 @@ export component Slider inherits Rectangle {
     }
     property <float> fraction: clamp((value - minimum) / (maximum - minimum), 0, 1);
     function pick(position: length) {
-        root.value = minimum + round(clamp(position / root.width, 0, 1) * (maximum - minimum) / step) * step;
-        root.changed(root.value);
+        let value = minimum + round(clamp(position / root.width, 0, 1) * (maximum - minimum) / step) * step;
+        if value != root.value {
+            root.value = value;
+            root.changed(value);
+        }
     }
     min-width: 60px;
     Rectangle {

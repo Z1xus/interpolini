@@ -4,7 +4,7 @@ use slint::ComponentHandle;
 
 use crate::settings::save_preferences;
 use crate::state::{Shared, lock, sounds};
-use crate::view::{only, refresh, timecode, wanted};
+use crate::view::{only, refresh, seek, timecode, wanted};
 use crate::{App, services, sound};
 
 pub fn wire(ui: &App, state: &Shared) {
@@ -23,7 +23,7 @@ pub fn wire(ui: &App, state: &Shared) {
         drop(state);
         ui.set_position((f64::from(ui.get_position()) + moved).clamp(0.0, 1.0) as f32);
         ui.set_playing(false);
-        refresh(&ui, &shared);
+        seek(&ui, &shared);
     });
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
@@ -51,7 +51,7 @@ pub fn wire(ui: &App, state: &Shared) {
         drop(state);
         ui.set_position(position as f32);
         ui.set_playing(false);
-        refresh(&ui, &shared);
+        seek(&ui, &shared);
     });
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
@@ -96,14 +96,14 @@ pub fn wire(ui: &App, state: &Shared) {
             return;
         }
         ui.set_position(next as f32 + 0.000_01);
-        refresh(&ui, &shared);
+        seek(&ui, &shared);
     });
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_seek(move || {
         if let Some(ui) = weak.upgrade() {
             ui.set_playing(false);
-            refresh(&ui, &shared);
+            seek(&ui, &shared);
         }
     });
 
@@ -117,7 +117,7 @@ pub fn wire(ui: &App, state: &Shared) {
             && (!ui.get_bare() || only(&ui))
             && (ui.get_playing() || ui.get_sharp() >= width);
         if !enough {
-            refresh(&ui, &shared);
+            seek(&ui, &shared);
         }
     });
 

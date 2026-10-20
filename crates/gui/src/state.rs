@@ -265,8 +265,11 @@ impl State {
 
     // the stretches of the timeline and the clips that each one shows, the lowest one first
     pub fn parts(&self) -> Vec<Part> {
+        self.parts_in(&self.spans())
+    }
+
+    pub fn parts_in(&self, spans: &[Span]) -> Vec<Part> {
         let videos = self.videos();
-        let spans = self.spans();
         let placed = |index: &usize| Placed {
             at: spans[*index].at,
             length: spans[*index].length,

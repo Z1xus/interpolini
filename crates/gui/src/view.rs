@@ -9,11 +9,11 @@ use interpolini_core::{Fade, Part, Place, Plan, Setup, lossless};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::settings::settings;
-use crate::state::{Shared, State, lock};
+use crate::state::{Shared, Span, State, lock};
 use crate::{App, Clip, Fact, Lane, preview};
 
 // the rows hold the place and the cut of each clip, and this brings the rest in line
-pub fn layout(ui: &App, state: &mut State) {
+pub fn layout(ui: &App, state: &mut State) -> Vec<Span> {
     let rows = ui.get_clips();
     for (index, entry) in state.entries.iter_mut().enumerate() {
         let Some(mut row) = rows.row_data(index) else {
@@ -72,6 +72,7 @@ pub fn layout(ui: &App, state: &mut State) {
         ui.set_seconds(seconds);
         ui.set_position((time / seconds.max(0.001)).min(1.0));
     }
+    spans
 }
 
 pub fn lanes(ui: &App, state: &State) {
@@ -321,13 +322,25 @@ pub fn wanted(ui: &App) -> (bool, i32) {
 }
 
 pub fn refresh(ui: &App, shared: &Shared) {
+    show(ui, shared, true);
+}
+
+pub fn seek(ui: &App, shared: &Shared) {
+    show(ui, shared, false);
+}
+
+fn show(ui: &App, shared: &Shared, edited: bool) {
     timecode(ui, shared);
-    crate::estimate::ask(ui, shared);
+    if edited {
+        crate::estimate::ask(ui, shared);
+    }
     let mut state = lock(shared);
-    layout(ui, &mut state);
-    curve(ui, &mut state);
-    left(ui, &state);
-    ui.set_repeats(repeats(ui, &state));
+    let spans = layout(ui, &mut state);
+    if edited {
+        curve(ui, &mut state);
+        left(ui, &state);
+        ui.set_repeats(repeats(ui, &state));
+    }
     let snap = std::mem::take(&mut state.snap);
     ui.set_shot("".into());
     // a render gets all of the gpu, so the preview closes its clips until the render is done
@@ -361,8 +374,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
         ui.set_original(slint::Image::default());
         ui.set_preview_note("".into());
     };
-    let spans = state.spans();
-    let all = state.parts();
+    let all = state.parts_in(&spans);
     let seconds = state.seconds();
     let time = (f64::from(ui.get_position()) * seconds).min(seconds - 0.001);
     let inside = |part: &&Part| part.start <= time && time < part.end;
@@ -531,7 +543,7 @@ pub fn idle(ui: &App, shared: &Shared) {
             ui.set_position(next.min(1.0) as f32);
             timecode(&ui, &shared);
             if clip {
-                refresh(&ui, &shared);
+                seek(&ui, &shared);
             }
         });
     });
