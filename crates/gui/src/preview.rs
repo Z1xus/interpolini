@@ -1,13 +1,15 @@
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use interpolini_core::budget::{self, Class};
 use interpolini_core::config::Config;
+use interpolini_core::work::Cancel;
 use interpolini_core::{
     Canvas, Event, Fade, Graph, Image, Job, Place, Sound, Source, Sources, estimate, peaks,
 };
@@ -64,7 +66,7 @@ pub struct Show {
 pub struct Measure {
     pub jobs: Vec<Job>,
     pub sounds: Option<Vec<Sound>>,
-    pub stop: Arc<AtomicBool>,
+    pub stop: Cancel,
     pub done: Box<dyn FnOnce(Option<u64>) + Send>,
 }
 
@@ -158,7 +160,9 @@ fn compose(
             layer.config.clone()
         };
         let source = open.get_mut(&layer.clip, &config);
-        if let Some(Ok(picture)) = source.map(|source| source.at(layer.start + moved)) {
+        if let Some(Ok(picture)) =
+            source.map(|source| source.at(layer.start + moved, &Cancel::default()))
+        {
             pictures.push((picture, layer.place, level(layer)));
         }
     }
@@ -266,9 +270,13 @@ struct Worker {
 pub fn spawn(ui: Weak<App>) -> (Sender<Request>, JoinHandle<()>) {
     let (sender, receiver) = channel::<Request>();
     let thread = std::thread::spawn(move || {
+        budget::enter(Class::Interactive);
         // graphs close slowly
         let (close, closing) = channel::<Sources>();
-        let closer = std::thread::spawn(move || closing.into_iter().for_each(drop));
+        let closer = std::thread::spawn(move || {
+            budget::enter(Class::Interactive);
+            closing.into_iter().for_each(drop)
+        });
         let mut worker = Worker {
             ui,
             open: Sources::default(),
@@ -344,14 +352,16 @@ impl Worker {
         let warn = warn(ui);
         let mut failed = None;
         for (layer, config) in &shown {
-            if let Err(error) = open.open(&layer.clip, config, layer.still, &warn) {
+            if let Err(error) =
+                open.open(&layer.clip, config, layer.still, &warn, &Cancel::default())
+            {
                 failed = Some(error);
             }
         }
         if quiet {
             for (layer, config) in &shown {
                 if let Some(source) = open.get_mut(&layer.clip, config) {
-                    let _ = source.at(layer.start);
+                    let _ = source.at(layer.start, &Cancel::default());
                 }
             }
             return;
@@ -420,11 +430,12 @@ fn playback(
     let (pictures, queue) = sync_channel(AHEAD);
     let (opened, ready) = channel::<interpolini_core::Result<(Key, Source)>>();
     let held = open.keys();
-    let (current, stop) = (AtomicUsize::new(0), AtomicBool::new(false));
+    let (current, stop) = (AtomicUsize::new(0), Cancel::default());
     let reached = AtomicU64::new(0);
     std::thread::scope(|scope| {
         // the next clips open while this stretch plays, so the picture does not stop
         scope.spawn(|| {
+            budget::enter(Class::Interactive);
             for (index, stretch) in parts.iter().enumerate().skip(1) {
                 let from = parts[index - 1].end - EARLY;
                 let early = || {
@@ -432,7 +443,7 @@ fn playback(
                     current.load(Ordering::Relaxed) + 1 < index || made < from
                 };
                 while early() {
-                    if stop.load(Ordering::Relaxed) {
+                    if stop.stopped() {
                         return;
                     }
                     std::thread::sleep(Duration::from_millis(5));
@@ -449,13 +460,13 @@ fn playback(
                     if there.contains(&key) {
                         continue;
                     }
-                    if stop.load(Ordering::Relaxed) {
+                    if stop.stopped() {
                         return;
                     }
                     // the first picture of a clip takes long, so it is made here
                     let layer = wanted.0;
-                    let source = Source::open(&key.0, &key.1, layer.still, &warn)
-                        .and_then(|mut source| source.at(layer.start).map(|_| source));
+                    let source = Source::open(&key.0, &key.1, layer.still, &warn, &stop)
+                        .and_then(|mut source| source.at(layer.start, &stop).map(|_| source));
                     there.push(key.clone());
                     if opened.send(source.map(|source| (key, source))).is_err() {
                         return;
@@ -466,6 +477,7 @@ fn playback(
         });
         // in order: the host is slow after a picture that is left out
         scope.spawn(|| {
+            budget::enter(Class::Interactive);
             let ready = ready;
             'play: for (index, stretch) in parts.iter().enumerate() {
                 let needs = wanted(&stretch.layers, original);
@@ -552,7 +564,7 @@ fn playback(
             };
             post(ui, frame, text, Some(position), first);
         }
-        stop.store(true, Ordering::Relaxed);
+        stop.stop();
     });
     if waiting.show.is_none() {
         let _ = ui.upgrade_in_event_loop(|ui| {
@@ -572,6 +584,7 @@ fn queue(job: impl FnOnce() + Send + 'static) {
         for _ in 0..2 {
             let receiver = Arc::clone(&receiver);
             std::thread::spawn(move || {
+                budget::enter(Class::Background);
                 loop {
                     let job = receiver
                         .lock()
@@ -597,12 +610,12 @@ pub fn thumbs(
     places: impl Fn() -> Vec<(Option<usize>, usize)> + Send + Clone + 'static,
 ) {
     queue(move || {
-        let Ok(graph) = Graph::open(&clip, &source(&config), &|_| {}) else {
+        let Ok(graph) = Graph::open(&clip, &source(&config), &|_| {}, &Cancel::default()) else {
             return;
         };
         for thumb in 0..THUMBS {
             let frame = (thumb * graph.info.frames as usize / THUMBS) as i32;
-            let Ok(image) = graph.preview(frame, 160) else {
+            let Ok(image) = graph.preview(frame, 160, &Cancel::default()) else {
                 return;
             };
             let places = places.clone();
@@ -627,7 +640,9 @@ pub fn differences(
     done: impl FnOnce(&App, Vec<Vec<f32>>) + Send + 'static,
 ) {
     queue(move || {
-        if let Ok(differences) = interpolini_core::differences(&clip, part.0, part.1) {
+        if let Ok(differences) =
+            interpolini_core::differences(&clip, part.0, part.1, &Cancel::default())
+        {
             let _ = ui.upgrade_in_event_loop(move |ui| done(&ui, differences));
         }
     });
@@ -640,7 +655,7 @@ pub fn waves(
     places: impl Fn() -> Vec<(Option<usize>, usize)> + Send + 'static,
 ) {
     queue(move || {
-        let Ok(tracks) = peaks(&clip, seconds, WAVE) else {
+        let Ok(tracks) = peaks(&clip, seconds, WAVE, &Cancel::default()) else {
             return;
         };
         let _ = ui.upgrade_in_event_loop(move |ui| {

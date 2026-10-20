@@ -15,6 +15,7 @@ use libloading::Library;
 
 use crate::compose::share;
 use crate::svp::Reader;
+use crate::work::{self, Follow};
 use crate::{Error, Result};
 
 #[derive(Clone, Copy)]
@@ -204,6 +205,7 @@ pub struct Decoder {
     drained: bool,
     start: i64,
     frames_per_tick: f64,
+    cancel: Follow,
 }
 
 // the scaler has no thread affinity and the host reads one frame at a time
@@ -292,19 +294,27 @@ fn rgb(format: Pixel) -> bool {
 
 impl Decoder {
     pub fn open(path: &Path) -> Result<Self> {
-        Self::start(path, 1, None)
+        Self::start(path, |_| 1, None)
     }
 
-    // 0 lets ffmpeg take one thread for each core, up to 16
     pub fn threaded(path: &Path, threads: usize) -> Result<Self> {
+        Self::start(path, |_| threads, None)
+    }
+
+    pub fn chosen(path: &Path, threads: impl FnOnce(f64) -> usize) -> Result<Self> {
         Self::start(path, threads, None)
     }
 
     pub fn gpu(path: &Path, gpu: Gpu) -> Result<Self> {
-        Self::start(path, 1, Some(gpu))
+        Self::start(path, |_| 1, Some(gpu))
     }
 
-    fn start(path: &Path, threads: usize, gpu: Option<Gpu>) -> Result<Self> {
+    pub fn following(mut self, follow: &Follow) -> Self {
+        self.cancel = follow.clone();
+        self
+    }
+
+    fn start(path: &Path, threads: impl FnOnce(f64) -> usize, gpu: Option<Gpu>) -> Result<Self> {
         ffmpeg_next::init()?;
         // only once, so that it does not end the quiet time of a trial of the gpu
         static LEVEL: OnceLock<()> = OnceLock::new();
@@ -352,7 +362,7 @@ impl Decoder {
         let mut context = codec::Context::from_parameters(stream.parameters())?;
         context.set_threading(threading::Config {
             kind: threading::Type::Frame,
-            count: threads,
+            count: threads(fps),
         });
         if let Some(kind) = gpu {
             let device = unsafe { &mut (*context.as_mut_ptr()).hw_device_ctx };
@@ -414,6 +424,7 @@ impl Decoder {
             drained: false,
             start,
             frames_per_tick: time_base * fps,
+            cancel: Follow::default(),
         })
     }
 
@@ -431,6 +442,7 @@ impl Decoder {
     // decodes the next picture, and gives the number that its time puts it at
     fn advance(&mut self) -> Result<Option<i32>> {
         loop {
+            self.cancel.check()?;
             if self.decoder.receive_frame(&mut self.ahead).is_ok() {
                 if self.gpu {
                     // a clip that the gpu cannot decode comes from the cpu, with one thread
@@ -501,6 +513,7 @@ impl Decoder {
         }
         self.seek(n)?;
         loop {
+            self.cancel.check()?;
             next(&mut self.packet, &mut self.input)?;
             if self.packet.stream() == self.stream && self.packet.is_key() {
                 let time = self.packet.pts().or(self.packet.dts()).ok_or("no time")?;
@@ -659,7 +672,7 @@ impl Ahead {
     pub fn new(mut decoder: Decoder) -> Self {
         let (wanted, asked) = mpsc::channel();
         let (ready, pictures) = mpsc::channel();
-        let thread = std::thread::spawn(move || {
+        let thread = work::spawn("gpu decoder", move || {
             let mut made = VecDeque::new();
             let (mut next, mut last) = (0, -1);
             loop {

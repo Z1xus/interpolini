@@ -1,5 +1,3 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use ffmpeg_next::{ffi, format, frame};
 
 use crate::Result;
@@ -10,6 +8,7 @@ use crate::decode::{Meta, probe};
 use crate::encode::{Encoder, GOP, Plan};
 use crate::queue::{Job, kept};
 use crate::upscale::Upscaler;
+use crate::work::Cancel;
 
 const SPOTS: usize = 3;
 const FRAMES: i32 = 24;
@@ -35,7 +34,7 @@ fn encode(
     fps: (i64, i64),
     job: &Job,
     mut picture: impl FnMut(i32) -> Result<frame::Video>,
-    cancel: &AtomicBool,
+    cancel: &Cancel,
 ) -> Result<f64> {
     let rate = fps.0 as f64 / fps.1 as f64;
     let upscaler = Upscaler::new(&meta, &job.config.upscale);
@@ -43,9 +42,7 @@ fn encode(
     let plan = Plan::Encode { lanes: 0 };
     let mut encoder = Encoder::open(void()?, &encoded, fps, &job.config.output, None, plan)?;
     for n in 0..FRAMES {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("stopped".into());
-        }
+        cancel.check()?;
         let picture = picture(n)?;
         let picture = match &upscaler {
             Some(upscaler) => upscaler.run(&picture)?,
@@ -60,19 +57,19 @@ fn encode(
     Ok(rate * (mean(rest) + mean(keys) / f64::from(GOP)))
 }
 
-fn sample(source: &mut Source, job: &Job, time: f64, end: f64, cancel: &AtomicBool) -> Result<f64> {
+fn sample(source: &mut Source, job: &Job, time: f64, end: f64, cancel: &Cancel) -> Result<f64> {
     let graph = source.graph().ok_or("the clip has no video")?;
     let (fps, meta) = (graph.info.fps, graph.meta);
     let rate = fps.0 as f64 / fps.1 as f64;
     let time = time.min(end - f64::from(FRAMES) / rate);
-    let picture = |n| Ok(source.at(time + f64::from(n) / rate)?.0);
+    let picture = |n| Ok(source.at(time + f64::from(n) / rate, cancel)?.0);
     encode(meta, fps, job, picture, cancel)
 }
 
 pub fn estimate(
     jobs: &[Job],
     timeline: Option<&[Sound]>,
-    cancel: &AtomicBool,
+    cancel: &Cancel,
     sources: &mut Sources,
 ) -> Result<u64> {
     let mut videos = Vec::new();
@@ -112,7 +109,7 @@ pub fn estimate(
         if spots.is_empty() {
             continue;
         }
-        sources.with(&job.clip, &job.config, |source| {
+        sources.with(&job.clip, &job.config, cancel, |source| {
             let graph = source.graph().ok_or("the clip has no video")?;
             if timeline.is_some() && black == 0.0 && end > shown {
                 let (meta, fps) = (graph.meta, graph.info.fps);

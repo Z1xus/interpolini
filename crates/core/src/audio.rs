@@ -9,6 +9,7 @@ use ffmpeg_next::{ChannelLayout, Packet, Rational, codec, encoder, ffi, frame, m
 
 use crate::Result;
 use crate::timeline::Fade;
+use crate::work::Cancel;
 
 pub const RATE: u32 = 48_000;
 pub const BITRATE: usize = 192_000;
@@ -191,11 +192,12 @@ impl Source {
     }
 }
 
-pub fn peaks(clip: &Path, seconds: f64, count: usize) -> Result<Vec<Vec<f32>>> {
+pub fn peaks(clip: &Path, seconds: f64, count: usize, cancel: &Cancel) -> Result<Vec<Vec<f32>>> {
     let mut source = Source::open(clip, 0.0, |_| true)?;
     let slice = ((seconds * f64::from(RATE)) as usize / count).max(1);
     let mut tracks = vec![Vec::with_capacity(count); source.tracks.len()];
     for _ in 0..count {
+        cancel.check()?;
         for (track, peaks) in tracks.iter_mut().enumerate() {
             let [left, _] = source.take(Some(track), slice)?;
             peaks.push(

@@ -5,6 +5,7 @@ use ffmpeg_next::frame;
 use rayon::prelude::*;
 
 use crate::Result;
+use crate::budget;
 use crate::compose::share;
 use crate::config::Blending;
 use crate::decode;
@@ -113,7 +114,8 @@ impl Blend {
                 .data_mut(plane)
                 .par_chunks_mut(stride)
                 .take(height)
-                .enumerate();
+                .enumerate()
+                .with_min_len(budget::piece(height));
             // a picture from the gpu has both color planes in one, a sample of each in turn
             let lines: Vec<(&[u8], usize, u32, usize)> = held
                 .iter()
@@ -128,59 +130,65 @@ impl Blend {
                 .collect();
             // luma only, as in open-svpflow
             if let Some(curve) = self.curve.filter(|_| plane == 0) {
-                rows.for_each_init(
-                    || vec![0f32; width],
-                    |sums, (y, row)| {
-                        sums.fill(0.0);
-                        for &(data, stride, weight, _) in &lines {
-                            let weight = weight as f32 / (1 << SHIFT) as f32;
-                            for (sum, &sample) in sums.iter_mut().zip(&data[y * stride..]) {
-                                *sum += weight * curve[usize::from(sample)];
+                budget::install(|| {
+                    rows.for_each_init(
+                        || vec![0f32; width],
+                        |sums, (y, row)| {
+                            sums.fill(0.0);
+                            for &(data, stride, weight, _) in &lines {
+                                let weight = weight as f32 / (1 << SHIFT) as f32;
+                                for (sum, &sample) in sums.iter_mut().zip(&data[y * stride..]) {
+                                    *sum += weight * curve[usize::from(sample)];
+                                }
                             }
-                        }
-                        for (sample, sum) in row.iter_mut().zip(sums.iter()) {
-                            *sample = (sum.powf(1.0 / self.gamma) * 255.0).round() as u8;
-                        }
-                    },
-                );
+                            for (sample, sum) in row.iter_mut().zip(sums.iter()) {
+                                *sample = (sum.powf(1.0 / self.gamma) * 255.0).round() as u8;
+                            }
+                        },
+                    )
+                });
                 continue;
             }
             // 16 bits hold a sum with 7 bits after the point, and each product loses half a step
             let start = 64 + lines.len() as u16 / 2;
-            rows.for_each_init(
-                || (vec![0u16; width], vec![0u16; width]),
-                |(sums, wide), (y, row)| {
-                    sums.fill(start);
-                    for &(data, stride, weight, side) in &lines {
-                        // a separate pass, so that the compiler multiplies in 16 bits
-                        let line = &data[y * stride..];
-                        match side {
-                            0 => {
-                                for (wide, &sample) in wide.iter_mut().zip(line) {
-                                    *wide = u16::from(sample) << 8;
+            budget::install(|| {
+                rows.for_each_init(
+                    || (vec![0u16; width], vec![0u16; width]),
+                    |(sums, wide), (y, row)| {
+                        sums.fill(start);
+                        for &(data, stride, weight, side) in &lines {
+                            // a separate pass, so that the compiler multiplies in 16 bits
+                            let line = &data[y * stride..];
+                            match side {
+                                0 => {
+                                    for (wide, &sample) in wide.iter_mut().zip(line) {
+                                        *wide = u16::from(sample) << 8;
+                                    }
+                                }
+                                1 => {
+                                    for (wide, pair) in wide.iter_mut().zip(line.as_chunks::<2>().0)
+                                    {
+                                        *wide = u16::from_le_bytes(*pair) << 8;
+                                    }
+                                }
+                                _ => {
+                                    for (wide, pair) in wide.iter_mut().zip(line.as_chunks::<2>().0)
+                                    {
+                                        *wide = u16::from_le_bytes(*pair) & 0xff00;
+                                    }
                                 }
                             }
-                            1 => {
-                                for (wide, pair) in wide.iter_mut().zip(line.as_chunks::<2>().0) {
-                                    *wide = u16::from_le_bytes(*pair) << 8;
-                                }
-                            }
-                            _ => {
-                                for (wide, pair) in wide.iter_mut().zip(line.as_chunks::<2>().0) {
-                                    *wide = u16::from_le_bytes(*pair) & 0xff00;
-                                }
+                            let weight = weight as u16;
+                            for (sum, &wide) in sums.iter_mut().zip(wide.iter()) {
+                                *sum += ((u32::from(wide) * u32::from(weight)) >> 16) as u16;
                             }
                         }
-                        let weight = weight as u16;
-                        for (sum, &wide) in sums.iter_mut().zip(wide.iter()) {
-                            *sum += ((u32::from(wide) * u32::from(weight)) >> 16) as u16;
+                        for (sample, sum) in row.iter_mut().zip(sums.iter()) {
+                            *sample = (sum >> 7) as u8;
                         }
-                    }
-                    for (sample, sum) in row.iter_mut().zip(sums.iter()) {
-                        *sample = (sum >> 7) as u8;
-                    }
-                },
-            );
+                    },
+                )
+            });
         }
         Ok(output)
     }

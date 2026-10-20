@@ -6,6 +6,7 @@ use ffmpeg_next::format::Pixel;
 use ffmpeg_next::{ffi, frame};
 
 use crate::blend::Blend;
+use crate::budget;
 use crate::color::Grade;
 use crate::compose::Scaler;
 use crate::config::{self, Config, Engine, Masking};
@@ -14,6 +15,7 @@ use crate::encode::Spare;
 use crate::rife::Rife;
 use crate::segments::{Made, Segments};
 use crate::svp::{Clip, Frame, Options, Shape, Svp};
+use crate::work::{Cancel, Follow};
 use crate::{Event, Result, Sink, weights};
 
 #[derive(Clone, Copy)]
@@ -37,6 +39,8 @@ pub struct Graph {
     feed: Feed,
     blend: Option<Blend>,
     grade: Option<Grade>,
+    scaler: Scaler,
+    follow: Follow,
     pub(crate) meta: Meta,
     pub info: Info,
 }
@@ -80,6 +84,10 @@ impl Plan {
             weights,
         }
     }
+
+    fn plain(&self, config: &Config) -> bool {
+        !config.dedup.enabled && self.pre.is_none() && !self.interpolate
+    }
 }
 
 // a config that changes no frame lets the streams be copied
@@ -122,8 +130,18 @@ fn wrap(source: Frame, width: u32, height: u32, format: Pixel) -> frame::Video {
 }
 
 impl Graph {
-    pub fn open(clip: &Path, config: &Config, sink: Sink) -> Result<Self> {
-        let decoder = Decoder::open(clip)?;
+    pub fn open(clip: &Path, config: &Config, sink: Sink, cancel: &Cancel) -> Result<Self> {
+        // a blend reads the clip in its own decoders, this one only seeks
+        let threads = |fps| {
+            let plan = Plan::new(fps, config);
+            match plan.plain(config) && plan.blended {
+                true => 1,
+                false => budget::decode(),
+            }
+        };
+        let follow = Follow::new(cancel);
+        let decoder = Decoder::chosen(clip, threads)?.following(&follow);
+        cancel.check()?;
         let meta = decoder.meta();
         let Meta {
             width,
@@ -139,21 +157,18 @@ impl Graph {
         )));
 
         let plan = Plan::new(source_fps, config);
-        let plain = !config.dedup.enabled && plan.pre.is_none() && !plan.interpolate;
+        let plain = plan.plain(config);
         let Plan {
             blended, weights, ..
         } = &plan;
         let blending = &config.blending;
         let (feed, fused) = match (plain, *blended) {
             (true, true) => {
-                let segments = Segments::new(clip, decoder, weights, blending);
+                let segments = Segments::new(clip, decoder, weights, blending)?;
                 (Feed::File(Box::new(Mutex::new(segments))), false)
             }
-            (true, false) => {
-                let decoder = Decoder::threaded(clip, 0)?;
-                (Feed::Plain(Box::new(Mutex::new(decoder))), false)
-            }
-            (false, _) => Self::host(Decoder::threaded(clip, 0)?, config, &plan, sink)?,
+            (true, false) => (Feed::Plain(Box::new(Mutex::new(decoder))), false),
+            (false, _) => Self::host(decoder, config, &plan, sink, cancel)?,
         };
         let blend = match &feed {
             Feed::Host { derived, input } if *blended && !fused => {
@@ -193,12 +208,20 @@ impl Graph {
             feed,
             blend,
             grade,
+            scaler: Scaler::new(),
+            follow,
             meta,
             info,
         })
     }
 
-    fn host(decoder: Decoder, config: &Config, plan: &Plan, sink: Sink) -> Result<(Feed, bool)> {
+    fn host(
+        decoder: Decoder,
+        config: &Config,
+        plan: &Plan,
+        sink: Sink,
+        cancel: &Cancel,
+    ) -> Result<(Feed, bool)> {
         let meta = decoder.meta();
         let Meta {
             width,
@@ -217,6 +240,7 @@ impl Graph {
         let mask = config.mask.enabled.then_some(&config.mask);
         let half = interpolation.half && width % 4 == 0 && height % 4 == 0;
 
+        cancel.check()?;
         let svp = Svp::load(&config::app_dir())?;
         let shape = Shape {
             deep: false,
@@ -262,7 +286,14 @@ impl Graph {
 
         let pass = |input: &Arc<Clip>, fps, blend| -> Result<Clip> {
             let open = |source: &Arc<Clip>| {
-                Rife::open(&svp, Arc::clone(source), &meta, fps, rife, blend, sink)
+                Rife::open(
+                    &svp,
+                    Arc::clone(source),
+                    &meta,
+                    (fps, rife, blend),
+                    sink,
+                    cancel,
+                )
             };
             match mask {
                 Some(mask) if mask.method == Masking::Peel => {
@@ -278,9 +309,11 @@ impl Graph {
             }
         };
         if let Some(fps) = pre {
+            cancel.check()?;
             input = Arc::new(pass(&input, fps, None)?);
             sink(Event::Info(format!("rife to {fps} fps first")));
         }
+        cancel.check()?;
         let derived = match interpolation.engine {
             _ if !interpolate => None,
             Engine::Rife => {
@@ -315,12 +348,13 @@ impl Graph {
         Ok((Feed::Host { derived, input }, fused))
     }
 
-    pub(crate) fn frame(&self, n: i32) -> Result<frame::Video> {
+    pub(crate) fn frame(&self, n: i32, cancel: &Cancel) -> Result<frame::Video> {
+        self.follow.set(cancel);
         let Info { width, height, .. } = self.info;
         let picture = match &self.feed {
             Feed::File(segments) => {
                 let mut segments = segments.lock().unwrap_or_else(|poison| poison.into_inner());
-                segments.frame(n)?
+                segments.frame(n, cancel)?
             }
             Feed::Plain(decoder) => {
                 let mut decoder = decoder.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -355,12 +389,12 @@ impl Graph {
         true
     }
 
-    pub(crate) fn made(&self, n: i32) -> Result<Made> {
+    pub(crate) fn made(&self, n: i32, cancel: &Cancel) -> Result<Made> {
         let Feed::File(segments) = &self.feed else {
-            return self.frame(n).map(Made::Picture);
+            return self.frame(n, cancel).map(Made::Picture);
         };
         let mut segments = segments.lock().unwrap_or_else(|poison| poison.into_inner());
-        let mut made = segments.take(n)?;
+        let mut made = segments.take(n, cancel)?;
         if let Made::Picture(picture) = &mut made {
             self.meta.tag(picture);
         }
@@ -381,9 +415,9 @@ impl Graph {
         self.meta.fps.0 as f64 / self.meta.fps.1 as f64
     }
 
-    pub fn preview(&self, n: i32, width: u32) -> Result<Image> {
-        let picture = self.frame(n.clamp(0, self.info.frames - 1))?;
-        image(&Scaler::new(), &picture, width)
+    pub fn preview(&self, n: i32, width: u32, cancel: &Cancel) -> Result<Image> {
+        let picture = self.frame(n.clamp(0, self.info.frames - 1), cancel)?;
+        image(&self.scaler, &picture, width)
     }
 }
 

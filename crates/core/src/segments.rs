@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -17,6 +17,7 @@ use crate::budget;
 use crate::config::Blending;
 use crate::decode::{Ahead, Decoder, Gpu, Meta, gpus};
 use crate::encode::{GOP, Spare};
+use crate::work::{self, Cancel};
 
 // the pictures that one decoder holds, next to the ones that its blend takes for a frame
 const HELD: usize = 32;
@@ -28,6 +29,7 @@ const PATIENCE: Duration = Duration::from_secs(1);
 const START: Duration = Duration::from_secs(2);
 // a lane with fewer threads is too slow for the reader
 const THREADS: usize = 12;
+const POLL: Duration = Duration::from_millis(20);
 
 pub enum Made {
     Picture(frame::Video),
@@ -84,6 +86,7 @@ impl Packer {
 struct Jobs {
     queue: Mutex<(VecDeque<Job>, bool)>,
     ready: Condvar,
+    packing: AtomicUsize,
 }
 
 pub struct Segments {
@@ -104,6 +107,7 @@ pub struct Segments {
     tune: Tune,
     trial: i32,
     lanes: Vec<JoinHandle<()>>,
+    closing: Vec<JoinHandle<()>>,
     parts: VecDeque<Part>,
     planned: i32,
     next: Option<i32>,
@@ -162,9 +166,11 @@ enum Feed {
     Gpu(Ahead),
 }
 
-fn feed(clip: &Path, threads: usize, gpu: Option<Gpu>) -> Result<(usize, Feed)> {
+// 0 threads is a decoder that has the whole cpu
+fn feed(clip: &Path, threads: usize, gpu: Option<Gpu>, cores: usize) -> Result<(usize, Feed)> {
     let feed = match threads {
         GPU => Feed::Gpu(Ahead::new(Decoder::gpu(clip, gpu.ok_or("no gpu")?)?)),
+        0 => Feed::Cpu(Box::new(Decoder::threaded(clip, cores)?)),
         threads => Feed::Cpu(Box::new(Decoder::threaded(clip, threads)?)),
     };
     Ok((threads, feed))
@@ -207,6 +213,9 @@ fn decoder(clip: &Path, size: (u32, u32), at: i32) -> Option<Gpu> {
     }
     let works = |gpu: &Gpu| same(clip, *gpu, size, at);
     let gpu = gpus().into_iter().find(works);
+    if found.len() >= 64 {
+        found.remove(0);
+    }
     found.push((clip.to_owned(), gpu));
     gpu
 }
@@ -220,9 +229,22 @@ struct Lane {
     packers: Arc<Mutex<Vec<Packer>>>,
     from: i32,
     meta: Meta,
+    cores: usize,
+    workers: usize,
 }
 
 fn work(lane: Lane) -> JoinHandle<()> {
+    work::spawn("decoder", move || {
+        let jobs = Arc::clone(&lane.jobs);
+        let mut packer = None;
+        budget::divided(lane.workers, || run(lane, &mut packer));
+        if packer.is_some() {
+            jobs.packing.fetch_sub(1, Ordering::Relaxed);
+        }
+    })
+}
+
+fn run(lane: Lane, packer: &mut Option<Packer>) {
     let Lane {
         clip,
         blend,
@@ -232,112 +254,115 @@ fn work(lane: Lane) -> JoinHandle<()> {
         packers,
         from,
         meta,
+        cores,
+        workers: _,
     } = lane;
-    std::thread::spawn(move || {
-        let mut gpu = place
-            .as_ref()
-            .and_then(|(_, shared, at)| *shared.gpu.get_or_init(|| decoder(&clip, size, *at)));
-        let mut decoder = gpu.and_then(|gpu| feed(&clip, GPU, Some(gpu)).ok());
-        let shared = place.as_ref().map(|place| Arc::clone(&place.1));
-        let shared = shared.unwrap_or_default();
-        let mut packer: Option<Packer> = None;
-        loop {
-            if let Some((number, shared, _)) = &place
-                && (decoder.is_none() || *number >= shared.wanted.load(Ordering::Relaxed))
-            {
+    let mut gpu = place
+        .as_ref()
+        .and_then(|(_, shared, at)| *shared.gpu.get_or_init(|| decoder(&clip, size, *at)));
+    let mut decoder = gpu.and_then(|gpu| feed(&clip, GPU, Some(gpu), cores).ok());
+    let shared = place.as_ref().map(|place| Arc::clone(&place.1));
+    let shared = shared.unwrap_or_default();
+    loop {
+        if let Some((number, shared, _)) = &place
+            && (decoder.is_none() || *number >= shared.wanted.load(Ordering::Relaxed))
+        {
+            return;
+        }
+        let mut queue = jobs
+            .queue
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let Job {
+            frames,
+            threads,
+            packets,
+            made,
+        } = loop {
+            if queue.1 {
                 return;
             }
-            let mut queue = jobs
-                .queue
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            let Job {
+            // a lane on the gpu starts slowly, so it takes the last part
+            let job = match place {
+                Some(_) => queue.0.pop_back(),
+                None => queue.0.pop_front(),
+            };
+            match job {
+                Some(job) => break job,
+                None => {
+                    let woken = jobs.ready.wait(queue);
+                    queue = woken.unwrap_or_else(|poison| poison.into_inner());
+                }
+            }
+        };
+        if packets && packer.is_none() {
+            let packers = packers.lock();
+            *packer = packers.unwrap_or_else(|poison| poison.into_inner()).pop();
+            if packer.is_some() {
+                jobs.packing.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let packets = packets && (packer.is_some() || jobs.packing.load(Ordering::Relaxed) > 0);
+        if packets && packer.is_none() {
+            queue.0.push_front(Job {
                 frames,
                 threads,
                 packets,
                 made,
-            } = loop {
-                if queue.1 {
-                    return;
+            });
+            jobs.ready.notify_all();
+            return;
+        }
+        drop(queue);
+        let (first, end) = (frames.start, frames.end);
+        let last = blend.last(frames.end - 1);
+        // a part that is alone has all threads, which is faster than the gpu
+        let mut hard = gpu.filter(|_| threads > 0);
+        for n in frames {
+            let picture = |decoder: &mut Option<(usize, Feed)>, threads, gpu| {
+                if decoder.as_ref().is_none_or(|decoder| decoder.0 != threads) {
+                    *decoder = Some(feed(&clip, threads, gpu, cores)?);
                 }
-                // a lane on the gpu starts slowly, so it takes the last part
-                let job = match place {
-                    Some(_) => queue.0.pop_back(),
-                    None => queue.0.pop_front(),
-                };
-                match job {
-                    Some(job) => break job,
-                    None => {
-                        let woken = jobs.ready.wait(queue);
-                        queue = woken.unwrap_or_else(|poison| poison.into_inner());
+                let source = |index| match decoder {
+                    Some((_, Feed::Cpu(decoder))) => decoder.picture(index),
+                    Some((_, Feed::Gpu(decoder))) => {
+                        shared.pictures.fetch_add(1, Ordering::Relaxed);
+                        decoder.picture(index, last)
                     }
-                }
+                    None => Err("no decoder".into()),
+                };
+                blend.frame(source, n, size.0, size.1)
             };
-            if packets && packer.is_none() {
-                let packers = packers.lock();
-                packer = packers.unwrap_or_else(|poison| poison.into_inner()).pop();
-            }
-            if packets && packer.is_none() {
-                queue.0.push_front(Job {
-                    frames,
-                    threads,
-                    packets,
-                    made,
-                });
-                jobs.ready.notify_all();
-                return;
-            }
-            drop(queue);
-            let (first, end) = (frames.start, frames.end);
-            let last = blend.last(frames.end - 1);
-            // a part that is alone has all threads, which is faster than the gpu
-            let mut hard = gpu.filter(|_| threads > 0);
-            for n in frames {
-                let picture = |decoder: &mut Option<(usize, Feed)>, threads, gpu| {
-                    if decoder.as_ref().is_none_or(|decoder| decoder.0 != threads) {
-                        *decoder = Some(feed(&clip, threads, gpu)?);
-                    }
-                    let source = |index| match decoder {
-                        Some((_, Feed::Cpu(decoder))) => decoder.picture(index),
-                        Some((_, Feed::Gpu(decoder))) => {
-                            shared.pictures.fetch_add(1, Ordering::Relaxed);
-                            decoder.picture(index, last)
-                        }
-                        None => Err("no decoder".into()),
-                    };
-                    blend.frame(source, n, size.0, size.1)
-                };
-                let wanted = if hard.is_some() { GPU } else { threads };
-                let mut made_now = picture(&mut decoder, wanted, hard);
-                if hard.is_some() && made_now.is_err() {
-                    (gpu, hard) = (None, None);
-                    decoder = None;
-                    made_now = picture(&mut decoder, threads, None);
-                }
-                let made_now = match packer.as_mut().filter(|_| packets) {
-                    Some(packer) => made_now.and_then(|mut picture| {
-                        meta.tag(&mut picture);
-                        packer.pack(picture, n - from, n == first, n + 1 == end)
-                    }),
-                    None => made_now.map(Made::Picture),
-                };
-                if made.send(made_now).is_err() {
-                    // the reader left this part, and the encoder still holds pictures of it
-                    if let Some(packer) = packer.as_mut().filter(|_| packets && n + 1 < end) {
-                        let _ = packer.end(&mut Vec::new());
-                    }
-                    break;
-                }
-            }
-            if place.is_some() && gpu.is_none() {
+            let wanted = if hard.is_some() { GPU } else { threads };
+            let mut made_now = picture(&mut decoder, wanted, hard);
+            if hard.is_some() && made_now.is_err() {
+                (gpu, hard) = (None, None);
                 decoder = None;
+                made_now = picture(&mut decoder, threads, None);
+            }
+            let made_now = match packer.as_mut().filter(|_| packets) {
+                Some(packer) => made_now.and_then(|mut picture| {
+                    meta.tag(&mut picture);
+                    packer.pack(picture, n - from, n == first, n + 1 == end)
+                }),
+                None => made_now.map(Made::Picture),
+            };
+            if made.send(made_now).is_err() {
+                // the reader left this part, and the encoder still holds pictures of it
+                if let Some(packer) = packer.as_mut().filter(|_| packets && n + 1 < end) {
+                    let _ = packer.end(&mut Vec::new());
+                }
+                break;
             }
         }
-    })
+        if place.is_some() && gpu.is_none() {
+            decoder = None;
+        }
+    }
 }
 
 impl Segments {
-    pub fn new(clip: &Path, probe: Decoder, weights: &[f64], blending: &Blending) -> Self {
+    pub fn new(clip: &Path, probe: Decoder, weights: &[f64], blending: &Blending) -> Result<Self> {
         let Meta {
             width,
             height,
@@ -349,14 +374,16 @@ impl Segments {
         let (weights, blending) = (weights.to_vec(), blending.clone());
         let blend = move || Blend::new(&weights, fps, &blending, frames);
         let math = blend();
-        let cores = budget::threads(budget::current());
+        let class = budget::current();
+        let cores = budget::threads(class);
         let luma = width as usize * height as usize;
         let picture = luma + 2 * (luma >> (meta.shift() * 2));
         // a quarter of the memory: half for the pictures of the lanes, half for the frames that wait
-        let budget = budget::bytes(budget::current());
-        let lanes = budget / 2 / ((math.window() + HELD) * picture);
-        let most = (cores / THREADS).min(lanes).max(1);
-        Self {
+        let budget = budget::bytes(class);
+        // a clip that does not fit still runs with one lane and few frames in flight
+        let lanes = (budget / 2 / ((math.window() + HELD) * picture)).max(1);
+        let most = (cores / THREADS).clamp(1, lanes);
+        Ok(Self {
             clip: clip.to_owned(),
             size: (width, height),
             frames: math.frames,
@@ -365,8 +392,8 @@ impl Segments {
             math,
             cores,
             most,
-            gpus_most: lanes.saturating_sub(most).clamp(1, GPUS),
-            room: budget / 2 / picture,
+            gpus_most: lanes.saturating_sub(most).min(GPUS),
+            room: (budget / 2 / picture).max(2),
             jobs: Arc::default(),
             started: 0,
             shared: Arc::default(),
@@ -374,6 +401,7 @@ impl Segments {
             tune: Tune::new(),
             trial: (frames - 1).min(30),
             lanes: Vec::new(),
+            closing: Vec::new(),
             parts: VecDeque::new(),
             planned: 0,
             next: None,
@@ -386,7 +414,7 @@ impl Segments {
             packed: 0,
             from: 0,
             meta,
-        }
+        })
     }
 
     pub fn encode(&mut self, spare: Spare, from: i32, end: i32) {
@@ -420,13 +448,18 @@ impl Segments {
     }
 
     fn lane(&mut self, gpu: bool) {
+        let workers = self.most + self.gpus_most;
         let gpu = gpu.then(|| (self.gpus, Arc::clone(&self.shared), self.trial));
         match gpu {
             Some(_) => self.gpus += 1,
             None => self.started += 1,
         }
         while self.hurry && self.packed < self.started + self.gpus {
-            let Some(Ok(encoder)) = self.spare.as_ref().map(|spare| spare()) else {
+            let Some(Ok(encoder)) = self
+                .spare
+                .as_ref()
+                .map(|spare| budget::divided(workers, || spare()))
+            else {
                 self.spare = None;
                 break;
             };
@@ -444,6 +477,8 @@ impl Segments {
             packers: Arc::clone(&self.packers),
             from: self.from,
             meta: self.meta,
+            cores: self.cores,
+            workers,
         }));
     }
 
@@ -536,11 +571,11 @@ impl Segments {
                 0 => (0, 2),
                 lanes => (self.cores.div_ceil(lanes), (end - start) as usize),
             };
-            let (made, pictures) = mpsc::sync_channel(room);
+            let (made, pictures) = mpsc::sync_channel(room.min(self.room));
             if self.started < lanes.max(1) {
                 self.lane(false);
             }
-            if lanes > 0 && self.gpus == 0 {
+            if lanes > 0 && self.gpus == 0 && self.gpus_most > 0 {
                 self.shared.wanted.store(1, Ordering::Relaxed);
                 self.tune.since = Instant::now();
                 self.lane(true);
@@ -572,6 +607,7 @@ impl Segments {
         (self.started, gpu)
     }
 
+    // the lanes end on their own, a thread joins them so that the caller does not wait
     fn stop(&mut self) {
         self.parts.clear();
         let jobs = std::mem::take(&mut self.jobs);
@@ -580,21 +616,27 @@ impl Segments {
             .unwrap_or_else(|poison| poison.into_inner())
             .1 = true;
         jobs.ready.notify_all();
-        for lane in self.lanes.drain(..) {
-            let _ = lane.join();
+        self.closing.retain(|closer| !closer.is_finished());
+        let lanes = std::mem::take(&mut self.lanes);
+        if !lanes.is_empty() {
+            self.closing.push(work::spawn("closer", move || {
+                for lane in lanes {
+                    let _ = lane.join();
+                }
+            }));
         }
         (self.started, self.gpus, self.shared) = (0, 0, Arc::default());
         self.tune = Tune::new();
     }
 
-    pub fn frame(&mut self, n: i32) -> Result<frame::Video> {
-        match self.take(n)? {
+    pub fn frame(&mut self, n: i32, cancel: &Cancel) -> Result<frame::Video> {
+        match self.take(n, cancel)? {
             Made::Picture(picture) => Ok(picture),
             Made::Packets(_) => Err("no picture".into()),
         }
     }
 
-    pub fn take(&mut self, n: i32) -> Result<Made> {
+    pub fn take(&mut self, n: i32, cancel: &Cancel) -> Result<Made> {
         let near = |part: &Part| part.frames.start <= n;
         if !(self.parts.front().is_some_and(near) && n <= self.planned) {
             if self.started > 1 || self.gpus > 0 {
@@ -616,7 +658,20 @@ impl Segments {
                 Ok(picture) => picture,
                 Err(_) => {
                     let since = Instant::now();
-                    let picture = part.made.recv().map_err(|_| "the decoder stopped")?;
+                    let stopped = "the decoder stopped";
+                    let picture = loop {
+                        match part.made.recv_timeout(POLL) {
+                            Ok(picture) => break picture,
+                            Err(RecvTimeoutError::Timeout) => {
+                                cancel.check()?;
+                                // a part that no lane takes would be waited for forever
+                                if self.lanes.iter().all(JoinHandle::is_finished) {
+                                    return Err(stopped.into());
+                                }
+                            }
+                            Err(RecvTimeoutError::Disconnected) => return Err(stopped.into()),
+                        }
+                    };
                     self.waiting.1 += since.elapsed();
                     picture
                 }
@@ -653,5 +708,8 @@ impl Drop for Segments {
     // the lanes must end before the process does, or the gpu context goes away under them
     fn drop(&mut self) {
         self.stop();
+        for closer in self.closing.drain(..) {
+            let _ = closer.join();
+        }
     }
 }

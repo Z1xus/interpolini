@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use ffmpeg_next::format;
@@ -16,6 +15,7 @@ use crate::graph::lossless;
 use crate::segments::Made;
 use crate::timeline::{Fade, Part, Placed, parts};
 use crate::upscale::Upscaler;
+use crate::work::Cancel;
 use crate::{Event, Result, Sink};
 
 const MEGABYTE: f64 = 1e6;
@@ -89,8 +89,6 @@ pub fn sounds(jobs: &[Job]) -> Result<Vec<Sound>> {
     Ok(sounds)
 }
 
-// the first video clip gives the picture size, the frame rate and the output settings,
-// and the lowest one when two start together
 fn base(jobs: &[(usize, &Job)]) -> Result<usize> {
     let mut videos = Vec::new();
     for (index, (_, job)) in jobs.iter().enumerate() {
@@ -121,7 +119,7 @@ fn encode(
     output: &Path,
     share: f64,
     sink: Sink,
-    cancel: &AtomicBool,
+    cancel: &Cancel,
 ) -> Result<()> {
     let mut most = 0;
     let mut placed = Vec::new();
@@ -154,9 +152,9 @@ fn encode(
         if config.dedup.enabled && config.dedup.threshold == 0.0 && !probes[clip].still {
             let (from, to) = job.cut.unwrap_or((0.0, f64::MAX));
             let share = config.dedup.repeats / 100.0;
-            config.dedup.threshold = threshold(&differences(&job.clip, from, to)?, share);
+            config.dedup.threshold = threshold(&differences(&job.clip, from, to, cancel)?, share);
         }
-        Source::open(&job.clip, &config, probes[clip].still, sink)
+        Source::open(&job.clip, &config, probes[clip].still, sink, cancel)
     };
     let base = base(jobs)?;
     let first = open(base)?;
@@ -240,7 +238,7 @@ fn encode(
     let mut reported = started;
     let mut written = 0;
     for part in &parts {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.stopped() {
             break;
         }
         // a clip stays open until its end, and the gpu is free before the next one opens
@@ -261,9 +259,9 @@ fn encode(
             true => frames,
             false => ((part.end * rate).round() as i32).min(frames),
         };
-        while written < last && !cancel.load(Ordering::Relaxed) {
+        while written < last && !cancel.stopped() {
             let made = match sources.get_mut(&base).filter(|_| fused) {
-                Some(source) => Some(source.made(from + written)?),
+                Some(source) => Some(source.made(from + written, cancel)?),
                 None => None,
             };
             match made {
@@ -283,7 +281,11 @@ fn encode(
                         let job = jobs[*clip].1;
                         let inside = job.cut.map_or(0.0, |cut| cut.0) + time - job.at;
                         if let Some(source) = sources.get_mut(clip) {
-                            layers.push((source.at(inside)?, job.place, level(clip) as f32));
+                            layers.push((
+                                source.at(inside, cancel)?,
+                                job.place,
+                                level(clip) as f32,
+                            ));
                         }
                     }
                     let picture = canvas.compose(layers)?;
@@ -330,7 +332,7 @@ fn fit(
     timeline: Option<&[Sound]>,
     output: &Path,
     sink: Sink,
-    cancel: &AtomicBool,
+    cancel: &Cancel,
 ) -> Result<()> {
     let config = &jobs[base(jobs)?].1.config.output;
     let limit = f64::from(config.size) * MEGABYTE;
@@ -346,7 +348,7 @@ fn fit(
         let jobs = if attempt < 2 { jobs } else { &software };
         encode(jobs, timeline, output, share, sink, cancel)?;
         let size = std::fs::metadata(output)?.len() as f64;
-        if config.target == Target::Quality || size <= limit || cancel.load(Ordering::Relaxed) {
+        if config.target == Target::Quality || size <= limit || cancel.stopped() {
             break;
         }
         if attempt == 2 {
@@ -366,7 +368,7 @@ fn fit(
     Ok(())
 }
 
-fn render(job: &Job, clip: usize, output: &Path, sink: Sink, cancel: &AtomicBool) -> Result<()> {
+fn render(job: &Job, clip: usize, output: &Path, sink: Sink, cancel: &Cancel) -> Result<()> {
     // a file of its own starts with the clip, not at its place on the timeline
     let job = &Job {
         at: 0.0,
@@ -380,7 +382,7 @@ fn render(job: &Job, clip: usize, output: &Path, sink: Sink, cancel: &AtomicBool
 }
 
 // with join, all clips go into one file in their order
-pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, sink: Sink, cancel: &AtomicBool) {
+pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, sink: Sink, cancel: &Cancel) {
     if let Some(sounds) = timeline.filter(|_| !jobs.is_empty()) {
         let started = Instant::now();
         let all: Vec<(usize, &Job)> = jobs.iter().enumerate().collect();
@@ -407,7 +409,7 @@ pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, sink: Sink, cancel: &Atomic
         return;
     }
     for (clip, job) in jobs.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.stopped() {
             break;
         }
         sink(Event::Start { clip });

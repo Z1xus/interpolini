@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -24,11 +25,33 @@ impl Cancel {
         self.0.load(Ordering::Relaxed)
     }
 
+    pub fn same(&self, other: &Cancel) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     pub fn check(&self) -> Result<()> {
         match self.stopped() {
             true => Err("stopped".into()),
             false => Ok(()),
         }
+    }
+}
+
+// follows the job that uses the work now, not the one that made it
+#[derive(Clone, Default)]
+pub struct Follow(Arc<Mutex<Cancel>>);
+
+impl Follow {
+    pub fn new(cancel: &Cancel) -> Self {
+        Self(Arc::new(Mutex::new(cancel.clone())))
+    }
+
+    pub fn set(&self, cancel: &Cancel) {
+        *locked(&self.0) = cancel.clone();
+    }
+
+    pub fn check(&self) -> Result<()> {
+        locked(&self.0).check()
     }
 }
 
@@ -148,13 +171,13 @@ struct Tasks {
 pub struct Pool {
     tasks: Arc<(Mutex<Tasks>, Condvar)>,
     threads: Vec<JoinHandle<()>>,
-    room: usize,
 }
 
 impl Pool {
     pub fn new(class: Class) -> Self {
         let tasks = Arc::<(Mutex<Tasks>, Condvar)>::default();
-        let count = budget::threads(class);
+        // the jobs are short, so a few workers are enough
+        let count = budget::threads(class).min(4);
         let threads: Vec<_> = (0..count)
             .map(|_| {
                 let tasks = Arc::clone(&tasks);
@@ -168,7 +191,7 @@ impl Pool {
                         };
                         held.running.push((task.key, task.cancel.clone()));
                         drop(held);
-                        (task.run)(&task.cancel);
+                        let _ = catch_unwind(AssertUnwindSafe(|| (task.run)(&task.cancel)));
                         held = locked(&tasks.0);
                         let same =
                             |running: &(String, Cancel)| Arc::ptr_eq(&running.1.0, &task.cancel.0);
@@ -177,15 +200,10 @@ impl Pool {
                 })
             })
             .collect();
-        Self {
-            tasks,
-            threads,
-            room: count * 4,
-        }
+        Self { tasks, threads }
     }
 
-    // false when the queue is full
-    pub fn submit(&self, key: &str, run: impl FnOnce(&Cancel) + Send + 'static) -> bool {
+    pub fn submit(&self, key: &str, run: impl FnOnce(&Cancel) + Send + 'static) {
         let mut held = locked(&self.tasks.0);
         let task = Task {
             key: key.to_owned(),
@@ -195,12 +213,11 @@ impl Pool {
         let waiting = held.queued.iter().position(|queued| queued.key == key);
         match waiting {
             Some(index) => held.queued[index] = task,
-            None if held.closed || held.queued.len() >= self.room => return false,
+            None if held.closed => return,
             None => held.queued.push_back(task),
         }
         drop(held);
         self.tasks.1.notify_one();
-        true
     }
 
     pub fn cancel(&self, key: &str) {

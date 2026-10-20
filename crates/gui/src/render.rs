@@ -1,6 +1,7 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use interpolini_core::work::Cancel;
 use interpolini_core::{Event, Fade, Job, Sound, run};
 use slint::{ComponentHandle, Model};
 
@@ -141,9 +142,9 @@ fn render(ui: &App, shared: &Shared) {
     let (jobs, sounds, rows, lead, cancel) = {
         let mut state = lock(shared);
         layout(ui, &mut state);
-        state.cancel = Arc::new(AtomicBool::new(false));
+        state.cancel = Cancel::default();
         let (jobs, sounds, rows, lead) = jobs(&state, separate, copy);
-        (jobs, sounds, rows, lead as f32, Arc::clone(&state.cancel))
+        (jobs, sounds, rows, lead as f32, state.cancel.clone())
     };
     if ui.get_videos() == 0 {
         ui.set_failed(true);
@@ -204,5 +205,5 @@ pub fn wire(ui: &App, state: &Shared) {
     });
 
     let shared = Arc::clone(state);
-    ui.on_cancel(move || lock(&shared).cancel.store(true, Ordering::Relaxed));
+    ui.on_cancel(move || lock(&shared).cancel.stop());
 }

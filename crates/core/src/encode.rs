@@ -9,6 +9,7 @@ use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, ffi, frame, medi
 
 use crate::Result;
 use crate::audio::{Lane, Mixer, Source};
+use crate::budget;
 use crate::config::{self, Codec, Output};
 use crate::decode::Meta;
 
@@ -393,6 +394,7 @@ fn context(
     video.set_time_base(base);
     video.set_frame_rate(Some(base.invert()));
     video.set_gop(GOP);
+    unsafe { (*video.as_mut_ptr()).thread_count = budget::own() as i32 };
     video.set_colorspace(meta.space);
     video.set_color_range(meta.range);
     video.set_color_primaries(meta.primaries);

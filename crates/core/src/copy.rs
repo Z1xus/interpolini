@@ -1,13 +1,13 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use ffmpeg_next::{Discard, Packet, Rational, codec, encoder, ffi, format, media};
 
 use crate::queue::Job;
+use crate::work::Cancel;
 use crate::{Event, Result, Sink};
 
-pub fn keyframes(clip: &Path) -> Result<Vec<f64>> {
+pub fn keyframes(clip: &Path, cancel: &Cancel) -> Result<Vec<f64>> {
     ffmpeg_next::init()?;
     let mut input = format::input(clip)?;
     let video = input
@@ -27,6 +27,7 @@ pub fn keyframes(clip: &Path) -> Result<Vec<f64>> {
     let mut packet = Packet::empty();
     while crate::decode::next(&mut packet, &mut input).is_ok() {
         if packet.stream() == video && packet.is_key() {
+            cancel.check()?;
             let time = packet.pts().or(packet.dts()).unwrap_or(0);
             keys.push(time as f64 * base - begin);
         }
@@ -35,7 +36,7 @@ pub fn keyframes(clip: &Path) -> Result<Vec<f64>> {
 }
 
 // copies the packets of the cut without a new encode, so the cut starts on a keyframe
-pub fn copy(job: &Job, output: &Path, sink: Sink, cancel: &AtomicBool) -> Result<()> {
+pub fn copy(job: &Job, output: &Path, sink: Sink, cancel: &Cancel) -> Result<()> {
     ffmpeg_next::init()?;
     let mut input = format::input(&job.clip)?;
     let mut target = format::output(output)?;
@@ -83,7 +84,7 @@ pub fn copy(job: &Job, output: &Path, sink: Sink, cancel: &AtomicBool) -> Result
     let mut origin = None;
     let mut written = 0;
     let mut packet = Packet::empty();
-    while !cancel.load(Ordering::Relaxed) && crate::decode::next(&mut packet, &mut input).is_ok() {
+    while !cancel.stopped() && crate::decode::next(&mut packet, &mut input).is_ok() {
         let Some(index) = streams[packet.stream()] else {
             continue;
         };

@@ -22,7 +22,6 @@ mod update;
 mod view;
 
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use interpolini_core::config::{self, Config};
@@ -241,7 +240,7 @@ fn main() -> Result<(), slint::PlatformError> {
         held: None,
         touched: None,
         spare: None,
-        cancel: Arc::default(),
+        cancel: Default::default(),
         render: None,
     }));
     fit(&ui, &state);
@@ -360,7 +359,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // the gpu libraries crash when the process exits under a running job
     let render = {
         let mut state = lock(&state);
-        state.cancel.store(true, Ordering::Relaxed);
+        state.cancel.stop();
         state.preview = None;
         state.render.take()
     };

@@ -1,10 +1,11 @@
 use std::cell::RefCell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+
 use std::time::Duration;
 
 use interpolini_core::Job;
 use interpolini_core::config::Target;
+use interpolini_core::work::Cancel;
 use slint::ComponentHandle;
 
 use crate::render::jobs;
@@ -15,7 +16,7 @@ use crate::{App, preview};
 struct Asked {
     jobs: Vec<Job>,
     separate: bool,
-    stop: Arc<AtomicBool>,
+    stop: Cancel,
     done: bool,
 }
 
@@ -57,23 +58,23 @@ fn measure(ui: &App, shared: &Shared) {
     if ASKED.with_borrow(|asked| asked.as_ref().is_some_and(same)) {
         return;
     }
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = Cancel::default();
     ASKED.set(Some(Asked {
         jobs: jobs.clone(),
         separate,
-        stop: Arc::clone(&stop),
+        stop: stop.clone(),
         done: jobs.is_empty(),
     }));
     if jobs.is_empty() {
         return ui.set_estimate("".into());
     }
     ui.set_estimate("Measuring…".into());
-    let (weak, own) = (ui.as_weak(), Arc::clone(&stop));
+    let (weak, own) = (ui.as_weak(), stop.clone());
     let done = move |bytes: Option<u64>| {
         let text = bytes.map_or(String::new(), |bytes| format!("about {}", megabytes(bytes)));
         let _ = weak.upgrade_in_event_loop(move |ui| {
             ASKED.with_borrow_mut(|asked| {
-                let own = |asked: &&mut Asked| Arc::ptr_eq(&asked.stop, &own);
+                let own = |asked: &&mut Asked| asked.stop.same(&own);
                 if let Some(asked) = asked.as_mut().filter(own) {
                     asked.done = true;
                     ui.set_estimate(text.into());
@@ -95,7 +96,7 @@ fn measure(ui: &App, shared: &Shared) {
 pub fn ask(ui: &App, shared: &Shared) {
     ASKED.with_borrow_mut(|asked| {
         if let Some(asked) = asked.take_if(|asked| !asked.done) {
-            asked.stop.store(true, Ordering::Relaxed);
+            asked.stop.stop();
         }
     });
     let (weak, shared) = (ui.as_weak(), Arc::clone(shared));

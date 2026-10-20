@@ -11,6 +11,7 @@ use crate::config::{self, Backend};
 use crate::decode::Meta;
 use crate::svp::{Clip, Frame, Map, Raw, Shape, Svp};
 use crate::tensorrt::{Support, support};
+use crate::work::Cancel;
 use crate::{Event, Result, Sink};
 
 #[repr(C)]
@@ -56,18 +57,22 @@ static PREPARE: Mutex<()> = Mutex::new(());
 // below 0 when no engine builds
 static DONE: AtomicU32 = AtomicU32::new((-1.0f32).to_bits());
 
-fn wait(sink: Sink) -> MutexGuard<'static, ()> {
+fn wait(sink: Sink, cancel: &Cancel) -> Result<MutexGuard<'static, ()>> {
+    let mut tick = 0;
     loop {
         match PREPARE.try_lock() {
-            Ok(guard) => return guard,
-            Err(TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
             Err(TryLockError::WouldBlock) => {}
         }
+        cancel.check()?;
         let done = f32::from_bits(DONE.load(Ordering::Relaxed));
-        if done >= 0.0 {
+        // the report is shown every 250 ms, a stop is seen sooner
+        if done >= 0.0 && tick % 10 == 0 {
             sink(Event::Preparing(done));
         }
-        std::thread::sleep(Duration::from_millis(250));
+        tick += 1;
+        std::thread::sleep(Duration::from_millis(25));
     }
 }
 
@@ -118,10 +123,9 @@ impl Rife {
         svp: &Arc<Svp>,
         source: Arc<Clip>,
         meta: &Meta,
-        fps: u32,
-        rife: &config::Rife,
-        blend: Option<(i64, i64, i64)>,
+        (fps, rife, blend): (u32, &config::Rife, Option<(i64, i64, i64)>),
         sink: crate::Sink,
+        cancel: &Cancel,
     ) -> Result<Clip> {
         let directory = config::app_dir();
         let mut backend = rife.backend;
@@ -181,7 +185,7 @@ impl Rife {
         let user = std::ptr::from_ref(&sink).cast_mut().cast();
         let [bt601, full, yuv444] = [meta.bt601(), meta.full(), meta.yuv444].map(i32::from);
         let (width, height) = (width as i32, height as i32);
-        let guard = tensorrt.then(|| wait(sink));
+        let guard = tensorrt.then(|| wait(sink, cancel)).transpose()?;
         let raw = engine.raw;
         let ready = unsafe { (api.prepare)(raw, width, height, bt601, full, yuv444, report, user) };
         if let Some(_guard) = guard {

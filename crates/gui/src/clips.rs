@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use interpolini_core::config;
+use interpolini_core::work::Cancel;
 use interpolini_core::{Place, Probe, keyframes, probe};
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
@@ -218,7 +219,7 @@ pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32
 
 fn keys(ui: Weak<App>, state: Shared, clip: PathBuf) {
     std::thread::spawn(move || {
-        let Ok(keys) = keyframes(&clip) else {
+        let Ok(keys) = keyframes(&clip, &Cancel::default()) else {
             return;
         };
         let _ = ui.upgrade_in_event_loop(move |ui| {

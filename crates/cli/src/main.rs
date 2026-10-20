@@ -1,9 +1,9 @@
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use interpolini_core::work::Cancel;
 use interpolini_core::{Event, Fade, Job, Place, config, run, sequence, sounds};
 
 const USAGE: &str = "usage: interpolini-cli [options] <clip>...
@@ -315,13 +315,14 @@ fn main() -> ExitCode {
     if let Err(error) = sequence(&mut jobs) {
         return fail(error);
     }
-    let cancel = Arc::new(AtomicBool::new(false));
-    let handler = Arc::clone(&cancel);
+    let cancel = Cancel::default();
+    let handler = cancel.clone();
     // the first ctrl-c closes the file after the current frame, the second one quits
     let _ = ctrlc::set_handler(move || {
-        if handler.swap(true, Ordering::Relaxed) {
+        if handler.stopped() {
             std::process::exit(130);
         }
+        handler.stop();
     });
 
     let live = std::io::stderr().is_terminal();

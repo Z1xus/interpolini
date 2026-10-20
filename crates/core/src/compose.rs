@@ -3,10 +3,12 @@ use std::path::{Path, PathBuf};
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::{color, ffi, frame};
 
+use crate::budget;
 use crate::config::Config;
 use crate::decode::{Decoder, Meta};
 use crate::graph::{Graph, Image, image};
 use crate::segments::Made;
+use crate::work::Cancel;
 use crate::{Result, Sink};
 
 pub struct Scaler(*mut ffi::SwsContext);
@@ -22,7 +24,7 @@ impl Scaler {
     pub fn with(flags: ffi::SwsFlags) -> Self {
         let scaler = unsafe { ffi::sws_alloc_context() };
         unsafe {
-            (*scaler).threads = 0;
+            (*scaler).threads = budget::own() as i32;
             (*scaler).flags = flags as u32;
         }
         Self(scaler)
@@ -110,10 +112,16 @@ pub struct Source {
 }
 
 impl Source {
-    pub fn open(clip: &Path, config: &Config, still: bool, sink: Sink) -> Result<Self> {
+    pub fn open(
+        clip: &Path,
+        config: &Config,
+        still: bool,
+        sink: Sink,
+        cancel: &Cancel,
+    ) -> Result<Self> {
         let kind = match still {
             true => Kind::Still(image_file(clip)?),
-            false => Kind::Clip(Box::new(Graph::open(clip, config, sink)?)),
+            false => Kind::Clip(Box::new(Graph::open(clip, config, sink, cancel)?)),
         };
         Ok(Self { kind, held: None })
     }
@@ -125,14 +133,14 @@ impl Source {
         }
     }
 
-    pub(crate) fn made(&mut self, n: i32) -> Result<Made> {
+    pub(crate) fn made(&mut self, n: i32, cancel: &Cancel) -> Result<Made> {
         match &self.kind {
-            Kind::Clip(graph) => graph.made(n),
+            Kind::Clip(graph) => graph.made(n, cancel),
             Kind::Still(picture) => Ok(Made::Picture(share(picture))),
         }
     }
 
-    pub fn at(&mut self, seconds: f64) -> Result<Picture> {
+    pub fn at(&mut self, seconds: f64, cancel: &Cancel) -> Result<Picture> {
         let graph = match &self.kind {
             Kind::Clip(graph) => graph,
             Kind::Still(picture) => return Ok(Picture(share(picture))),
@@ -140,7 +148,7 @@ impl Source {
         let fps = graph.info.fps.0 as f64 / graph.info.fps.1 as f64;
         let n = ((seconds * fps).round() as i32).clamp(0, graph.info.frames - 1);
         if !matches!(&self.held, Some(held) if held.0 == n) {
-            self.held = Some((n, graph.frame(n)?));
+            self.held = Some((n, graph.frame(n, cancel)?));
         }
         Ok(Picture(share(&self.held.as_ref().ok_or("no picture")?.1)))
     }
@@ -164,9 +172,16 @@ impl Sources {
         Some(&mut self.0[index].2)
     }
 
-    pub fn open(&mut self, clip: &Path, config: &Config, still: bool, sink: Sink) -> Result<()> {
+    pub fn open(
+        &mut self,
+        clip: &Path,
+        config: &Config,
+        still: bool,
+        sink: Sink,
+        cancel: &Cancel,
+    ) -> Result<()> {
         if self.find(clip, config).is_none() {
-            let source = Source::open(clip, config, still, sink)?;
+            let source = Source::open(clip, config, still, sink, cancel)?;
             self.add(clip.to_owned(), config.clone(), source);
         }
         Ok(())
@@ -194,11 +209,12 @@ impl Sources {
         &mut self,
         clip: &Path,
         config: &Config,
+        cancel: &Cancel,
         run: impl FnOnce(&mut Source) -> Result<R>,
     ) -> Result<R> {
         match self.find(clip, config) {
             Some(index) => run(&mut self.0[index].2),
-            None => run(&mut Source::open(clip, config, false, &|_| {})?),
+            None => run(&mut Source::open(clip, config, false, &|_| {}, cancel)?),
         }
     }
 }

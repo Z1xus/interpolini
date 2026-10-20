@@ -1,10 +1,10 @@
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
 use interpolini_core::config::{self, Config, Ease};
+use interpolini_core::work::Cancel;
 use interpolini_core::{Fade, Part, Place, Placed, Sound, parts};
 
 use crate::view::selected;
@@ -100,7 +100,7 @@ pub struct State {
     pub touched: Option<u64>,
     // a drag past the last track makes a new track, of video or of audio, which goes away again without a clip
     pub spare: Option<bool>,
-    pub cancel: Arc<AtomicBool>,
+    pub cancel: Cancel,
     pub render: Option<JoinHandle<()>>,
     // the next picture also goes to a file
     pub snap: bool,

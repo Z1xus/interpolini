@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use crate::Result;
+use crate::budget;
 use crate::decode::{Decoder, Meta};
+use crate::work::{Cancel, Follow};
 
 // every fourth sample of every fourth row is enough to find a repeated frame
 const STEP: usize = 4;
@@ -16,10 +18,10 @@ fn samples(width: usize, height: usize) -> f32 {
 }
 
 // how much each sampled frame differs from the frame before it, in rows of frames from three places
-pub fn differences(clip: &Path, from: f64, to: f64) -> Result<Vec<Vec<f32>>> {
+pub fn differences(clip: &Path, from: f64, to: f64, cancel: &Cancel) -> Result<Vec<Vec<f32>>> {
     const SPOTS: i32 = 3;
     const SAMPLE: i32 = 100;
-    let mut decoder = Decoder::threaded(clip, 0)?;
+    let mut decoder = Decoder::threaded(clip, budget::decode())?.following(&Follow::new(cancel));
     let meta = decoder.meta();
     let Meta {
         width,
@@ -39,6 +41,7 @@ pub fn differences(clip: &Path, from: f64, to: f64) -> Result<Vec<Vec<f32>>> {
         let first = (start + (end - start) * spot / (SPOTS + 1) - SAMPLE / 2).max(start);
         let mut row = Vec::new();
         for step in 0..SAMPLE.min(end - first) {
+            cancel.check()?;
             let picture = pictures[step as usize % 2].as_mut_ptr();
             let planes = unsafe { [picture, picture.add(luma), picture.add(luma + chroma)] };
             let line = (width >> meta.shift()) as isize;

@@ -1,6 +1,6 @@
 use std::cell::Cell;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
 
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
@@ -18,9 +18,12 @@ pub struct Machine {
 }
 
 static PREVIEW: AtomicBool = AtomicBool::new(false);
+static RENDER: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static CLASS: Cell<Class> = const { Cell::new(Class::Render) };
+    // 0 is the whole class
+    static SHARE: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(target_os = "linux")]
@@ -85,23 +88,50 @@ pub fn machine() -> Machine {
     })
 }
 
-// the gui tells when a preview plays, so that a render leaves it some cores
 pub fn preview(active: bool) {
     PREVIEW.store(active, Ordering::Relaxed);
 }
 
-// on a computer with fewer than 3 cores the classes share them
+pub fn render(active: bool) {
+    RENDER.store(active, Ordering::Relaxed);
+}
+
+fn back() -> usize {
+    (machine().cores / 8).clamp(1, 2)
+}
+
+fn front() -> usize {
+    (machine().cores / 8).clamp(1, 4)
+}
+
+// the sum of the three is at most the cores, on fewer than 3 cores the classes share them
 pub fn threads(class: Class) -> usize {
     let cores = machine().cores;
-    let front = (cores / 4).clamp(1, 4);
-    let back = (cores / 8).clamp(1, 2);
     match class {
-        Class::Interactive => front,
-        Class::Background => back,
+        Class::Interactive if RENDER.load(Ordering::Relaxed) => front(),
+        Class::Interactive => cores.saturating_sub(back()).max(1),
+        Class::Background => back(),
         Class::Render if PREVIEW.load(Ordering::Relaxed) => {
-            cores.saturating_sub(front + back).max(1)
+            cores.saturating_sub(front() + back()).max(1)
         }
         Class::Render => cores,
+    }
+}
+
+fn most(class: Class) -> usize {
+    let cores = machine().cores;
+    match class {
+        Class::Interactive => cores.saturating_sub(back()).max(1),
+        Class::Background => back(),
+        Class::Render => cores,
+    }
+}
+
+// one cap serves all clips of the open-svpflow host
+pub fn host() -> usize {
+    match RENDER.load(Ordering::Relaxed) {
+        true => threads(Class::Render),
+        false => threads(Class::Interactive),
     }
 }
 
@@ -122,8 +152,18 @@ pub fn current() -> Class {
     CLASS.get()
 }
 
+pub fn divided<R>(workers: usize, run: impl FnOnce() -> R) -> R {
+    let before = SHARE.replace((threads(current()) / workers.max(1)).max(1));
+    let result = run();
+    SHARE.set(before);
+    result
+}
+
 pub fn own() -> usize {
-    threads(current())
+    match SHARE.get() {
+        0 => threads(current()),
+        share => share.min(threads(current())),
+    }
 }
 
 // a decoder shares the cores with the encoder, and ffmpeg gains little over 16
@@ -135,28 +175,18 @@ pub fn decode() -> usize {
     }
 }
 
-type Pools = [Mutex<Option<(usize, Arc<ThreadPool>)>>; 3];
+pub fn piece(items: usize) -> usize {
+    items.div_ceil(own()).max(1)
+}
 
-// the rayon work of this thread runs in the pool of its class
 pub fn install<R: Send>(work: impl FnOnce() -> R + Send) -> R {
-    static POOLS: Pools = [const { Mutex::new(None) }; 3];
+    static POOLS: [OnceLock<ThreadPool>; 3] = [const { OnceLock::new() }; 3];
     let class = current();
-    let wanted = threads(class);
-    let pool = {
-        let mut held = POOLS[class as usize]
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        match held.as_ref().filter(|held| held.0 == wanted) {
-            Some((_, pool)) => Arc::clone(pool),
-            None => {
-                let name = format!("{class:?}").to_lowercase();
-                let builder = ThreadPoolBuilder::new().num_threads(wanted);
-                let pool = builder.thread_name(move |index| format!("{name} {index}"));
-                let pool = Arc::new(pool.build().expect("a thread pool could not start"));
-                *held = Some((wanted, Arc::clone(&pool)));
-                pool
-            }
-        }
-    };
+    let pool = POOLS[class as usize].get_or_init(|| {
+        let name = format!("{class:?}").to_lowercase();
+        let builder = ThreadPoolBuilder::new().num_threads(most(class));
+        let builder = builder.thread_name(move |index| format!("{name} {index}"));
+        builder.build().expect("a thread pool could not start")
+    });
     pool.install(work)
 }

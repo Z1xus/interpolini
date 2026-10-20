@@ -4,6 +4,7 @@ use ffmpeg_next::format::Pixel;
 use ffmpeg_next::frame;
 use rayon::prelude::*;
 
+use crate::budget;
 use crate::decode::{self, Meta};
 use crate::lut::Lut;
 use crate::{Result, config};
@@ -111,42 +112,49 @@ impl Grade {
             };
             unsafe { std::slice::from_raw_parts_mut(raw.data[plane], strides[plane] * rows) }
         });
+        let piece = budget::piece(height);
         if yuv444 {
-            y.par_chunks_mut(strides[0])
+            budget::install(|| {
+                y.par_chunks_mut(strides[0])
+                    .zip(u.par_chunks_mut(strides[1]))
+                    .zip(v.par_chunks_mut(strides[2]))
+                    .enumerate()
+                    .with_min_len(piece)
+                    .for_each(|(row, ((y, u), v))| {
+                        let line = |plane: usize| &from[plane].0[row * from[plane].1..][..width];
+                        self.pixels(
+                            (line(0), &mut y[..width]),
+                            (line(1), &mut u[..width]),
+                            (line(2), &mut v[..width]),
+                        );
+                    })
+            });
+            return output;
+        }
+        budget::install(|| {
+            y.par_chunks_mut(strides[0] * 2)
                 .zip(u.par_chunks_mut(strides[1]))
                 .zip(v.par_chunks_mut(strides[2]))
                 .enumerate()
+                .with_min_len(piece.div_ceil(2))
                 .for_each(|(row, ((y, u), v))| {
-                    let line = |plane: usize| &from[plane].0[row * from[plane].1..][..width];
-                    self.pixels(
-                        (line(0), &mut y[..width]),
-                        (line(1), &mut u[..width]),
-                        (line(2), &mut v[..width]),
+                    let (top, bottom) = y.split_at_mut(strides[0]);
+                    let luma = &from[0].0[row * 2 * from[0].1..];
+                    let pairs = [
+                        (&luma[..width], &mut top[..width]),
+                        (&luma[from[0].1..][..width], &mut bottom[..width]),
+                    ];
+                    let u = (
+                        &from[1].0[row * from[1].1..][..width / 2],
+                        &mut u[..width / 2],
                     );
-                });
-            return output;
-        }
-        y.par_chunks_mut(strides[0] * 2)
-            .zip(u.par_chunks_mut(strides[1]))
-            .zip(v.par_chunks_mut(strides[2]))
-            .enumerate()
-            .for_each(|(row, ((y, u), v))| {
-                let (top, bottom) = y.split_at_mut(strides[0]);
-                let luma = &from[0].0[row * 2 * from[0].1..];
-                let pairs = [
-                    (&luma[..width], &mut top[..width]),
-                    (&luma[from[0].1..][..width], &mut bottom[..width]),
-                ];
-                let u = (
-                    &from[1].0[row * from[1].1..][..width / 2],
-                    &mut u[..width / 2],
-                );
-                let v = (
-                    &from[2].0[row * from[2].1..][..width / 2],
-                    &mut v[..width / 2],
-                );
-                self.rows(pairs, u, v);
-            });
+                    let v = (
+                        &from[2].0[row * from[2].1..][..width / 2],
+                        &mut v[..width / 2],
+                    );
+                    self.rows(pairs, u, v);
+                })
+        });
         output
     }
 
