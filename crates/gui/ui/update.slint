@@ -66,12 +66,14 @@ export component Update inherits Window {
                             vertical-alignment: center;
                         }
                         if !change.heading: Text {
-                            width: 46px;
+                            width: 52px;
                             text: change.kind;
                             color: Theme.muted;
                             font-size: 11px;
                         }
+                        // a wrapped text gets its height from a fixed width, the window less the padding and the kind
                         if !change.heading: Text {
+                            width: root.width - 92px;
                             text: change.text;
                             color: Theme.ink;
                             wrap: word-wrap;
