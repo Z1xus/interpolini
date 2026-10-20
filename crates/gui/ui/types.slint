@@ -14,9 +14,8 @@ export struct Clip {
     // selected together with other clips
     picked: bool,
     thumbs: [image],
-    // the seconds in the source where its keyframes are
-    keys: [float],
-    wave: [float],
+    keys: [[float]],
+    wave: image,
     still: bool,
     // the width of the picture for a height of 1
     ratio: float,

@@ -12,7 +12,7 @@ use interpolini_core::work::{self, Cancel};
 use interpolini_core::{
     Canvas, Event, Fade, Graph, Image, Job, Place, Sound, Source, Sources, estimate, peaks,
 };
-use slint::{Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel, Weak};
+use slint::{Model, Rgba8Pixel, SharedPixelBuffer, Weak};
 
 use crate::view::clock;
 use crate::{App, services};
@@ -28,6 +28,8 @@ const POLL: Duration = Duration::from_millis(25);
 const EARLY: f64 = 2.0;
 pub const THUMBS: usize = 8;
 const WAVE: usize = 120;
+// the rows of a wave, which the window stretches to the height of the track
+const STRIP: u32 = 64;
 
 pub struct Layer {
     pub clip: PathBuf,
@@ -96,6 +98,19 @@ pub fn source(config: &Config) -> Config {
 fn pixels(image: &Image) -> Pixels {
     let mut pixels = Pixels::new(image.width, image.height);
     pixels.make_mut_bytes().copy_from_slice(&image.rgba);
+    pixels
+}
+
+fn strip(peaks: &[f32]) -> Pixels {
+    let mut pixels = Pixels::new(peaks.len() as u32, STRIP);
+    let bytes = pixels.make_mut_bytes();
+    for (column, peak) in peaks.iter().enumerate() {
+        let rows = ((peak.clamp(0.0, 1.0) * STRIP as f32 / 2.0).round() as usize).max(1) * 2;
+        for row in (STRIP as usize - rows) / 2..(STRIP as usize + rows) / 2 {
+            let at = (row * peaks.len() + column) * 4;
+            bytes[at..at + 4].copy_from_slice(&[255; 4]);
+        }
+    }
     pixels
 }
 
@@ -742,12 +757,13 @@ pub fn waves(
         let Ok(tracks) = peaks(&clip, seconds, WAVE, cancel) else {
             return;
         };
+        let tracks: Vec<Pixels> = tracks.iter().map(|wave| strip(wave)).collect();
         let _ = ui.upgrade_in_event_loop(move |ui| {
             let rows = ui.get_clips();
             for (audio, index) in places() {
                 let wave = audio.and_then(|audio| tracks.get(audio));
                 if let (Some(wave), Some(mut row)) = (wave, rows.row_data(index)) {
-                    row.wave = ModelRc::new(VecModel::from(wave.clone()));
+                    row.wave = slint::Image::from_rgba8(wave.clone());
                     rows.set_row_data(index, row);
                 }
             }

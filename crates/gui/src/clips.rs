@@ -286,12 +286,34 @@ pub fn fill(ui: &App, state: &Shared) {
         let mut sounds = sounds.filter(|(_, entry)| own(entry) && entry.audio.is_some());
         let silent = sounds.any(|(index, _)| {
             rows.row_data(index)
-                .is_some_and(|row| row.wave.row_count() == 0)
+                .is_some_and(|row| row.wave.size().width == 0)
         });
         if silent && !any.still {
             let key = format!("waves {link}");
             preview::waves(ui.as_weak(), &key, any.clip.clone(), any.seconds, places);
         }
+    }
+}
+
+// the keyframes for each zoom, a level keeps those that are 0.025 * 2^level seconds apart
+fn levels(keys: &[f64]) -> ModelRc<ModelRc<f32>> {
+    let mut levels = Vec::new();
+    let mut gap = 0.025;
+    loop {
+        let mut last = f64::MIN;
+        let mut kept = Vec::new();
+        for key in keys {
+            if key - last >= gap {
+                last = *key;
+                kept.push(*key as f32);
+            }
+        }
+        let done = kept.len() < 2;
+        levels.push(ModelRc::new(VecModel::from(kept)));
+        if done {
+            return ModelRc::new(VecModel::from(levels));
+        }
+        gap *= 2.0;
     }
 }
 
@@ -302,8 +324,7 @@ fn keys(ui: Weak<App>, state: Shared, clip: PathBuf) {
             return;
         };
         let _ = ui.upgrade_in_event_loop(move |ui| {
-            let marks: Vec<f32> = keys.iter().map(|key| *key as f32).collect();
-            let marks = ModelRc::new(VecModel::from(marks));
+            let marks = levels(&keys);
             let keys: Arc<[f64]> = keys.into();
             let mut guard = lock(&state);
             for (index, entry) in guard.entries.iter_mut().enumerate() {
