@@ -61,8 +61,11 @@ impl Plan {
             blending,
             ..
         } = config;
-        let pre =
-            Some(pre.fps.at(source_fps)).filter(|fps| pre.enabled && f64::from(*fps) > source_fps);
+        let pre = Some(pre.fps.at(source_fps)).filter(|fps| {
+            pre.enabled
+                && f64::from(*fps) > source_fps
+                && !(interpolation.enabled && interpolation.engine == Engine::Rife)
+        });
         let source_fps = pre.map_or(source_fps, f64::from);
         let fps = interpolation.fps.at(source_fps);
         let interpolate = interpolation.enabled && f64::from(fps) > source_fps;

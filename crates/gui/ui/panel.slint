@@ -288,7 +288,7 @@ export component Panel inherits Rectangle {
                 }
             }
 
-            Section {
+            if root.settings.engine == "svp": Section {
                 title: "Pre-interpolation";
                 open <=> root.sections.pre;
                 enabled <=> root.settings.pre;
