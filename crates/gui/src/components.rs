@@ -222,9 +222,7 @@ fn install_vulkan(name: &str, report: Report, stop: &AtomicBool) -> Outcome {
     Ok(())
 }
 
-fn install_tensorrt(report: Report, stop: &AtomicBool) -> Outcome {
-    let folder = config::app_dir().join("tensorrt");
-    fs::create_dir_all(&folder).map_err(text)?;
+fn unpack_tensorrt(folder: &Path, report: Report, stop: &AtomicBool) -> Outcome {
     for (url, sha, files) in WHEELS {
         let wheel = folder.join("wheel.zip");
         download(url, sha, &wheel, report, stop)?;
@@ -238,6 +236,33 @@ fn install_tensorrt(report: Report, stop: &AtomicBool) -> Outcome {
         }
         fs::remove_file(wheel).map_err(text)?;
     }
+    Ok(())
+}
+
+fn install_tensorrt(report: Report, stop: &AtomicBool) -> Outcome {
+    // the folder appears complete or not at all
+    let folder = config::app_dir().join("tensorrt");
+    let part = folder.with_extension("part");
+    let _ = fs::remove_dir_all(&part);
+    fs::create_dir_all(&part).map_err(text)?;
+    let old = folder.with_extension("old");
+    let _ = fs::remove_dir_all(&old);
+    let done = unpack_tensorrt(&part, report, stop).and_then(|()| {
+        // windows cannot remove a loaded library, so the old folder moves away first
+        let moved = fs::rename(&folder, &old).is_ok();
+        if let Err(error) = fs::rename(&part, &folder) {
+            if moved {
+                let _ = fs::rename(&old, &folder);
+            }
+            return Err(text(error));
+        }
+        let _ = fs::remove_dir_all(&old);
+        Ok(())
+    });
+    if done.is_err() {
+        let _ = fs::remove_dir_all(&part);
+    }
+    done?;
     // tensorrt is of no use without a model
     match config::models(Backend::Tensorrt).is_empty() {
         true => install_model(MODELS[0].0, report, stop),
