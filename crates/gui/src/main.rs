@@ -129,38 +129,40 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_light_available(themes::has_light(theme));
     themes::apply(&ui, theme, ui.get_light());
 
-    const SHORTCUTS: [(&str, &str); 29] = [
-        ("Play or pause", "Space, K"),
-        ("Back or forward 1 second", "J, L"),
-        ("Step 1 frame", "Left, Right"),
-        ("Move 1 second", "Shift Left, Right"),
-        ("Step to a keyframe, in lossless cut", "Alt Left, Right"),
-        ("Volume", "Up, Down"),
-        ("Mute", "M"),
-        ("Set start or end", "I, O"),
-        ("Restore full length", "X"),
-        ("Split", "S, Ctrl K, Ctrl B"),
-        ("Save the frame", "Ctrl Shift E"),
-        ("Remove clip", "Delete, Backspace"),
-        ("Undo, redo", "Ctrl Z, Ctrl Y"),
-        ("Zoom the timeline", "Ctrl wheel, Ctrl + and -"),
-        ("Scroll the timeline", "Shift wheel"),
-        ("Track height", "Alt wheel"),
-        ("Zoom the preview", "Wheel"),
-        ("Move the preview", "Drag"),
-        ("Reset the preview", "Double click"),
-        ("Show the original", "Hold `"),
-        ("Stretch", "Shift, drag an edge"),
-        ("Reset the transform", "Double click"),
-        ("Separate video and audio", "Alt, drag"),
-        ("Trim one clip of two", "Alt, drag an edge"),
-        ("Gain and fades", "Right click a clip"),
-        ("Crossfade", "Right click between two clips"),
-        ("Change only one clip of a file", "Alt right click"),
-        ("Select more clips", "Ctrl click"),
-        ("Go to start or end", "Home, End"),
+    const SHORTCUTS: [&[(&str, &str)]; 2] = [
+        &[
+            ("Playback", ""),
+            ("Play or pause", "Space, K"),
+            ("Back or forward 1 second", "J, L"),
+            ("Step 1 frame", "Left, Right"),
+            ("Move 1 second", "Shift Left, Right"),
+            ("Step to a keyframe, in lossless cut", "Alt Left, Right"),
+            ("Volume", "Up, Down"),
+            ("Mute", "M"),
+            ("Go to start or end", "Home, End"),
+            ("Preview", ""),
+            ("Show the original", "Hold `"),
+            ("Stretch", "Shift, drag an edge"),
+            ("Save the frame", "Ctrl Shift E"),
+        ],
+        &[
+            ("Timeline", ""),
+            ("Zoom the timeline", "Ctrl wheel, Ctrl + and -"),
+            ("Scroll the timeline", "Shift wheel"),
+            ("Track height", "Alt wheel"),
+            ("Separate video and audio", "Alt, drag"),
+            ("Trim one clip of two", "Alt, drag an edge"),
+            ("Change only one clip of a file", "Alt right click"),
+            ("Editing", ""),
+            ("Set start or end", "I, O"),
+            ("Restore full length", "X"),
+            ("Split", "S, Ctrl K, Ctrl B"),
+            ("Remove clip", "Delete, Backspace"),
+            ("Undo, redo", "Ctrl Z, Ctrl Y"),
+            ("Select more clips", "Ctrl click"),
+        ],
     ];
-    const CREDITS: [(&str, &str); 12] = [
+    const CREDITS: [&[(&str, &str)]; 1] = [&[
         ("interpolini", "GPL-3.0"),
         ("open-svpflow", "Apache-2.0"),
         ("FFmpeg, x264, x265", "GPL"),
@@ -173,7 +175,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ("smoothie-rs", "GPL-3.0"),
         ("GitHub Primer", "MIT"),
         ("Battle Angel Alita (ctt art)", "Yukito Kishiro"),
-    ];
+    ]];
     // made when it first shows, a window that waits hidden is in the task bar of the desktop
     let made: std::cell::RefCell<Option<Sheet>> = Default::default();
     let weak = ui.as_weak();
@@ -188,14 +190,18 @@ fn main() -> Result<(), slint::PlatformError> {
         let Some(sheet) = made.as_ref() else {
             return;
         };
-        let lines: &[(&str, &str)] = if heading == "Credits" {
+        let columns: &[&[(&str, &str)]] = if heading == "Credits" {
             &CREDITS
         } else {
             &SHORTCUTS
         };
         // slint sorts the fields of the row by name, so the note comes first
-        let rows = lines.iter().map(|line| (line.1.into(), line.0.into()));
-        sheet.set_rows(ModelRc::new(VecModel::from_iter(rows)));
+        let column = |lines: &[(&str, &str)]| {
+            let rows = lines.iter().map(|line| (line.1.into(), line.0.into()));
+            ModelRc::new(VecModel::from_iter(rows))
+        };
+        sheet.set_left(column(columns[0]));
+        sheet.set_right(column(columns.get(1).copied().unwrap_or_default()));
         sheet.set_note(match heading.as_str() {
             "Credits" => "See the licenses folder for all license texts.".into(),
             _ => "".into(),

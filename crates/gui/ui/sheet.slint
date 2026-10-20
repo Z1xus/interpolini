@@ -1,8 +1,35 @@
 import { Theme } from "widgets.slint";
 
+component Column inherits VerticalLayout {
+    in property <[{text: string, note: string}]> lines;
+    alignment: start;
+    for line in root.lines: HorizontalLayout {
+        height: line.note == "" ? 30px : 22px;
+        spacing: 24px;
+        Text {
+            horizontal-stretch: 1;
+            text: line.text;
+            color: line.note == "" ? Theme.faint : Theme.ink;
+            font-size: line.note == "" ? 11px : 12px;
+            vertical-alignment: line.note == "" ? bottom : center;
+            overflow: elide;
+        }
+        Text {
+            text: line.note;
+            color: Theme.faint;
+            font-family: "monospace";
+            font-size: 11px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+}
+
 export component Sheet inherits Window {
     in property <string> heading;
-    in property <[{text: string, note: string}]> rows;
+    // a line without a note is a heading
+    in property <[{text: string, note: string}]> left;
+    in property <[{text: string, note: string}]> right;
     // a line under the rows
     in property <string> note;
     title: root.heading;
@@ -10,30 +37,23 @@ export component Sheet inherits Window {
     background: Theme.rack;
     default-font-size: 12px;
     // one fixed size, so the window cannot be resized
-    width: 400px;
-    height: (root.rows.length + (root.note == "" ? 0 : 1)) * 26px + 24px;
-    VerticalLayout {
+    width: root.right.length > 0 ? 720px : 400px;
+    height: max(first.preferred-height, second.preferred-height) + (root.note == "" ? 0px : 26px) + 24px;
+    body := VerticalLayout {
         padding: 12px;
-        alignment: start;
-        for row in root.rows: HorizontalLayout {
-            height: 26px;
-            spacing: 32px;
-            Text {
-                horizontal-stretch: 1;
-                text: row.text;
-                color: Theme.ink;
-                vertical-alignment: center;
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: root.right.length > 0 ? 32px : 0px;
+            first := Column {
+                lines: root.left;
             }
-            Text {
-                text: row.note;
-                color: Theme.faint;
-                font-family: "monospace";
-                font-size: 11px;
-                vertical-alignment: center;
+            second := Column {
+                visible: root.right.length > 0;
+                lines: root.right;
             }
         }
         if root.note != "": Text {
-            height: 26px;
+            height: 20px;
             text: root.note;
             color: Theme.faint;
             font-size: 11px;
