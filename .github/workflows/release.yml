@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      # the art of the themes is on its own branch
+      # the art is on its own branch, build.rs embeds it
       - uses: actions/checkout@v7.0.1
         with:
           ref: assets

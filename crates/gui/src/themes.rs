@@ -8,8 +8,8 @@ type Palette = [u32; 9];
 struct Art {
     theme: &'static str,
     area: &'static str,
-    mask: &'static str,
-    picture: &'static str,
+    mask: &'static [u8],
+    picture: &'static [u8],
     // 0 is left or top, 1 is right or bottom
     x: f32,
     y: f32,
@@ -22,8 +22,8 @@ const ART: [Art; 2] = [
     Art {
         theme: "ctt",
         area: "timeline",
-        mask: "ctt.mask.png",
-        picture: "ctt.png",
+        mask: include_bytes!(concat!(env!("OUT_DIR"), "/art/themes/ctt.mask.png")),
+        picture: include_bytes!(concat!(env!("OUT_DIR"), "/art/themes/ctt.png")),
         x: 0.5,
         y: 1.0,
         width: 1.0,
@@ -32,8 +32,8 @@ const ART: [Art; 2] = [
     Art {
         theme: "ctt",
         area: "start",
-        mask: "ctt.mask.png",
-        picture: "ctt.png",
+        mask: include_bytes!(concat!(env!("OUT_DIR"), "/art/themes/ctt.mask.png")),
+        picture: include_bytes!(concat!(env!("OUT_DIR"), "/art/themes/ctt.png")),
         x: 1.0,
         y: 1.0,
         width: 0.8,
@@ -155,6 +155,18 @@ pub const THEMES: [(&str, Palette, Option<Palette>); 12] = [
     ),
 ];
 
+fn image(bytes: &[u8]) -> slint::Image {
+    let Ok(decoded) = image::load_from_memory(bytes) else {
+        return slint::Image::default();
+    };
+    let decoded = decoded.into_rgba8();
+    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
+        decoded.as_raw(),
+        decoded.width(),
+        decoded.height(),
+    ))
+}
+
 pub fn has_light(name: &str) -> bool {
     THEMES
         .iter()
@@ -182,8 +194,6 @@ pub fn paint(theme: &Theme<'_>, name: &str, light: bool) {
 pub fn apply(ui: &App, name: &str, light: bool) {
     paint(&ui.global::<Theme>(), name, light);
 
-    let folder = interpolini_core::config::app_dir().join("themes");
-    let image = |file: &str| slint::Image::load_from_path(&folder.join(file)).unwrap_or_default();
     let pieces = ART.iter().filter(|art| art.theme == name);
     let pieces = pieces.map(|art| Piece {
         area: art.area.into(),

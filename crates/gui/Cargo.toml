@@ -9,6 +9,7 @@ build = "build.rs"
 
 [dependencies]
 cpal = "0.18.2"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 interpolini-core = { path = "../core" }
 png = "0.18.1"
 rfd = "0.17.2"

@@ -207,12 +207,6 @@ app() {
     version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
     sed "s/VERSION/$version/" .github/Info.plist > "$stage/interpolini.app/Contents/Info.plist"
   fi
-  # the art of the themes is on the assets branch: ci checks it out into a folder, a local build reads the branch
-  if [[ -d target/art/themes ]]; then
-    cp -r target/art/themes "$bin/"
-  else
-    git archive refs/heads/assets themes | tar -x -C "$bin"
-  fi
   crates "$stage/licenses/crates.txt"
   cp "$FFMPEG_DIR/LICENSE.txt" "$stage/licenses/ffmpeg.txt"
   {

@@ -2436,6 +2436,7 @@ name = "interpolini"
 version = "0.1.20"
 dependencies = [
  "cpal",
+ "image",
  "interpolini-core",
  "png",
  "rfd",
