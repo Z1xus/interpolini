@@ -269,6 +269,10 @@ pub fn repeats(ui: &App, state: &State) -> f32 {
     }
 }
 
+pub fn only(ui: &App) -> bool {
+    !ui.get_copying() && (ui.get_view() == "original" || ui.get_held())
+}
+
 fn shrink(ui: &App, wide: u32) -> u32 {
     match ui.get_resolution().as_str() {
         "Full" => 1,
@@ -312,7 +316,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
             canvas: Default::default(),
             play: false,
             quiet: false,
-            original: false,
+            view: preview::View::Result,
             width: 0,
             size: (0, 0),
             total: 0.0,
@@ -411,7 +415,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
     };
     let ask = |parts: Vec<preview::Stretch>,
                quiet: bool,
-               original: bool,
+               view: preview::View,
                width: i32,
                save: Option<bool>| {
         let request = preview::Show {
@@ -419,7 +423,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
             canvas: base.clip.clone(),
             play: ui.get_playing(),
             quiet,
-            original,
+            view,
             width: (width as u32).min(base.size.0 / shrink),
             size: base.size,
             total: state.seconds(),
@@ -438,7 +442,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
             ask(
                 next.map(Iterator::collect).unwrap_or_default(),
                 true,
-                false,
+                preview::View::Result,
                 0,
                 None,
             );
@@ -454,10 +458,16 @@ pub fn refresh(ui: &App, shared: &Shared) {
         parts.extend(after(part.end).map(|part| stretch(&part, part.start)));
     }
     let (original, width) = wanted(ui);
+    let bare = only(ui);
     ui.set_compared(original);
+    ui.set_bare(bare);
     ui.set_sharp(width);
-    let view = !ui.get_copying() && (ui.get_view() == "original" || ui.get_held());
-    ask(parts, false, original, width, snap.then_some(view));
+    let view = match (original, bare) {
+        (_, true) => preview::View::Original,
+        (true, false) => preview::View::Both,
+        (false, false) => preview::View::Result,
+    };
+    ask(parts, false, view, width, snap.then_some(bare));
 }
 
 thread_local! {

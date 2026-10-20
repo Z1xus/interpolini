@@ -4,7 +4,7 @@ use slint::ComponentHandle;
 
 use crate::settings::save_preferences;
 use crate::state::{Shared, lock, sounds};
-use crate::view::{refresh, timecode, wanted};
+use crate::view::{only, refresh, timecode, wanted};
 use crate::{App, services, sound};
 
 pub fn wire(ui: &App, state: &Shared) {
@@ -113,8 +113,9 @@ pub fn wire(ui: &App, state: &Shared) {
             return;
         };
         let (original, width) = wanted(&ui);
-        let enough =
-            (ui.get_compared() || !original) && (ui.get_playing() || ui.get_sharp() >= width);
+        let enough = (ui.get_compared() || !original)
+            && (!ui.get_bare() || only(&ui))
+            && (ui.get_playing() || ui.get_sharp() >= width);
         if !enough {
             refresh(&ui, &shared);
         }

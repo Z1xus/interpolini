@@ -52,6 +52,13 @@ pub struct Stretch {
     pub end: f64,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum View {
+    Result,
+    Both,
+    Original,
+}
+
 pub struct Show {
     // a playback has all stretches up to a gap, a paused picture has one
     pub parts: Vec<Stretch>,
@@ -59,7 +66,7 @@ pub struct Show {
     pub play: bool,
     // nothing shows, the clips get ready during a gap
     pub quiet: bool,
-    pub original: bool,
+    pub view: View,
     pub width: u32,
     pub size: (u32, u32),
     pub total: f64,
@@ -143,11 +150,20 @@ fn plain(layer: &Layer) -> Config {
     }
 }
 
-fn wanted(layers: &[Layer], original: bool) -> Vec<(&Layer, Config)> {
+fn used(layer: &Layer, original: bool) -> Config {
+    match original {
+        true => plain(layer),
+        false => layer.config.clone(),
+    }
+}
+
+fn wanted(layers: &[Layer], view: View) -> Vec<(&Layer, Config)> {
     let mut wanted = Vec::new();
     for layer in layers {
-        wanted.push((layer, layer.config.clone()));
-        if original && !layer.still {
+        if view != View::Original || layer.still {
+            wanted.push((layer, layer.config.clone()));
+        }
+        if view != View::Result && !layer.still {
             wanted.push((layer, plain(layer)));
         }
     }
@@ -173,11 +189,7 @@ fn compose(
         .rposition(|layer| layer.fills && level(layer) >= 1.0);
     let mut pictures = Vec::new();
     for layer in &layers[top.unwrap_or(0)..] {
-        let config = if original {
-            plain(layer)
-        } else {
-            layer.config.clone()
-        };
+        let config = used(layer, original);
         let source = open.get_mut(&layer.clip, &config);
         if let Some(Ok(picture)) = source.map(|source| source.at(layer.start + moved, cancel)) {
             pictures.push((picture, layer.place, level(layer)));
@@ -186,10 +198,33 @@ fn compose(
     canvas.preview(pictures, width)
 }
 
+fn pair(
+    open: &mut Sources,
+    canvas: &mut Canvas,
+    layers: &[Layer],
+    view: View,
+    moved: f64,
+    width: u32,
+    cancel: &Cancel,
+) -> interpolini_core::Result<(Pixels, Option<Pixels>)> {
+    let original = view == View::Original;
+    let image = pixels(&compose(
+        open, canvas, layers, original, moved, width, cancel,
+    )?);
+    let before = match view {
+        View::Result => None,
+        View::Both => compose(open, canvas, layers, true, moved, width, cancel)
+            .ok()
+            .map(|before| pixels(&before)),
+        View::Original => Some(image.clone()),
+    };
+    Ok((image, before))
+}
+
 // the video on top gives the details and the speed
-fn details(open: &Sources, layers: &[Layer]) -> (String, f64) {
+fn details(open: &Sources, layers: &[Layer], original: bool) -> (String, f64) {
     let mut graphs = layers.iter().rev().filter_map(|layer| {
-        let source = open.get(&layer.clip, &layer.config)?;
+        let source = open.get(&layer.clip, &used(layer, original))?;
         source.graph()
     });
     let Some(graph) = graphs.next() else {
@@ -282,7 +317,7 @@ pub struct Worker {
 struct Play {
     ui: Weak<App>,
     parts: Vec<Stretch>,
-    original: bool,
+    view: View,
     total: f64,
     width: u32,
     ahead: usize,
@@ -296,10 +331,10 @@ fn widest(size: (u32, u32)) -> u32 {
     ((pixels as f64 * wide / high).sqrt() as u32).max(WIDTH)
 }
 
-fn ahead(size: (u32, u32), original: bool) -> usize {
+fn ahead(size: (u32, u32), view: View) -> usize {
     let (wide, high) = (u64::from(size.0.max(1)), u64::from(size.1.max(1)));
     let frame = u64::from(WIDTH) * (u64::from(WIDTH) * high / wide + 1) * 4;
-    let copies = if original { 2 } else { 1 };
+    let copies = if view == View::Both { 2 } else { 1 };
     let room = budget::bytes(Class::Interactive) as u64 / 8 / (frame * copies);
     (room as usize).clamp(2, AHEAD)
 }
@@ -326,7 +361,7 @@ impl Worker {
             canvas: base,
             play,
             quiet,
-            original,
+            view,
             width,
             size,
             total,
@@ -342,14 +377,17 @@ impl Worker {
         if !quiet {
             note(ui, "Rendering…".into());
         }
-        let original = original || save == Some(true);
+        let view = match (view, save) {
+            (View::Result, Some(true)) => View::Both,
+            (view, _) => view,
+        };
         // the old graphs must free the gpu first
         let near = parts.iter().take(2);
-        let near = near.flat_map(|stretch| wanted(&stretch.layers, original));
+        let near = near.flat_map(|stretch| wanted(&stretch.layers, view));
         let mut near: Vec<Key> = near.map(|wanted| key(&wanted)).collect();
         near.append(recent);
         drop(open.split(|clip, config| near.iter().any(|key| key.0 == clip && key.1 == *config)));
-        let shown = wanted(&first.layers, original);
+        let shown = wanted(&first.layers, view);
         *recent = shown.iter().map(key).collect();
         let warn = warn(ui);
         let mut failed = None;
@@ -401,21 +439,20 @@ impl Worker {
         if play {
             return Some(Play {
                 ui: ui.clone(),
-                original,
+                view,
                 total,
                 width: width.min(WIDTH),
-                ahead: ahead(size, original),
+                ahead: ahead(size, view),
                 held: open.keys(),
                 parts,
             });
         }
-        let image = compose(open, canvas, layers, false, 0.0, width, cancel).ok()?;
-        let before = original.then(|| compose(open, canvas, layers, true, 0.0, width, cancel));
-        let (details, fps) = details(open, layers);
+        let (image, before) = pair(open, canvas, layers, view, 0.0, width, cancel).ok()?;
+        let (details, fps) = details(open, layers, view == View::Original);
         let frame = Frame {
             moved: 0.0,
-            image: pixels(&image),
-            before: before.and_then(|before| Some(pixels(&before.ok()?))),
+            image,
+            before,
             details,
             fps,
             step: 1.0 / fps,
@@ -471,7 +508,7 @@ impl Reach {
 fn open_next(
     ui: &Weak<App>,
     parts: &[Stretch],
-    (original, held): (bool, &[Key]),
+    (view, held): (View, &[Key]),
     reach: &Reach,
     stop: &Cancel,
     opened: &Sender<interpolini_core::Result<(Key, Source)>>,
@@ -494,12 +531,12 @@ fn open_next(
         drop(waiting);
         let mut there: Vec<Key> = match index {
             1 => held.to_vec(),
-            _ => wanted(&parts[index - 1].layers, original)
+            _ => wanted(&parts[index - 1].layers, view)
                 .iter()
                 .map(key)
                 .collect(),
         };
-        for wanted in wanted(&stretch.layers, original) {
+        for wanted in wanted(&stretch.layers, view) {
             let key = key(&wanted);
             if there.contains(&key) {
                 continue;
@@ -522,20 +559,20 @@ fn open_next(
 // in order: the host is slow after a picture that is left out
 fn compose_all(
     worker: &Mutex<Worker>,
-    play: (&Weak<App>, &[Stretch], bool, u32),
+    play: (&Weak<App>, &[Stretch], View, u32),
     reach: &Reach,
     stop: &Cancel,
     ready: &Receiver<interpolini_core::Result<(Key, Source)>>,
     pictures: &SyncSender<Frame>,
 ) {
-    let (ui, parts, original, width) = play;
+    let (ui, parts, view, width) = play;
     let mut worker = locked(worker);
     let Worker { open, canvas, .. } = &mut *worker;
     let Some((_, canvas)) = canvas else {
         return;
     };
     'play: for (index, stretch) in parts.iter().enumerate() {
-        let needs = wanted(&stretch.layers, original);
+        let needs = wanted(&stretch.layers, view);
         if index > 0 {
             let missing = |open: &Sources| {
                 let there =
@@ -563,23 +600,20 @@ fn compose_all(
             reach.current.store(index, Ordering::Relaxed);
             reach.notify();
         }
-        let (details, fps) = details(open, &stretch.layers);
+        let (details, fps) = details(open, &stretch.layers, view == View::Original);
         let step = (fps / SHOWN_FPS).round().max(1.0) / fps;
         let layers = &stretch.layers;
         for moved in (0..).map(|index| f64::from(index) * step) {
-            let Ok(image) = compose(open, canvas, layers, false, moved, width, stop) else {
+            let Ok((image, before)) = pair(open, canvas, layers, view, moved, width, stop) else {
                 break 'play;
             };
-            let before = original
-                .then(|| compose(open, canvas, layers, true, moved, width, stop).ok())
-                .flatten();
             let made = (stretch.time + moved).to_bits();
             reach.made.store(made, Ordering::Relaxed);
             reach.notify();
             let sent = pictures.send(Frame {
                 moved: stretch.time + moved - parts[0].time,
-                image: pixels(&image),
-                before: before.map(|before| pixels(&before)),
+                image,
+                before,
                 details: details.clone(),
                 fps,
                 step,
@@ -653,7 +687,7 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
     let Play {
         ui,
         parts,
-        original,
+        view,
         total,
         width,
         ahead,
@@ -672,13 +706,13 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
             Arc::clone(&reach),
             stop.clone(),
         );
-        move || open_next(&ui, &parts, (original, &held), &reach, &stop, &opened)
+        move || open_next(&ui, &parts, (view, &held), &reach, &stop, &opened)
     });
     let composer = work::spawn("composer", {
         let (ui, worker, parts) = (ui.clone(), Arc::clone(worker), Arc::clone(&parts));
         let (reach, stop) = (Arc::clone(&reach), stop.clone());
         move || {
-            let play = (&ui, &parts[..], original, width);
+            let play = (&ui, &parts[..], view, width);
             compose_all(&worker, play, &reach, &stop, &ready, &pictures)
         }
     });
