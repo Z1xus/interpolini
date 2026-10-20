@@ -1,9 +1,11 @@
-import { Action, IconButton, Icons, Slider, Theme } from "widgets.slint";
+import { Action, Dropdown, IconButton, Icons, Slider, Theme } from "widgets.slint";
 
 export component Transport inherits Rectangle {
     in-out property <bool> transform;
     in property <bool> playing;
     in property <bool> copying;
+    in-out property <string> resolution;
+    callback switched();
     callback hop(bool);
     in-out property <float> volume;
     in-out property <bool> muted;
@@ -220,6 +222,20 @@ export component Transport inherits Rectangle {
                 text: "Show in folder";
                 clicked => {
                     root.reveal(root.shot);
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Dropdown {
+                    width: 56px;
+                    height: 24px;
+                    up: true;
+                    label: "Playback resolution";
+                    options: ["Auto", "Full", "1/2", "1/4"];
+                    value <=> root.resolution;
+                    changed => {
+                        root.switched();
+                    }
                 }
             }
             Text {

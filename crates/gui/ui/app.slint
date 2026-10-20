@@ -54,6 +54,7 @@ export component App inherits Window {
     in-out property <bool> held;
     out property <length> drawn: stage.drawn;
     in-out property <bool> compared;
+    in-out property <string> resolution: "Auto";
     in-out property <int> sharp;
     callback viewed();
     in property <string> details;
@@ -411,6 +412,10 @@ export component App inherits Window {
             if root.clips.length > 0: Transport {
                 transform <=> root.transform;
                 copying: root.copying;
+                resolution <=> root.resolution;
+                switched => {
+                    root.switched();
+                }
                 hop(forward) => {
                     root.hop(forward);
                 }

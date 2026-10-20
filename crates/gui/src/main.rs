@@ -100,6 +100,13 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_light(value("light: ") == Some("yes"));
     ui.set_separate(value("separate: ") == Some("yes"));
     ui.set_preview_off(value("preview: ") == Some("no"));
+    let sizes = ["Full", "1/2", "1/4"];
+    ui.set_resolution(
+        value("resolution: ")
+            .filter(|size| sizes.contains(size))
+            .unwrap_or("Auto")
+            .into(),
+    );
     ui.set_updates(value("updates: ") != Some("no"));
     let size = |key: &str| value(key).and_then(|size| size.parse::<f32>().ok());
     ui.set_rail(size("rail: ").unwrap_or(340.0));

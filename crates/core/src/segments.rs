@@ -167,11 +167,19 @@ enum Feed {
 }
 
 // 0 threads is a decoder that has the whole cpu
-fn feed(clip: &Path, threads: usize, gpu: Option<Gpu>, cores: usize) -> Result<(usize, Feed)> {
+fn feed(
+    clip: &Path,
+    threads: usize,
+    gpu: Option<Gpu>,
+    cores: usize,
+    by: u32,
+) -> Result<(usize, Feed)> {
     let feed = match threads {
-        GPU => Feed::Gpu(Ahead::new(Decoder::gpu(clip, gpu.ok_or("no gpu")?)?)),
-        0 => Feed::Cpu(Box::new(Decoder::threaded(clip, cores)?)),
-        threads => Feed::Cpu(Box::new(Decoder::threaded(clip, threads)?)),
+        GPU => Feed::Gpu(Ahead::new(
+            Decoder::gpu(clip, gpu.ok_or("no gpu")?)?.shrink(by),
+        )),
+        0 => Feed::Cpu(Box::new(Decoder::threaded(clip, cores)?.shrink(by))),
+        threads => Feed::Cpu(Box::new(Decoder::threaded(clip, threads)?.shrink(by))),
     };
     Ok((threads, feed))
 }
@@ -229,6 +237,7 @@ struct Lane {
     packers: Arc<Mutex<Vec<Packer>>>,
     from: i32,
     meta: Meta,
+    by: u32,
     cores: usize,
     workers: usize,
 }
@@ -254,13 +263,14 @@ fn run(lane: Lane, packer: &mut Option<Packer>) {
         packers,
         from,
         meta,
+        by,
         cores,
         workers: _,
     } = lane;
     let mut gpu = place
         .as_ref()
         .and_then(|(_, shared, at)| *shared.gpu.get_or_init(|| decoder(&clip, size, *at)));
-    let mut decoder = gpu.and_then(|gpu| feed(&clip, GPU, Some(gpu), cores).ok());
+    let mut decoder = gpu.and_then(|gpu| feed(&clip, GPU, Some(gpu), cores, by).ok());
     let shared = place.as_ref().map(|place| Arc::clone(&place.1));
     let shared = shared.unwrap_or_default();
     loop {
@@ -321,7 +331,7 @@ fn run(lane: Lane, packer: &mut Option<Packer>) {
         for n in frames {
             let picture = |decoder: &mut Option<(usize, Feed)>, threads, gpu| {
                 if decoder.as_ref().is_none_or(|decoder| decoder.0 != threads) {
-                    *decoder = Some(feed(&clip, threads, gpu, cores)?);
+                    *decoder = Some(feed(&clip, threads, gpu, cores, by)?);
                 }
                 let source = |index| match decoder {
                     Some((_, Feed::Cpu(decoder))) => decoder.picture(index),
@@ -477,6 +487,7 @@ impl Segments {
             packers: Arc::clone(&self.packers),
             from: self.from,
             meta: self.meta,
+            by: self.probe.by(),
             cores: self.cores,
             workers,
         }));

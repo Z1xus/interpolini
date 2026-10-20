@@ -140,7 +140,9 @@ impl Graph {
             }
         };
         let follow = Follow::new(cancel);
-        let decoder = Decoder::chosen(clip, threads)?.following(&follow);
+        let decoder = Decoder::chosen(clip, threads)?
+            .following(&follow)
+            .shrink(config.shrink);
         cancel.check()?;
         let meta = decoder.meta();
         let Meta {

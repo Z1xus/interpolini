@@ -295,6 +295,8 @@ pub struct Config {
     pub color: Color,
     pub upscale: Upscale,
     pub output: Output,
+    // the preview divides the picture by this, a render keeps 1
+    pub shrink: u32,
 }
 
 impl Default for Config {
@@ -363,6 +365,7 @@ impl Default for Config {
                 audio: Audio::Mix,
                 options: String::new(),
             },
+            shrink: 1,
         }
     }
 }
@@ -388,6 +391,7 @@ impl Config {
             color,
             upscale,
             output,
+            ..
         } = self;
         vec![
             field("dedup", "enabled", &mut dedup.enabled),

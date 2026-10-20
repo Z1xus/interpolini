@@ -200,6 +200,8 @@ pub struct Decoder {
     ahead: frame::Video,
     after: Option<i32>,
     meta: Meta,
+    full: (u32, u32),
+    by: u32,
     stream: usize,
     gpu: bool,
     drained: bool,
@@ -314,6 +316,25 @@ impl Decoder {
         self
     }
 
+    pub fn shrink(mut self, by: u32) -> Self {
+        if by > 1 {
+            if self.meta.space == color::Space::Unspecified {
+                self.meta.space = match self.meta.bt601() {
+                    true => color::Space::SMPTE170M,
+                    false => color::Space::BT709,
+                };
+            }
+            self.by = by;
+            self.meta.width = ((self.full.0 / by) & !3).max(4);
+            self.meta.height = ((self.full.1 / by) & !3).max(4);
+        }
+        self
+    }
+
+    pub fn by(&self) -> u32 {
+        self.by
+    }
+
     fn start(path: &Path, threads: impl FnOnce(f64) -> usize, gpu: Option<Gpu>) -> Result<Self> {
         ffmpeg_next::init()?;
         // only once, so that it does not end the quiet time of a trial of the gpu
@@ -418,6 +439,8 @@ impl Decoder {
             past: VecDeque::new(),
             ahead: frame::Video::empty(),
             after: None,
+            full: (meta.width, meta.height),
+            by: 1,
             meta,
             stream: index,
             gpu: gpu.is_some(),
@@ -524,12 +547,18 @@ impl Decoder {
 
     fn scaler(&mut self) -> Result<Option<&mut scaling::Context>> {
         let format = self.frame.format();
-        if native(format, self.meta.yuv444) {
+        if native(format, self.meta.yuv444) && self.by == 1 {
             return Ok(None);
         }
         if self.scaler.is_none() {
             let Meta { width, height, .. } = self.meta;
-            self.scaler = Some(self.meta.scaler(format, self.meta.pixel(), width, height)?);
+            let (full_width, full_height) = self.full;
+            let file = Meta {
+                width: full_width,
+                height: full_height,
+                ..self.meta
+            };
+            self.scaler = Some(file.scaler(format, self.meta.pixel(), width, height)?);
         }
         Ok(self.scaler.as_mut())
     }
@@ -537,6 +566,7 @@ impl Decoder {
     fn store(&mut self, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
         let (width, height) = (self.meta.width as usize, self.meta.height as usize);
         let source = unsafe { &*self.frame.as_ptr() };
+        let rows = self.full.1 as i32;
         if let Some(scaler) = self.scaler()? {
             let planes = [planes[0], planes[1], planes[2], std::ptr::null_mut()];
             let strides = [strides[0] as i32, strides[1] as i32, strides[2] as i32, 0];
@@ -546,7 +576,7 @@ impl Decoder {
                     source.data.as_ptr().cast(),
                     source.linesize.as_ptr(),
                     0,
-                    height as i32,
+                    rows,
                     planes.as_ptr(),
                     strides.as_ptr(),
                 );
@@ -647,7 +677,8 @@ impl Decoder {
     pub fn picture(&mut self, n: i32) -> Result<frame::Video> {
         self.with(n, |decoder| {
             let format = decoder.frame.format();
-            if native(format, decoder.meta.yuv444) || format == Pixel::NV12 {
+            let whole = decoder.by == 1;
+            if whole && (native(format, decoder.meta.yuv444) || format == Pixel::NV12) {
                 return Ok(share(&decoder.frame));
             }
             let Meta { width, height, .. } = decoder.meta;

@@ -269,6 +269,21 @@ pub fn repeats(ui: &App, state: &State) -> f32 {
     }
 }
 
+fn shrink(ui: &App, wide: u32) -> u32 {
+    match ui.get_resolution().as_str() {
+        "Full" => 1,
+        "1/2" => 2,
+        "1/4" => 4,
+        _ => {
+            let width = wanted(ui).1 as u32;
+            [4, 2]
+                .into_iter()
+                .find(|by| wide / by >= width)
+                .unwrap_or(1)
+        }
+    }
+}
+
 pub fn wanted(ui: &App) -> (bool, i32) {
     // a copy has no result to compare with
     let original =
@@ -343,6 +358,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
     };
     // a copy shows each video as its file has it
     let copying = ui.get_copying();
+    let shrink = shrink(ui, base.size.0);
     let place = |entry: &crate::state::Entry| match copying {
         true => Place::default(),
         false => entry.place,
@@ -362,9 +378,12 @@ pub fn refresh(ui: &App, shared: &Shared) {
             let (entry, span) = (&state.entries[*index], &spans[*index]);
             preview::Layer {
                 clip: entry.clip.clone(),
-                config: match copying {
-                    true => preview::source(&entry.config),
-                    false => entry.settled(),
+                config: Config {
+                    shrink,
+                    ..match copying {
+                        true => preview::source(&entry.config),
+                        false => entry.settled(),
+                    }
                 },
                 still: entry.still,
                 place: place(entry),
@@ -401,7 +420,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
             play: ui.get_playing(),
             quiet,
             original,
-            width: width as u32,
+            width: (width as u32).min(base.size.0 / shrink),
             size: base.size,
             total: state.seconds(),
             save,

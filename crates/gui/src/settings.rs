@@ -30,6 +30,7 @@ pub fn settings(config: &Config) -> Settings {
         color,
         upscale,
         output,
+        ..
     } = config;
     let look = LOOKS.iter().find(|look| look.0 == interpolation.algorithm);
     Settings {
@@ -90,6 +91,7 @@ pub fn apply(settings: &Settings, config: &mut Config) {
         color,
         upscale,
         output,
+        ..
     } = config;
     let look = LOOKS.iter().find(|look| settings.algorithm == look.1);
     dedup.enabled = settings.dedup;
@@ -206,13 +208,14 @@ pub fn save_preferences(ui: &App) {
         .map(|open| open.0)
         .collect();
     let text = format!(
-        "theme: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nupdates: {}\nvolume: {}\nsections: {}\n",
+        "theme: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\n",
         ui.get_theme(),
         yes(ui.get_light()),
         yes(ui.get_separate()),
         ui.get_rail(),
         ui.get_deck(),
         yes(!ui.get_preview_off()),
+        ui.get_resolution(),
         yes(ui.get_updates()),
         ui.get_volume(),
         open.join(" ")
