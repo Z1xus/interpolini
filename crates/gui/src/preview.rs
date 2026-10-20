@@ -170,6 +170,17 @@ fn wanted(layers: &[Layer], view: View) -> Vec<(&Layer, Config)> {
     wanted
 }
 
+fn idle(layers: &[Layer], view: View, size: (u32, u32)) -> Vec<(&Layer, Config)> {
+    let each = u64::from(size.0.max(1)) * u64::from(size.1.max(1)) * 48;
+    let room = budget::bytes(Class::Interactive) as u64 / 2 / each;
+    let results = layers.iter().filter(|layer| !layer.still);
+    let results = results.map(|layer| (layer, layer.config.clone()));
+    results
+        .filter(|_| view == View::Original)
+        .take(room as usize)
+        .collect()
+}
+
 fn key((layer, config): &(&Layer, Config)) -> Key {
     (layer.clip.clone(), config.clone())
 }
@@ -397,6 +408,7 @@ impl Worker {
         let near = parts.iter().take(2);
         let near = near.flat_map(|stretch| wanted(&stretch.layers, view));
         let mut near: Vec<Key> = near.map(|wanted| key(&wanted)).collect();
+        near.extend(idle(&first.layers, view, size).iter().map(key));
         near.append(recent);
         drop(open.split(|clip, config| near.iter().any(|key| key.0 == clip && key.1 == *config)));
         let shown = wanted(&first.layers, view);
@@ -470,6 +482,11 @@ impl Worker {
             step: 1.0 / fps,
         };
         post(ui, cancel, frame, String::new(), None, false);
+        for (layer, config) in idle(layers, view, size) {
+            open.open(&layer.clip, &config, false, &|_| {}, cancel)
+                .ok()?;
+        }
+        let _ = compose(open, canvas, layers, false, 0.0, width, cancel);
         None
     }
 }
@@ -604,7 +621,9 @@ fn compose_all(
                 }
             }
             let needed = |clip: &Path, config: &Config| {
-                needs
+                let result = |layer: &Layer| layer.clip == clip && layer.config == *config;
+                let idle = view == View::Original && stretch.layers.iter().any(result);
+                idle || needs
                     .iter()
                     .any(|(layer, wanted)| layer.clip == clip && wanted == config)
             };
