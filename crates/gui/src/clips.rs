@@ -151,7 +151,13 @@ pub fn add(
         let mut guard = lock(state);
         record(ui, &mut guard, true);
         let (config, origin) = match local {
-            Some(local) => local,
+            Some(local) => {
+                local
+                    .1
+                    .iter()
+                    .for_each(|entry| crate::view::stale(&entry.path));
+                local
+            }
             None => (guard.draft.config.clone(), guard.draft.origin.clone()),
         };
         let at = place.map_or(guard.seconds(), |place| place.0);

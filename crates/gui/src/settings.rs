@@ -12,7 +12,7 @@ use crate::clips::pick;
 use crate::history::record;
 use crate::project::SESSION;
 use crate::state::{Shared, State, lock};
-use crate::view::{label, models, refresh, select, selected, unsaved};
+use crate::view::{label, models, refresh, select, selected, stale, unsaved};
 use crate::{App, Code, Preferences, Prefs, Settings, themes};
 
 const LOOKS: [(Algorithm, &str); 3] = [
@@ -179,6 +179,7 @@ pub fn save(ui: &App, state: &Shared, name: Option<&str>) {
         }
     };
     let result = std::fs::write(&target.path, entry.config.to_ini());
+    stale(&target.path);
     if result.is_ok() {
         entry.origin = Some(target);
     }
@@ -376,6 +377,7 @@ pub fn wire(ui: &App, state: &Shared) {
             .into_iter()
             .find(|entry| label(entry) == name.as_str())
         {
+            stale(&found.path);
             let loaded = config::read(found);
             entry.config = loaded.config;
             entry.origin = loaded.entry;
@@ -409,6 +411,7 @@ pub fn wire(ui: &App, state: &Shared) {
             return;
         };
         let result = std::fs::remove_file(&origin.path);
+        stale(&origin.path);
         let loaded = config::load(&entry.clip, false, "default");
         entry.config = loaded.config;
         entry.origin = loaded.entry;

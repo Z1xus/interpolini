@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -232,12 +234,25 @@ pub fn models(ui: &App, rife: &mut config::Rife) {
     ui.set_models(ModelRc::new(VecModel::from(models)));
 }
 
+thread_local! {
+    static SAVED: RefCell<HashMap<PathBuf, Config>> = RefCell::default();
+}
+
+// a config file is read once until it is saved, chosen or deleted
+pub fn stale(path: &Path) {
+    SAVED.with_borrow_mut(|saved| saved.remove(path));
+}
+
 pub fn unsaved(entry: &crate::state::Entry) -> bool {
-    let saved = match &entry.origin {
-        Some(origin) => config::read(origin.clone()).config,
-        None => Config::default(),
+    let Some(origin) = &entry.origin else {
+        return Config::default() != entry.config;
     };
-    saved != entry.config
+    SAVED.with_borrow_mut(|saved| {
+        let file = saved
+            .entry(origin.path.clone())
+            .or_insert_with(|| config::read(origin.clone()).config);
+        *file != entry.config
+    })
 }
 
 pub fn load(ui: &App, state: &mut State) {
