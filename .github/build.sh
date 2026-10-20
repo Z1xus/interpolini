@@ -15,32 +15,32 @@ xwin_version=v0.23.1
 xwin_package=c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360
 sdk_version=26.1
 sdk_package=beee7212d265a6d2867d0236cc069314b38d5fb3486a6515734e76fa210c784c
-svpflow_release=nightly-20261017-deadbad10d88
-precotti_release=nightly-20261019-deadbad96e85
+svpflow_release=nightly-20261020-deadbad870be
+precotti_release=nightly-20261020-deadbadeeff9
 inno_version=7.1.0
 inno_package=0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f
 
 case "$target" in
   x86_64-unknown-linux-gnu)
     name=interpolini-linux-x86_64
-    svpflow_package=efe7ef99191378e2477b3d8667fd67d7e0b06dd4fbbe00afd6fd9886b68bec13
-    precotti_package=7cb30f57a11b1ce3ef8faac6bd5dd0b70b55a68febb1f56bd77325b48ae5651b
+    svpflow_package=8f1d9d92f554ee969299f2ff7580eeb9e9a037eb263d0b1bbe953069ba6199a1
+    precotti_package=a29ddfc1c938b88083f0d5170ffc2c1131b59ec5ca7440279980b3d78394f869
     exe='' prefix=lib suffix=.so
     ;;
   x86_64-pc-windows-msvc)
     name=interpolini-windows-x86_64
-    svpflow_package=b40cd85962dd635840b7e66dd4aa258e0e2dd78accea7d2f8923d824a3559ee6
-    precotti_package=eba7bab49115749d36cd4c3818d77361230c5557da374103856a5526e1ed2da1
+    svpflow_package=0d59ffceefdc932903794be8eeab424dafebad52ae295ff7edc53d82de5f900e
+    precotti_package=5d9c2c79fbc768a3d7d9bb75f054722537f35bc6ff8d2aede9903bd32f82be7f
     exe=.exe prefix='' suffix=.dll
     ;;
   aarch64-apple-darwin | x86_64-apple-darwin)
     name=interpolini-macos-arm64
-    svpflow_package=f6996423e6ece32e900230e6ad4a6465821da3cc610cf18ea72c2185ca08d5ab
-    precotti_package=9eb904c3cdcc5ace738e58876d17ec9b337da9c1f7da348d0a595f07f7bedd5b
+    svpflow_package=7e238af144f0370fbf2761e5444203812137886664b6583776b83a89963932ea
+    precotti_package=3240cb33e98dd0256be2acb042063d97e5ea0163ba16250c77a295094377ad13
     if [[ "$target" == x86_64-* ]]; then
       name=interpolini-macos-x86_64
-      svpflow_package=750d9134bc813c0f3591e8cb468087e5232729995ca8e704088bc412c2431b3c
-      precotti_package=d084120bf92098429ef71e67c16aa51be54235d86f56d5d48bf568bc505d2fc4
+      svpflow_package=e56789db578447c420c55cf1b0cae115564cc9aeb137dc88de441dbde2cae076
+      precotti_package=b1c148ea9ff2e767d11f5d5a1072330427fb966ac946f50c7f0605e435f19ec9
     fi
     exe='' prefix=lib suffix=.dylib
     export MACOSX_DEPLOYMENT_TARGET=12.0
