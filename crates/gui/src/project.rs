@@ -826,7 +826,7 @@ fn show_size(window: &ProjectSettings, project: &Project) {
         Some((1920, 1080)) => "1080p",
         Some((2560, 1440)) => "1440p",
         Some((3840, 2160)) => "4K",
-        _ => "",
+        _ => "Custom",
     };
     window.set_wide(wide.into());
     window.set_high(high.into());
@@ -843,7 +843,7 @@ fn show_rate(window: &ProjectSettings, project: &Project) {
         match (project.look.fps, usual) {
             (None, _) => "Auto",
             (_, true) => rate.as_str(),
-            _ => "",
+            _ => "Custom",
         }
         .into(),
     );
@@ -857,7 +857,7 @@ fn show_color(window: &ProjectSettings, project: &Project) {
             "#000000" => "Black",
             "#808080" => "Gray",
             "#ffffff" => "White",
-            _ => "",
+            _ => "Custom",
         }
         .into(),
     );

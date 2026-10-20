@@ -1,4 +1,34 @@
-import { Cell, Field, FormRow, Segment, Theme } from "widgets.slint";
+import { Field, Label, Segment, Theme } from "widgets.slint";
+
+component Line inherits HorizontalLayout {
+    in property <string> label;
+    height: 34px;
+    padding-left: 16px;
+    padding-right: 16px;
+    spacing: 10px;
+    Label {
+        horizontal-stretch: 1;
+        text: root.label;
+    }
+    @children
+}
+
+component Entry inherits VerticalLayout {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <length> wide: 64px;
+    callback accepted();
+    alignment: center;
+    Field {
+        width: root.wide;
+        height: 24px;
+        placeholder: root.placeholder;
+        text <=> root.text;
+        accepted => {
+            root.accepted();
+        }
+    }
+}
 
 export component ProjectSettings inherits Window {
     in-out property <string> wide;
@@ -12,22 +42,21 @@ export component ProjectSettings inherits Window {
     in-out property <string> fit-choice;
     in property <color> swatch: black;
     callback changed();
+    property <int> custom: (root.size-choice == "Custom" ? 1 : 0) + (root.rate-choice == "Custom" ? 1 : 0) + (root.color-choice == "Custom" ? 1 : 0);
     title: "Project settings";
     icon: @image-url("../../../assets/interpolini.svg");
     background: Theme.rack;
     default-font-size: 12px;
-    width: 490px;
-    height: 4 * 28px + 32px;
+    width: 440px;
+    height: (4 + root.custom) * 34px + 20px;
     VerticalLayout {
-        padding: 16px;
+        padding-top: 10px;
+        padding-bottom: 10px;
         alignment: start;
-        FormRow {
+        Line {
             label: "Resolution";
-            label-width: 84px;
             Segment {
-                width: self.preferred-width;
-                alignment: start;
-                options: ["Auto", "720p", "1080p", "1440p", "4K"];
+                options: ["Auto", "720p", "1080p", "1440p", "4K", "Custom"];
                 value <=> root.size-choice;
                 changed(choice) => {
                     if choice == "Auto" {
@@ -46,111 +75,95 @@ export component ProjectSettings inherits Window {
                         root.wide = "3840";
                         root.high = "2160";
                     }
-                    root.changed();
-                }
-            }
-            Cell {
-                Field {
-                    width: 52px;
-                    height: 22px;
-                    placeholder: "Width";
-                    text <=> root.wide;
-                    edited => {
-                        root.size-choice = "";
-                    }
-                    accepted(text) => {
+                    if choice != "Custom" {
                         root.changed();
                     }
+                }
+            }
+        }
+        if root.size-choice == "Custom": Line {
+            label: "";
+            Entry {
+                placeholder: "Width";
+                text <=> root.wide;
+                accepted => {
+                    root.changed();
                 }
             }
             Text {
-                text: "x";
+                text: "×";
                 color: Theme.faint;
                 vertical-alignment: center;
             }
-            Cell {
-                Field {
-                    width: 52px;
-                    height: 22px;
-                    placeholder: "Height";
-                    text <=> root.high;
-                    edited => {
-                        root.size-choice = "";
-                    }
-                    accepted(text) => {
-                        root.changed();
-                    }
-                }
-            }
-        }
-        FormRow {
-            label: "Frame rate";
-            label-width: 84px;
-            Segment {
-                width: self.preferred-width;
-                alignment: start;
-                options: ["Auto", "24", "25", "30", "50", "60"];
-                value <=> root.rate-choice;
-                changed(choice) => {
-                    root.rate = choice == "Auto" ? "" : choice;
+            Entry {
+                placeholder: "Height";
+                text <=> root.high;
+                accepted => {
                     root.changed();
                 }
             }
-            Cell {
-                Field {
-                    width: 52px;
-                    height: 22px;
-                    placeholder: "Auto";
-                    text <=> root.rate;
-                    edited => {
-                        root.rate-choice = "";
-                    }
-                    accepted(text) => {
+        }
+        Line {
+            label: "Frame rate";
+            Segment {
+                options: ["Auto", "24", "25", "30", "50", "60", "Custom"];
+                value <=> root.rate-choice;
+                changed(choice) => {
+                    if choice != "Custom" {
+                        root.rate = choice == "Auto" ? "" : choice;
                         root.changed();
                     }
                 }
             }
         }
-        FormRow {
+        if root.rate-choice == "Custom": Line {
+            label: "";
+            Entry {
+                placeholder: "fps";
+                text <=> root.rate;
+                accepted => {
+                    root.changed();
+                }
+            }
+        }
+        Line {
             label: "Background";
-            label-width: 84px;
-            Cell {
+            Rectangle {
+                width: 18px;
                 Rectangle {
-                    width: 22px;
-                    height: 22px;
+                    y: (parent.height - self.height) / 2;
+                    width: 18px;
+                    height: 18px;
                     background: root.swatch;
                     border-width: 1px;
                     border-color: Theme.seam;
                 }
             }
-            Cell {
-                Field {
-                    width: 76px;
-                    height: 22px;
-                    text <=> root.color-text;
-                    edited => {
-                        root.color-choice = "";
-                    }
-                    accepted(text) => {
+            Segment {
+                options: ["Black", "Gray", "White", "Custom"];
+                value <=> root.color-choice;
+                changed(choice) => {
+                    if choice != "Custom" {
+                        root.color-text = choice == "Black" ? "#000000" : choice == "Gray" ? "#808080" : "#ffffff";
                         root.changed();
                     }
                 }
             }
-            Segment {
-                alignment: start;
-                options: ["Black", "Gray", "White"];
-                value <=> root.color-choice;
-                changed(choice) => {
-                    root.color-text = choice == "Black" ? "#000000" : choice == "Gray" ? "#808080" : "#ffffff";
+        }
+        if root.color-choice == "Custom": Line {
+            label: "";
+            Entry {
+                wide: 84px;
+                placeholder: "#000000";
+                text <=> root.color-text;
+                accepted => {
                     root.changed();
                 }
             }
         }
-        FormRow {
+        Line {
             label: "Import fit";
-            label-width: 84px;
             Segment {
-                alignment: start;
                 options: ["Fit", "Fill", "Original size"];
                 value <=> root.fit-choice;
                 changed(choice) => {
