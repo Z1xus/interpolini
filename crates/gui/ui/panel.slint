@@ -4,7 +4,7 @@ import { Clip, Fact, Sections, Settings } from "types.slint";
 component Curve inherits Rectangle {
     in property <[float]> weights;
     in property <string> summary;
-    height: 76px;
+    height: root.weights.length > 0 ? 76px : 24px;
     HorizontalLayout {
         x: 28px;
         y: 4px;
@@ -21,7 +21,7 @@ component Curve inherits Rectangle {
     }
     Text {
         x: 28px;
-        y: 54px;
+        y: root.weights.length > 0 ? 54px : 4px;
         text: root.summary;
         color: Theme.faint;
         font-size: 11px;

@@ -124,7 +124,9 @@ pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32
             Ok(found) => found,
             Err(error) => {
                 ui.set_failed(true);
-                ui.set_status(format!("Couldn't open the file: {error}").into());
+                let name = clip.file_name().unwrap_or_default().to_string_lossy();
+                ui.set_status(format!("Couldn't open {name}").into());
+                ui.set_log(format!("{}{}: {error}\n", ui.get_log(), clip.display()).into());
                 continue;
             }
         };

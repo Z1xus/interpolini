@@ -162,11 +162,12 @@ pub fn curve(ui: &App, state: &mut State) {
     let weights: Vec<f32> = plan
         .weights
         .iter()
+        .filter(|_| plan.blended)
         .map(|weight| (weight / peak) as f32)
         .collect();
     ui.set_summary(match plan.blended {
         true => format!("{} frames blended", weights.len()).into(),
-        false => "".into(),
+        false => "Nothing to blend".into(),
     });
     ui.set_weights(ModelRc::new(VecModel::from(weights)));
     ui.set_lossless(!rates.is_empty() && rates.iter().all(|fps| lossless(*fps, config)));
