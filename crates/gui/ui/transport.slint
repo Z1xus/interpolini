@@ -12,6 +12,9 @@ export component Transport inherits Rectangle {
     in property <bool> rendering;
     in property <string> details;
     in property <string> speed;
+    in property <string> rate;
+    property <string> full: root.details + (root.speed != "" ? "  |  " + root.speed : "");
+    property <string> part: root.speed != "" ? root.speed : root.rate;
     in property <string> timecode;
     callback step(int, float);
     callback play();
@@ -23,7 +26,7 @@ export component Transport inherits Rectangle {
     height: 36px;
     background: Theme.rack;
     HorizontalLayout {
-        padding-left: 8px;
+        padding-left: 6px;
         padding-right: 12px;
         spacing: 2px;
         VerticalLayout {
@@ -123,7 +126,7 @@ export component Transport inherits Rectangle {
                             }
                         }
                         Slider {
-                            width: 64px;
+                            width: 48px;
                             opacity: root.muted ? 0.4 : 1;
                             step: 0.01;
                             label: "Volume";
@@ -204,6 +207,34 @@ export component Transport inherits Rectangle {
         HorizontalLayout {
             horizontal-stretch: 1;
             spacing: 14px;
+            Rectangle {
+                horizontal-stretch: 1;
+                min-width: 0;
+                preferred-width: 0;
+                max-width: 2000px;
+                whole := Text {
+                    x: parent.width - self.width;
+                    width: self.preferred-width;
+                    height: parent.height;
+                    text: root.full;
+                    visible: self.width <= parent.width;
+                    color: Theme.faint;
+                    font-size: 11px;
+                    font-family: "monospace";
+                    vertical-alignment: center;
+                }
+                Text {
+                    x: parent.width - self.width;
+                    width: self.preferred-width;
+                    height: parent.height;
+                    text: root.part;
+                    visible: !whole.visible && self.width <= parent.width;
+                    color: Theme.faint;
+                    font-size: 11px;
+                    font-family: "monospace";
+                    vertical-alignment: center;
+                }
+            }
             VerticalLayout {
                 alignment: center;
                 Dropdown {
@@ -217,15 +248,6 @@ export component Transport inherits Rectangle {
                         root.switched();
                     }
                 }
-            }
-            Text {
-                min-width: 0;
-                overflow: elide;
-                text: root.details + (root.speed != "" ? "  |  " + root.speed : "");
-                color: Theme.faint;
-                font-size: 11px;
-                font-family: "monospace";
-                vertical-alignment: center;
             }
             Text {
                 text: root.timecode;

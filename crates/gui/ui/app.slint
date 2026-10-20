@@ -61,6 +61,7 @@ export component App inherits Window {
     callback viewed();
     in property <string> details;
     in property <string> speed;
+    in property <string> rate;
     in property <string> timecode;
     in property <[float]> weights;
     in property <string> summary;
@@ -441,6 +442,7 @@ export component App inherits Window {
                 rendering: root.rendering;
                 details: root.details;
                 speed: root.speed;
+                rate: root.rate;
                 timecode: root.timecode;
                 step(frames, seconds) => {
                     root.step(frames, seconds);

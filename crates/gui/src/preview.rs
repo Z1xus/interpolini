@@ -233,10 +233,11 @@ fn details(open: &Sources, layers: &[Layer], original: bool) -> (String, f64) {
     let info = graph.info;
     let fps = info.fps.0 as f64 / info.fps.1 as f64;
     let source = graph.source_fps();
-    let details = format!(
-        "{}x{}  |  {source:.0} to {fps:.0} fps",
-        info.width, info.height
-    );
+    let rate = match source.round() == fps.round() {
+        true => format!("{fps:.0} fps"),
+        false => format!("{source:.0} to {fps:.0} fps"),
+    };
+    let details = format!("{}x{}  |  {rate}", info.width, info.height);
     (details, fps)
 }
 
@@ -300,7 +301,9 @@ fn post(
             Some((size, _)) => format!("{size} fps"),
             None => details,
         };
-        ui.set_details(details.into());
+        let rate = details.split_once("  |  ").map_or("", |(_, rate)| rate);
+        ui.set_rate(rate.into());
+        ui.set_details(details.as_str().into());
         ui.set_tick((1.0 / fps) as f32);
         ui.set_speed(text.into());
         if ui.get_note_kind() == Note::Sticky {
