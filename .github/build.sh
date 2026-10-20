@@ -209,6 +209,7 @@ app() {
   fi
   crates "$stage/licenses/crates.txt"
   cp "$FFMPEG_DIR/LICENSE.txt" "$stage/licenses/ffmpeg.txt"
+  cp crates/core/words/LICENSE "$stage/licenses/bip39.txt"
   {
     echo "Commit: $(git rev-parse HEAD)"
     echo "Target: $target"

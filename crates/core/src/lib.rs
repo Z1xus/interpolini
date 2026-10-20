@@ -40,6 +40,7 @@ mod tensorrt;
 mod timeline;
 mod upscale;
 mod weights;
+pub mod words;
 pub mod work;
 
 pub use about::about;

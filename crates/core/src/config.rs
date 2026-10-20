@@ -6,9 +6,12 @@ use serde::Deserialize;
 
 const STEM: &str = "interpolini";
 
-trait Value {
+pub(crate) trait Value {
     fn read(&mut self, text: &str) -> bool;
     fn write(&self) -> String;
+    fn choices(&self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 macro_rules! named {
@@ -60,6 +63,10 @@ macro_rules! named {
             fn write(&self) -> String {
                 self.name().to_owned()
             }
+
+            fn choices(&self) -> &'static [&'static str] {
+                &[$($text),+]
+            }
         }
     };
 }
@@ -108,6 +115,10 @@ impl Value for &mut bool {
 
     fn write(&self) -> String {
         if **self { "yes" } else { "no" }.to_owned()
+    }
+
+    fn choices(&self) -> &'static [&'static str] {
+        &["no", "yes"]
     }
 }
 
@@ -471,10 +482,11 @@ impl Default for Config {
     }
 }
 
-type Field<'a> = (&'static str, &'static str, Box<dyn Value + 'a>);
+pub(crate) type Field<'a> = (&'static str, &'static str, Box<dyn Value + 'a>);
 
 impl Config {
-    fn fields(&mut self) -> Vec<Field<'_>> {
+    // the words codes count fields in this order, so a new field goes at the end
+    pub(crate) fn fields(&mut self) -> Vec<Field<'_>> {
         fn field<'a>(
             section: &'static str,
             key: &'static str,

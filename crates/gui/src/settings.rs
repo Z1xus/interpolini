@@ -1,19 +1,19 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use interpolini_core::budget;
 use interpolini_core::config::{
     self, Algorithm, Backend, Codec, Config, Container, Effort, Encoder, Engine, Masking, Method,
     Rate, Resolution, Speed, Target, Tuning, Weighting,
 };
-use slint::{ComponentHandle, ModelRc, VecModel};
+use interpolini_core::{budget, words};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::clips::pick;
 use crate::history::record;
 use crate::project::SESSION;
 use crate::state::{Shared, State, lock};
 use crate::view::{label, models, refresh, select, selected, unsaved};
-use crate::{App, Preferences, Prefs, Settings, themes};
+use crate::{App, Code, Preferences, Prefs, Settings, themes};
 
 const LOOKS: [(Algorithm, &str); 3] = [
     (Algorithm::Sharp, "sharp"),
@@ -448,4 +448,138 @@ pub fn wire(ui: &App, state: &Shared) {
             save_preferences(&ui);
         }
     });
+
+    let code = ui.global::<Code>();
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    code.on_share(move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let mut config = lock(&shared).current(&ui).config.clone();
+        let words = words::encode(&config).into_iter().map(Into::into);
+        let code = ui.global::<Code>();
+        code.set_words(ModelRc::new(VecModel::from_iter(words)));
+        let lut = !config.color.lut.is_empty();
+        config.color.lut.clear();
+        let about = match words::changes(&Config::default(), &config).len() {
+            0 => "Same as default".to_owned(),
+            1 => "1 change from default".to_owned(),
+            count => format!("{count} changes from default"),
+        };
+        let about = if lut {
+            about + ", without the LUT"
+        } else {
+            about
+        };
+        code.set_about(about.into());
+    });
+
+    let weak = ui.as_weak();
+    code.on_copy(move || {
+        if let Some(ui) = weak.upgrade() {
+            let words: Vec<String> = ui
+                .global::<Code>()
+                .get_words()
+                .iter()
+                .map(Into::into)
+                .collect();
+            ui.invoke_copy(words.join(" ").into());
+        }
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    code.on_check(move |text| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let (result, valid, bad) = match decoded(&ui, &shared, &text) {
+            _ if text.trim().is_empty() => (String::new(), false, false),
+            Err(words::Wrong::Typing) => (String::new(), false, false),
+            Err(words::Wrong::Short) => ("Not a full code yet".to_owned(), false, false),
+            Err(words::Wrong::Word(word)) => (format!("\"{word}\" isn't a code word"), false, true),
+            Err(words::Wrong::Code) => (
+                "This code doesn't work. Check the words.".to_owned(),
+                false,
+                true,
+            ),
+            Ok((current, config)) => {
+                let changes: Vec<String> = words::changes(&current, &config)
+                    .into_iter()
+                    .map(|(section, key, value)| change(section, key, &value))
+                    .collect();
+                let listed = match changes.len() {
+                    0..=8 => changes.join(", "),
+                    count => format!("{} and {} more", changes[..6].join(", "), count - 6),
+                };
+                let clip = selected(&ui).is_some() && ui.get_scope() == "this clip";
+                let place = if clip { " on this clip" } else { "" };
+                let model = &config.rife.model;
+                let rife = config.interpolation.enabled
+                    && config.interpolation.engine == Engine::Rife
+                    || config.pre.enabled;
+                let missing = rife && !config::models(config.rife.backend).contains(model);
+                let missing = if missing {
+                    format!(". {model} isn't installed.")
+                } else {
+                    String::new()
+                };
+                match changes.len() {
+                    0 => ("Matches your settings".to_owned(), false, false),
+                    _ => (format!("Sets {listed}{place}{missing}"), true, false),
+                }
+            }
+        };
+        let code = ui.global::<Code>();
+        code.set_bad(bad);
+        code.set_result(result.into());
+        code.set_valid(valid);
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    code.on_apply(move |text| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        if let Ok((_, config)) = decoded(&ui, &shared, &text) {
+            record(&ui, &mut lock(&shared), false);
+            ui.set_settings(settings(&config));
+            ui.invoke_changed();
+        }
+    });
+}
+
+fn decoded(ui: &App, state: &Shared, text: &str) -> Result<(Config, Config), words::Wrong> {
+    let mut config = words::decode(text)?;
+    let current = lock(state).current(ui).config.clone();
+    config.color.lut = current.color.lut.clone();
+    Ok((current, config))
+}
+
+fn change(section: &str, key: &str, value: &str) -> String {
+    let on = if value == "yes" { "on" } else { "off" };
+    match (section, key) {
+        ("dedup", "enabled") => format!("dedup {on}"),
+        ("dedup", "repeats") => format!("repeats replaced {value}%"),
+        ("pre-interpolation", "enabled") => format!("pre-interpolation {on}"),
+        ("pre-interpolation", "fps") => format!("pre-interpolation {value} fps"),
+        ("interpolation", "enabled") => format!("interpolation {on}"),
+        ("interpolation", "fps") => format!("interpolation {value} fps"),
+        ("interpolation", "algorithm") => {
+            let look = LOOKS.iter().find(|look| look.0.name() == value);
+            format!("look {}", look.map_or(value, |look| look.1))
+        }
+        ("interpolation", "half size") => format!("half-size analysis {on}"),
+        ("mask", "enabled") => format!("masking {on}"),
+        ("mask", "method") => format!("masking {value}"),
+        ("mask", "peel limit") => format!("peel limit {value}"),
+        ("blending", "enabled") => format!("blending {on}"),
+        ("blending", "fps") => format!("blending {value} fps"),
+        ("color", "enabled") => format!("color {on}"),
+        ("upscale", "enabled") => format!("upscale {on}"),
+        ("upscale", "method") => format!("upscale {value}"),
+        ("output", "size") => format!("size {value} MB"),
+        ("output", "audio") => format!("audio tracks {value}"),
+        ("output", "options") if value.is_empty() => "no options".to_owned(),
+        (_, key) => format!("{key} {value}"),
+    }
 }

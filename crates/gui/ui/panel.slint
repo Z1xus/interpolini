@@ -1,4 +1,4 @@
-import { Action, Dropdown, Field, Label, Note, Number, Row, Scroll, Section, Segment, SliderRow, Switch, Theme } from "widgets.slint";
+import { Action, Button, Dropdown, Field, Label, Note, Number, Row, Scroll, Section, Segment, SliderRow, Switch, Theme } from "widgets.slint";
 import { Clip, Fact, Sections, Settings } from "types.slint";
 
 component Curve inherits Rectangle {
@@ -27,6 +27,18 @@ component Curve inherits Rectangle {
         font-size: 11px;
         font-family: "monospace";
     }
+}
+
+export global Code {
+    in property <[string]> words;
+    in property <string> about;
+    in property <string> result;
+    in property <bool> valid;
+    in property <bool> bad;
+    callback share();
+    callback copy();
+    callback check(string);
+    callback apply(string);
 }
 
 component Need inherits HorizontalLayout {
@@ -86,6 +98,8 @@ export component Panel inherits Rectangle {
     property <bool> naming;
     property <string> name;
     property <bool> confirming;
+    property <string> code;
+    property <bool> copied-code;
     callback changed();
     callback choose-lut();
     callback choose-config(string);
@@ -187,6 +201,145 @@ export component Panel inherits Rectangle {
                         root.delete-config();
                     }
                     root.confirming = !root.confirming;
+                }
+            }
+            Action {
+                text: "Share";
+                active: share.is-open;
+                clicked => {
+                    root.code = "";
+                    root.copied-code = false;
+                    Code.share();
+                    Code.check("");
+                    share.show();
+                }
+            }
+            share := PopupWindow {
+                x: 10px;
+                y: parent.height - 4px;
+                width: root.width - 20px;
+                close-policy: close-on-click-outside;
+                Rectangle {
+                    background: Theme.raised;
+                    border-width: 1px;
+                    border-color: Theme.seam;
+                    drop-shadow-blur: 16px;
+                    drop-shadow-offset-y: 4px;
+                    drop-shadow-color: #00000080;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        Text {
+                            text: "Share code";
+                            color: Theme.faint;
+                            font-size: 11px;
+                        }
+                        // six rows show, a longer code scrolls
+                        Scroll {
+                            height: min(self.content-height, 6 * 34px - 4px);
+                            VerticalLayout {
+                                spacing: 4px;
+                                for row in Math.ceil(Code.words.length / 3): HorizontalLayout {
+                                    spacing: 4px;
+                                    for column in 3: cell := Rectangle {
+                                        property <int> at: row * 3 + column;
+                                        property <bool> used: self.at < Code.words.length;
+                                        horizontal-stretch: 1;
+                                        height: 30px;
+                                        background: self.used ? Theme.void : transparent;
+                                        border-width: 1px;
+                                        border-color: self.used ? Theme.seam : transparent;
+                                        if cell.used: HorizontalLayout {
+                                            padding-left: 8px;
+                                            spacing: 6px;
+                                            Text {
+                                                text: cell.at + 1;
+                                                color: Theme.faint;
+                                                font-size: 10px;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                horizontal-stretch: 1;
+                                                text: Code.words[cell.at];
+                                                color: Theme.ink;
+                                                font-size: 13px;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            height: 26px;
+                            spacing: 8px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: Code.about;
+                                color: Theme.faint;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                            Timer {
+                                interval: 1500ms;
+                                running: root.copied-code;
+                                triggered => {
+                                    root.copied-code = false;
+                                }
+                            }
+                            Button {
+                                text: root.copied-code ? "Copied" : "Copy";
+                                main: true;
+                                clicked => {
+                                    Code.copy();
+                                    root.copied-code = true;
+                                }
+                            }
+                        }
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.seam;
+                        }
+                        Text {
+                            text: "Use a code";
+                            color: Theme.faint;
+                            font-size: 11px;
+                        }
+                        HorizontalLayout {
+                            height: 28px;
+                            spacing: 8px;
+                            Field {
+                                horizontal-stretch: 1;
+                                placeholder: "Paste the words";
+                                text <=> root.code;
+                                commit: false;
+                                edited => {
+                                    Code.check(self.text);
+                                }
+                                accepted(text) => {
+                                    if Code.valid {
+                                        Code.apply(text);
+                                        share.close();
+                                    }
+                                }
+                            }
+                            Button {
+                                text: "Apply";
+                                main: true;
+                                enabled: Code.valid;
+                                clicked => {
+                                    Code.apply(root.code);
+                                    share.close();
+                                }
+                            }
+                        }
+                        if Code.result != "": Text {
+                            text: Code.result;
+                            color: Code.bad ? Theme.accent : Code.valid ? Theme.ok : Theme.faint;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                    }
                 }
             }
         }
