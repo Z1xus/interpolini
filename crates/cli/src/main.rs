@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use interpolini_core::work::Cancel;
-use interpolini_core::{Event, Fade, Job, Place, config, run, sequence, sounds};
+use interpolini_core::{Event, Fade, Job, Place, Setup, config, run, sequence, sounds};
 
 const USAGE: &str = "usage: interpolini-cli [options] <clip>...
 
@@ -309,6 +309,7 @@ fn main() -> ExitCode {
             place: Place::default(),
             fade: Fade::default(),
             hold: 0.0,
+            folder: None,
         });
     }
 
@@ -342,7 +343,13 @@ fn main() -> ExitCode {
         Some(Ok(sounds)) => Some(sounds),
         None => None,
     };
-    run(&jobs, timeline.as_deref(), &sink, &cancel);
+    run(
+        &jobs,
+        timeline.as_deref(),
+        &Setup::default(),
+        &sink,
+        &cancel,
+    );
     // a double click opens a console that closes with the program
     if picked && std::io::stdin().is_terminal() {
         eprintln!("{}", line('*', "press enter to close"));

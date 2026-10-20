@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use ffmpeg_next::format;
 
 use crate::audio::{BITRATE, Mixer, Sound};
-use crate::compose::{Canvas, Place, Source};
+use crate::compose::{Canvas, Place, Setup, Source};
 use crate::config::{self, Audio, Config, Target};
 use crate::copy::copy;
 use crate::decode::{Meta, Probe, probe};
@@ -37,14 +37,22 @@ pub struct Job {
     pub fade: Fade,
     // the seconds that the last picture stays after the end
     pub hold: f64,
+    pub folder: Option<PathBuf>,
 }
 
-fn target(clip: &Path, extension: &str) -> PathBuf {
-    let stem = clip.file_stem().unwrap_or_default().to_string_lossy();
+fn target(job: &Job, extension: &str) -> PathBuf {
+    let stem = job.clip.file_stem().unwrap_or_default().to_string_lossy();
+    let named = |name: String| match &job.folder {
+        Some(folder) => folder.join(name),
+        None => job.clip.with_file_name(name),
+    };
+    if let Some(folder) = &job.folder {
+        let _ = std::fs::create_dir_all(folder);
+    }
     (1..)
         .map(|attempt| match attempt {
-            1 => clip.with_file_name(format!("{stem} - interpolini.{extension}")),
-            _ => clip.with_file_name(format!("{stem} - interpolini ({attempt}).{extension}")),
+            1 => named(format!("{stem} - interpolini.{extension}")),
+            _ => named(format!("{stem} - interpolini ({attempt}).{extension}")),
         })
         .find(|path| !path.exists())
         .unwrap_or_default()
@@ -113,9 +121,21 @@ fn budget(megabytes: f64, seconds: f64, lanes: usize) -> Result<usize> {
     }
 }
 
+// ntsc rates divide by 1001
+fn rational(fps: f64) -> (i64, i64) {
+    let ntsc = [24, 30, 60, 120]
+        .into_iter()
+        .find(|rate| (fps - f64::from(*rate) * 1000.0 / 1001.0).abs() < 0.01);
+    match ntsc {
+        Some(rate) => (i64::from(rate) * 1000, 1001),
+        None => ((fps * 1000.0).round() as i64, 1000),
+    }
+}
+
 fn encode(
     jobs: &[(usize, &Job)],
     timeline: Option<&[Sound]>,
+    setup: &Setup,
     output: &Path,
     share: f64,
     sink: Sink,
@@ -159,7 +179,13 @@ fn encode(
     let base = base(jobs)?;
     let first = open(base)?;
     let graph = first.graph().ok_or("the timeline has no video")?;
-    let (fps, mut meta) = (graph.info.fps, graph.meta);
+    let (mut fps, mut meta) = (graph.info.fps, graph.meta);
+    if let Some(size) = setup.size {
+        (meta.width, meta.height) = size;
+    }
+    if let Some(rate) = setup.fps {
+        fps = rational(rate);
+    }
     // one video in 4:4:4 makes the whole file 4:4:4, an image follows the videos
     meta.yuv444 = probes.iter().any(|probe| probe.yuv444 && !probe.still);
     let rate = fps.0 as f64 / fps.1 as f64;
@@ -230,7 +256,7 @@ fn encode(
     if timeline.is_none() {
         encoder.begin(&job.clip, start, &job.muted)?;
     }
-    let mut canvas = Canvas::new(meta);
+    let mut canvas = Canvas::new(meta, setup.background);
     let size = canvas.size();
     let mut sources = BTreeMap::from([(base, first)]);
 
@@ -330,6 +356,7 @@ fn encode(
 fn fit(
     jobs: &[(usize, &Job)],
     timeline: Option<&[Sound]>,
+    setup: &Setup,
     output: &Path,
     sink: Sink,
     cancel: &Cancel,
@@ -346,7 +373,7 @@ fn fit(
     let mut share = 1.0;
     for attempt in 0.. {
         let jobs = if attempt < 2 { jobs } else { &software };
-        encode(jobs, timeline, output, share, sink, cancel)?;
+        encode(jobs, timeline, setup, output, share, sink, cancel)?;
         let size = std::fs::metadata(output)?.len() as f64;
         if config.target == Target::Quality || size <= limit || cancel.stopped() {
             break;
@@ -378,17 +405,24 @@ fn render(job: &Job, clip: usize, output: &Path, sink: Sink, cancel: &Cancel) ->
     if job.copy || (untouched && lossless(probe(&job.clip)?.fps, &job.config)) {
         return copy(job, output, sink, cancel);
     }
-    fit(&[(clip, job)], None, output, sink, cancel)
+    fit(
+        &[(clip, job)],
+        None,
+        &Setup::default(),
+        output,
+        sink,
+        cancel,
+    )
 }
 
 // with join, all clips go into one file in their order
-pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, sink: Sink, cancel: &Cancel) {
+pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, setup: &Setup, sink: Sink, cancel: &Cancel) {
     if let Some(sounds) = timeline.filter(|_| !jobs.is_empty()) {
         let started = Instant::now();
         let all: Vec<(usize, &Job)> = jobs.iter().enumerate().collect();
         let named = &jobs[base(&all).unwrap_or(0)];
-        let output = target(&named.clip, named.config.output.container.name());
-        match fit(&all, Some(sounds), &output, sink, cancel) {
+        let output = target(named, named.config.output.container.name());
+        match fit(&all, Some(sounds), setup, &output, sink, cancel) {
             Ok(()) => {
                 let seconds = started.elapsed().as_secs_f32();
                 for clip in 0..jobs.len() {
@@ -417,8 +451,8 @@ pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, sink: Sink, cancel: &Cancel
         // a copy stays in the container of its source, which can hold its streams
         let source = job.clip.extension().unwrap_or_default().to_string_lossy();
         let output = match job.copy {
-            true => target(&job.clip, &source),
-            false => target(&job.clip, job.config.output.container.name()),
+            true => target(job, &source),
+            false => target(job, job.config.output.container.name()),
         };
         match render(job, clip, &output, sink, cancel) {
             Ok(()) => {

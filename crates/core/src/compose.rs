@@ -93,6 +93,13 @@ impl Place {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Setup {
+    pub size: Option<(u32, u32)>,
+    pub fps: Option<f64>,
+    pub background: [u8; 3],
+}
+
 pub struct Picture(pub(crate) frame::Video);
 
 // a second handle to the same pixels
@@ -138,6 +145,23 @@ impl Source {
             Kind::Clip(graph) => graph.made(n, cancel),
             Kind::Still(picture) => Ok(Made::Picture(share(picture))),
         }
+    }
+
+    pub fn flat(rgba: &[u8], from: (u32, u32), size: (u32, u32)) -> Result<Self> {
+        let mut source = frame::Video::new(Pixel::RGBA, from.0, from.1);
+        let stride = source.stride(0);
+        for (row, line) in rgba.chunks_exact(from.0 as usize * 4).enumerate() {
+            source.data_mut(0)[row * stride..][..line.len()].copy_from_slice(line);
+        }
+        let mut picture = frame::Video::new(Pixel::YUV420P, size.0 & !1, size.1 & !1);
+        let raw = unsafe { &mut *picture.as_mut_ptr() };
+        raw.colorspace = ffi::AVColorSpace::AVCOL_SPC_BT709;
+        raw.color_range = ffi::AVColorRange::AVCOL_RANGE_MPEG;
+        Scaler::new().run(&mut picture, &source)?;
+        Ok(Self {
+            kind: Kind::Still(picture),
+            held: None,
+        })
     }
 
     pub fn at(&mut self, seconds: f64, cancel: &Cancel) -> Result<Picture> {
@@ -321,18 +345,28 @@ fn paste(canvas: &mut frame::Video, picture: &frame::Video, left: u32, top: u32,
 
 pub struct Canvas {
     meta: Meta,
+    background: [u8; 3],
     scalers: Vec<Scaler>,
     shown: Scaler,
 }
 
 impl Canvas {
-    pub fn open(clip: &Path) -> Result<Self> {
-        Ok(Self::new(Decoder::open(clip)?.meta()))
+    pub fn open(clip: &Path, setup: &Setup) -> Result<Self> {
+        let mut meta = match Decoder::open(clip) {
+            Ok(decoder) => decoder.meta(),
+            Err(_) if !clip.exists() => Meta::standard(),
+            Err(error) => return Err(error),
+        };
+        if let Some(size) = setup.size {
+            (meta.width, meta.height) = size;
+        }
+        Ok(Self::new(meta, setup.background))
     }
 
-    pub(crate) fn new(meta: Meta) -> Self {
+    pub(crate) fn new(meta: Meta, background: [u8; 3]) -> Self {
         Self {
             meta,
+            background,
             scalers: Vec::new(),
             shown: Scaler::new(),
         }
@@ -344,12 +378,10 @@ impl Canvas {
 
     pub(crate) fn black(&self, size: (u32, u32)) -> frame::Video {
         let mut picture = frame::Video::new(self.meta.pixel(), size.0, size.1);
-        // 16 is black in the limited range, and 128 is no color
-        picture
-            .data_mut(0)
-            .fill(if self.meta.full() { 0 } else { 16 });
-        picture.data_mut(1).fill(128);
-        picture.data_mut(2).fill(128);
+        let [y, u, v] = self.meta.yuv(self.background);
+        picture.data_mut(0).fill(y);
+        picture.data_mut(1).fill(u);
+        picture.data_mut(2).fill(v);
         self.meta.tag(&mut picture);
         picture
     }

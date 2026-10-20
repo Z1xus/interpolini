@@ -10,7 +10,7 @@ use interpolini_core::budget::{self, Class};
 use interpolini_core::config::Config;
 use interpolini_core::work::{self, Cancel};
 use interpolini_core::{
-    Canvas, Event, Fade, Graph, Image, Job, Place, Sound, Source, Sources, estimate, peaks,
+    Canvas, Event, Fade, Graph, Image, Job, Place, Setup, Sound, Source, Sources, estimate, peaks,
 };
 use slint::{Model, Rgba8Pixel, SharedPixelBuffer, Weak};
 
@@ -432,7 +432,7 @@ impl Worker {
             return None;
         }
         if !matches!(canvas, Some(canvas) if canvas.0 == base) {
-            *canvas = match Canvas::open(&base) {
+            *canvas = match Canvas::open(&base, &Setup::default()) {
                 Ok(canvas) => Some((base, canvas)),
                 Err(error) => {
                     failed = Some(error);
@@ -511,7 +511,7 @@ pub fn measure(Measure { jobs, sounds, done }: Measure) {
     services::with(|services| {
         services.measure.submit(move |cancel| {
             let mut open = Sources::default();
-            let bytes = estimate(&jobs, sounds.as_deref(), cancel, &mut open).ok();
+            let bytes = estimate(&jobs, sounds.as_deref(), &Setup::default(), cancel, &mut open).ok();
             if !cancel.stopped() {
                 done(bytes);
             }

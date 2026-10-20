@@ -2,7 +2,7 @@ use ffmpeg_next::{ffi, format, frame};
 
 use crate::Result;
 use crate::audio::{BITRATE, Mixer, Sound};
-use crate::compose::{Canvas, Source, Sources};
+use crate::compose::{Canvas, Setup, Source, Sources};
 use crate::config::Audio;
 use crate::decode::{Meta, probe};
 use crate::encode::{Encoder, GOP, Plan};
@@ -69,6 +69,7 @@ fn sample(source: &mut Source, job: &Job, time: f64, end: f64, cancel: &Cancel) 
 pub fn estimate(
     jobs: &[Job],
     timeline: Option<&[Sound]>,
+    setup: &Setup,
     cancel: &Cancel,
     sources: &mut Sources,
 ) -> Result<u64> {
@@ -111,14 +112,21 @@ pub fn estimate(
         }
         sources.with(&job.clip, &job.config, cancel, |source| {
             let graph = source.graph().ok_or("the clip has no video")?;
+            let grow = setup
+                .size
+                .filter(|_| timeline.is_some())
+                .map_or(1.0, |size| {
+                    f64::from(size.0) * f64::from(size.1)
+                        / (f64::from(graph.meta.width) * f64::from(graph.meta.height)).max(1.0)
+                });
             if timeline.is_some() && black == 0.0 && end > shown {
                 let (meta, fps) = (graph.meta, graph.info.fps);
-                let picture = Canvas::new(meta).black((meta.width, meta.height));
-                black = encode(meta, fps, job, |_| Ok(picture.clone()), cancel)?;
+                let picture = Canvas::new(meta, [0; 3]).black((meta.width, meta.height));
+                black = grow * encode(meta, fps, job, |_| Ok(picture.clone()), cancel)?;
             }
             let start = job.cut.map_or(0.0, |cut| cut.0);
             for time in spots {
-                rates.push(sample(source, job, start + time, start + length, cancel)?);
+                rates.push(grow * sample(source, job, start + time, start + length, cancel)?);
             }
             Ok(())
         })?;

@@ -35,6 +35,22 @@ pub struct Meta {
 }
 
 impl Meta {
+    pub(crate) fn standard() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            fps: (30, 1),
+            frames: 0,
+            space: color::Space::BT709,
+            range: color::Range::MPEG,
+            primaries: color::Primaries::BT709,
+            transfer: color::TransferCharacteristic::BT709,
+            still: false,
+            codec: "",
+            yuv444: false,
+        }
+    }
+
     pub fn pixel(&self) -> Pixel {
         match self.yuv444 {
             true => Pixel::YUV444P,
@@ -69,6 +85,24 @@ impl Meta {
             false => ffi::AVColorRange::AVCOL_RANGE_MPEG,
         };
         (space, range)
+    }
+
+    pub fn yuv(&self, color: [u8; 3]) -> [u8; 3] {
+        let (kr, kb) = if self.bt601() {
+            (0.299, 0.114)
+        } else {
+            (0.2126, 0.0722)
+        };
+        let [r, g, b] = color.map(|value| f32::from(value) / 255.0);
+        let y = kr * r + (1.0 - kr - kb) * g + kb * b;
+        let (u, v) = ((b - y) / (2.0 * (1.0 - kb)), (r - y) / (2.0 * (1.0 - kr)));
+        // the limited range starts at 16, and its spans are 219 and 224
+        let (offset, luma, chroma) = if self.full() {
+            (0.0, 255.0, 255.0)
+        } else {
+            (16.0, 219.0, 224.0)
+        };
+        [offset + y * luma, 128.0 + u * chroma, 128.0 + v * chroma].map(|value| value.round() as u8)
     }
 
     // marks a picture with the color of this clip, so a scaler can bring it to another clip

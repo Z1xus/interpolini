@@ -44,7 +44,7 @@ pub mod work;
 
 pub use about::about;
 pub use audio::{Mixer, RATE, Sound, peaks};
-pub use compose::{Canvas, Picture, Place, Source, Sources};
+pub use compose::{Canvas, Picture, Place, Setup, Source, Sources};
 pub use copy::keyframes;
 pub use decode::{Probe, probe};
 pub use dedup::{differences, repeats, threshold};

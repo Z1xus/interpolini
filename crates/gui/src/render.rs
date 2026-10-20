@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use interpolini_core::{Event, Fade, Job, Sound, budget, run};
+use interpolini_core::{Event, Fade, Job, Setup, Sound, budget, run};
 use slint::{ComponentHandle, Model};
 
 use crate::state::{Shared, State, lock, sounds};
@@ -116,6 +116,7 @@ pub fn jobs(state: &State, separate: bool, copy: bool) -> (Vec<Job>, Vec<Sound>,
             } else {
                 span.picture()
             },
+            folder: None,
             hold: if faded {
                 (end - entry.seconds).max(0.0)
             } else {
@@ -190,7 +191,13 @@ fn render(ui: &App, shared: &Shared) {
                     ui.upgrade_in_event_loop(move |ui| show(&ui, event, row, lead, current, count));
             };
             budget::render(true);
-            run(&jobs, (!separate).then_some(&sounds[..]), &sink, cancel);
+            run(
+                &jobs,
+                (!separate).then_some(&sounds[..]),
+                &Setup::default(),
+                &sink,
+                cancel,
+            );
             budget::render(false);
             let _ = ui.upgrade_in_event_loop(move |ui| {
                 ui.set_rendering(false);

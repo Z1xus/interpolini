@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
@@ -19,6 +19,7 @@ pub struct Machine {
 
 static PREVIEW: AtomicBool = AtomicBool::new(false);
 static RENDER: AtomicBool = AtomicBool::new(false);
+static LIMIT: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     static CLASS: Cell<Class> = const { Cell::new(Class::Render) };
@@ -135,10 +136,17 @@ pub fn host() -> usize {
     }
 }
 
+pub fn limit(bytes: usize) {
+    LIMIT.store(bytes, Ordering::Relaxed);
+}
+
 pub fn bytes(class: Class) -> usize {
     let ram = machine().ram;
     match class {
-        Class::Interactive => ram / 8,
+        Class::Interactive => match LIMIT.load(Ordering::Relaxed) {
+            0 => ram / 8,
+            bytes => bytes.min(ram / 8),
+        },
         Class::Background => ram / 16,
         Class::Render => (ram / 4).min(8 << 30),
     }
