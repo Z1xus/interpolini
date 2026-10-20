@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 use crate::components::{Outcome, Report, download, hex, present, restart, text};
-use crate::{App, Change, Theme, Update, services, themes};
+use crate::{App, Change, System, Theme, Update, services, themes};
 
 const RELEASES: &str = "https://github.com/Z1xus/interpolini/releases";
 const DAMAGED: &str = "The download is damaged. Try again.";
@@ -345,6 +345,8 @@ pub fn wire(ui: &App) {
             });
         });
         themes::paint(&window.global::<Theme>(), &ui.get_theme(), ui.get_light());
+        let smooth = ui.global::<System>().get_smooth_scroll();
+        window.global::<System>().set_smooth_scroll(smooth);
         present(window);
     });
 }
