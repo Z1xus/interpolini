@@ -1,5 +1,5 @@
-import { MenuItem, MenuPanel, MenuTitle, Theme } from "widgets.slint";
-import { Family, Clip } from "types.slint";
+import { Icon, Icons, MenuHeading, MenuItem, MenuPanel, MenuSeparator, MenuTitle, Theme } from "widgets.slint";
+import { Family, Clip, Recent } from "types.slint";
 
 export component Menu inherits Rectangle {
     in property <[Clip]> clips;
@@ -8,8 +8,9 @@ export component Menu inherits Rectangle {
     in-out property <string> theme;
     in-out property <bool> light;
     in property <bool> light-available;
-    in property <bool> components;
-    in-out property <bool> updates;
+    in property <bool> projects;
+    in property <[Recent]> recent;
+    in property <int> missing;
     in-out property <bool> separate;
     in property <bool> copying;
     callback add-clips();
@@ -25,9 +26,20 @@ export component Menu inherits Rectangle {
     callback preview-theme(string);
     callback save-preferences();
     callback show-sheet(string);
-    callback show-components();
+    callback new-project();
+    callback open-project();
+    callback open-recent(string);
+    callback clear-recent();
+    callback save-project();
+    callback save-project-as();
+    callback show-project();
+    callback locate();
+    callback show-preferences();
     callback quit();
     callback save-frame();
+
+    property <bool> sub;
+    property <length> sub-y;
 
     height: 26px;
     background: Theme.rack;
@@ -37,30 +49,178 @@ export component Menu inherits Rectangle {
         MenuTitle {
             text: "File";
             clicked => {
+                root.sub = false;
                 file.show();
             }
             file := PopupWindow {
+                x: 0px;
                 y: parent.height;
-                MenuPanel {
-                    VerticalLayout {
+                close-policy: close-on-click-outside;
+                width: files.preferred-width + column.preferred-width;
+                height: files.preferred-height;
+                TouchArea {
+                    x: file-panel.width;
+                    clicked => {
+                        file.close();
+                    }
+                }
+                file-panel := MenuPanel {
+                    x: 0px;
+                    y: 0px;
+                    width: files.preferred-width;
+                    height: files.preferred-height;
+                    keys := FocusScope {
+                        key-pressed(event) => {
+                            if event.text == Key.Escape && root.sub {
+                                root.sub = false;
+                                return accept;
+                            }
+                            return reject;
+                        }
+                    }
+                    files := VerticalLayout {
                         padding: 4px;
+                        if root.projects: MenuItem {
+                            text: "New project";
+                            hint: "Ctrl N";
+                            enabled: !root.rendering;
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub = false;
+                                }
+                            }
+                            clicked => {
+                                file.close();
+                                root.new-project();
+                            }
+                        }
+                        if root.projects: MenuItem {
+                            text: "Open project…";
+                            hint: "Ctrl O";
+                            enabled: !root.rendering;
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub = false;
+                                }
+                            }
+                            clicked => {
+                                file.close();
+                                root.open-project();
+                            }
+                        }
+                        if root.projects: MenuItem {
+                            text: "Open recent";
+                            enabled: root.recent.length > 0 && !root.rendering;
+                            clicked => {
+                                root.sub-y = self.absolute-position.y - file-panel.absolute-position.y;
+                                root.sub = true;
+                                keys.focus();
+                            }
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub-y = self.absolute-position.y - file-panel.absolute-position.y;
+                                    root.sub = true;
+                                    keys.focus();
+                                }
+                            }
+                            Icon {
+                                x: parent.width - self.width - 8px;
+                                y: (parent.height - self.height) / 2;
+                                width: 10px;
+                                height: 10px;
+                                shape: Icons.chevron;
+                                color: Theme.faint;
+                            }
+                        }
+                        if root.projects: MenuSeparator { }
+                        if root.projects: MenuItem {
+                            text: "Save";
+                            hint: "Ctrl S";
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub = false;
+                                }
+                            }
+                            clicked => {
+                                file.close();
+                                root.save-project();
+                            }
+                        }
+                        if root.projects: MenuItem {
+                            text: "Save as…";
+                            hint: "Ctrl Shift S";
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub = false;
+                                }
+                            }
+                            clicked => {
+                                file.close();
+                                root.save-project-as();
+                            }
+                        }
+                        if root.projects: MenuSeparator { }
+                        if root.projects: MenuItem {
+                            text: "Project settings…";
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub = false;
+                                }
+                            }
+                            clicked => {
+                                file.close();
+                                root.show-project();
+                            }
+                        }
+                        if root.projects: MenuSeparator { }
                         MenuItem {
                             text: "Import…";
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub = false;
+                                }
+                            }
                             clicked => {
+                                file.close();
                                 root.add-clips();
                             }
                         }
                         MenuItem {
                             text: "Close all clips";
                             enabled: root.clips.length > 0 && !root.rendering;
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub = false;
+                                }
+                            }
                             clicked => {
+                                file.close();
                                 root.close-clips();
+                            }
+                        }
+                        MenuItem {
+                            text: "Locate missing files…";
+                            enabled: root.missing > 0;
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub = false;
+                                }
+                            }
+                            clicked => {
+                                file.close();
+                                root.locate();
                             }
                         }
                         MenuItem {
                             text: root.rendering ? "Stop" : "Render";
                             enabled: root.clips.length > 0;
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub = false;
+                                }
+                            }
                             clicked => {
+                                file.close();
                                 if root.rendering {
                                     root.cancel();
                                 } else {
@@ -72,7 +232,13 @@ export component Menu inherits Rectangle {
                             text: "Save frame";
                             hint: "Ctrl Shift E";
                             enabled: root.clips.length > 0 && !root.rendering;
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub = false;
+                                }
+                            }
                             clicked => {
+                                file.close();
                                 root.save-frame();
                             }
                         }
@@ -80,29 +246,69 @@ export component Menu inherits Rectangle {
                             text: "Export each clip separately";
                             checked: root.separate || root.copying;
                             enabled: !root.copying;
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub = false;
+                                }
+                            }
                             clicked => {
+                                file.close();
                                 root.separate = !root.separate;
                                 root.save-preferences();
                             }
                         }
-                        if root.components: MenuItem {
-                            text: "Components…";
-                            clicked => {
-                                root.show-components();
-                            }
-                        }
+                        MenuSeparator { }
                         MenuItem {
-                            text: "Check for updates";
-                            checked: root.updates;
+                            text: "Settings…";
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub = false;
+                                }
+                            }
                             clicked => {
-                                root.updates = !root.updates;
-                                root.save-preferences();
+                                file.close();
+                                root.show-preferences();
                             }
                         }
                         MenuItem {
                             text: "Quit";
+                            hovered(inside) => {
+                                if inside {
+                                    root.sub = false;
+                                }
+                            }
                             clicked => {
+                                file.close();
                                 root.quit();
+                            }
+                        }
+                    }
+                    Rectangle {
+                        visible: root.sub;
+                        x: file-panel.width;
+                        y: root.sub-y;
+                        width: column.preferred-width;
+                        height: column.preferred-height;
+                        MenuPanel {
+                            column := VerticalLayout {
+                                padding: 4px;
+                                for item in root.recent: MenuItem {
+                                    min-width: 260px;
+                                    text: item.name;
+                                    hint: item.folder;
+                                    clicked => {
+                                        file.close();
+                                        root.open-recent(item.path);
+                                    }
+                                }
+                                MenuSeparator { }
+                                MenuItem {
+                                    text: "Clear list";
+                                    clicked => {
+                                        file.close();
+                                        root.clear-recent();
+                                    }
+                                }
                             }
                         }
                     }
@@ -170,13 +376,8 @@ export component Menu inherits Rectangle {
                 MenuPanel {
                     VerticalLayout {
                         padding: 4px;
-                        Text {
-                            height: 22px;
-                            text: "   THEME";
-                            color: Theme.faint;
-                            font-size: 10px;
-                            letter-spacing: 1px;
-                            vertical-alignment: center;
+                        MenuHeading {
+                            text: "THEME";
                         }
                         MenuItem {
                             text: "Light mode";

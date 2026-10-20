@@ -36,11 +36,10 @@ export component Sheet inherits Window {
     icon: @image-url("../../../assets/interpolini.svg");
     background: Theme.rack;
     default-font-size: 12px;
-    // one fixed size, so the window cannot be resized
     width: root.right.length > 0 ? 720px : 400px;
-    height: max(first.preferred-height, second.preferred-height) + (root.note == "" ? 0px : 26px) + 24px;
+    height: max(first.preferred-height, second.preferred-height) + (root.note == "" ? 0px : 26px) + 32px;
     body := VerticalLayout {
-        padding: 12px;
+        padding: 16px;
         spacing: 6px;
         HorizontalLayout {
             spacing: root.right.length > 0 ? 32px : 0px;
@@ -48,7 +47,7 @@ export component Sheet inherits Window {
                 lines: root.left;
             }
             second := Column {
-                visible: root.right.length > 0;
+                max-width: root.right.length > 0 ? 100000px : 0px;
                 lines: root.right;
             }
         }

@@ -1,41 +1,39 @@
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use interpolini_core::config::{self, Config, Ease};
 use interpolini_core::{Fade, Part, Place, Placed, Sound, parts};
+use serde::{Deserialize, Serialize};
 
 use crate::App;
+use crate::project::Project;
 use crate::view::selected;
 
 // an image is secretly a 1 hour video :)
 pub const STILL: f64 = 3600.0;
 
-#[derive(Clone)]
-pub struct Entry {
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Saved {
     pub id: u64,
     // clips from one file share a link, and move and cut as one
     pub link: u64,
-    pub clip: PathBuf,
     // the audio track of the file that this clip plays, a video clip has none
     pub audio: Option<usize>,
     pub streams: usize,
+    // the file keeps each config once
+    #[serde(skip)]
     pub config: Config,
     pub origin: Option<config::Entry>,
     pub cut: (f32, f32),
     pub seconds: f64,
     pub fps: f64,
-    // the times of the keyframes of a video, empty until they are read
-    pub keys: Arc<[f64]>,
     pub at: f64,
     pub track: usize,
     pub still: bool,
-    // how much its sampled frames differ from the frames before them, empty until it is measured
-    pub differences: Arc<[Vec<f32>]>,
-    // the cut that the differences were measured for
-    pub measured: Option<(f32, f32)>,
     pub size: (u32, u32),
-    pub bytes: u64,
     pub place: Place,
     // decibels
     pub gain: f32,
@@ -45,6 +43,59 @@ pub struct Entry {
     pub cross: f32,
     // the curves of the fade in, of the fade out and of the crossfade
     pub eases: [Ease; 3],
+}
+
+impl Default for Saved {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            link: 0,
+            audio: None,
+            streams: 0,
+            config: Config::default(),
+            origin: None,
+            cut: (0.0, 1.0),
+            seconds: 0.0,
+            fps: 0.0,
+            at: 0.0,
+            track: 0,
+            still: false,
+            size: (0, 0),
+            place: Place::default(),
+            gain: 0.0,
+            fade: (0.0, 0.0),
+            cross: 0.0,
+            eases: [Ease::Linear; 3],
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Entry {
+    pub saved: Saved,
+    pub clip: PathBuf,
+    // the times of the keyframes of a video, empty until they are read
+    pub keys: Arc<[f64]>,
+    // how much its sampled frames differ from the frames before them, empty until it is measured
+    pub differences: Arc<[Vec<f32>]>,
+    // the cut that the differences were measured for
+    pub measured: Option<(f32, f32)>,
+    pub missing: bool,
+    pub bytes: u64,
+}
+
+impl Deref for Entry {
+    type Target = Saved;
+
+    fn deref(&self) -> &Saved {
+        &self.saved
+    }
+}
+
+impl DerefMut for Entry {
+    fn deref_mut(&mut self) -> &mut Saved {
+        &mut self.saved
+    }
 }
 
 impl Entry {
@@ -80,10 +131,20 @@ impl Span {
 }
 
 // the heights of the tracks, and for an audio track if it is muted
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Tracks {
     pub video: Vec<f32>,
     pub audio: Vec<(f32, bool)>,
+}
+
+impl Default for Tracks {
+    fn default() -> Self {
+        Self {
+            video: vec![64.0],
+            audio: vec![(36.0, false)],
+        }
+    }
 }
 
 pub struct State {
@@ -91,6 +152,7 @@ pub struct State {
     // the settings that show without a clip, new clips start with them
     pub draft: Entry,
     pub tracks: Tracks,
+    pub project: Project,
     pub ids: u64,
     // the clip that the pointer holds to move it, where on the clip it holds, and where the clip was
     pub held: Option<(u64, f64, f64)>,
@@ -353,7 +415,8 @@ pub fn sounds(state: &State) -> Vec<Sound> {
             .get(entry.track)
             .is_some_and(|track| track.1)
     };
-    let audio = |(_, entry): &(usize, &Entry)| entry.audio.is_some() && heard(entry);
+    let audio =
+        |(_, entry): &(usize, &Entry)| entry.audio.is_some() && !entry.missing && heard(entry);
     let spans = state.spans();
     let sound = |(index, entry): (usize, &Entry)| {
         let span = &spans[index];

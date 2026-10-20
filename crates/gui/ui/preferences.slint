@@ -1,0 +1,193 @@
+import { Action, Button, Cell, Dropdown, FormRow, Segment, Switch, Tabs, Theme } from "widgets.slint";
+import { Download, Parts } from "components.slint";
+import { Prefs } from "types.slint";
+
+export component Preferences inherits Window {
+    in-out property <Prefs> prefs;
+    in property <[string]> presets;
+    in-out property <bool> updates;
+    in-out property <string> section: "General";
+    callback changed();
+    callback choose-folder();
+    in-out property <string> ffmpeg <=> parts.ffmpeg;
+    in property <bool> ffmpeg-system <=> parts.ffmpeg-system;
+    in property <bool> ffmpeg-fixed <=> parts.ffmpeg-fixed;
+    in property <bool> restart <=> parts.restart;
+    in property <bool> tensorrt <=> parts.tensorrt;
+    in property <bool> tensorrt-shipped <=> parts.tensorrt-shipped;
+    in property <string> tensorrt-need <=> parts.tensorrt-need;
+    in property <[Download]> vulkan <=> parts.vulkan;
+    in property <[Download]> models <=> parts.models;
+    in-out property <string> backend <=> parts.backend;
+    in property <string> busy <=> parts.busy;
+    in property <string> progress <=> parts.progress;
+    in property <float> fraction <=> parts.fraction;
+    in property <string> note <=> parts.note;
+    callback use-ffmpeg <=> parts.use-ffmpeg;
+    callback choose-ffmpeg <=> parts.choose-ffmpeg;
+    callback restart-app <=> parts.restart-app;
+    callback install <=> parts.install;
+    callback remove <=> parts.remove;
+    callback cancel <=> parts.cancel;
+    title: "Settings";
+    icon: @image-url("../../../assets/interpolini.svg");
+    background: Theme.rack;
+    default-font-size: 12px;
+    width: 520px;
+    // the Components tab with every row it can show
+    height: 41px + 402px;
+    VerticalLayout {
+        alignment: start;
+        Rectangle {
+            height: 40px;
+            Tabs {
+                x: 16px;
+                width: self.preferred-width;
+                options: ["General", "Projects", "Components"];
+                value <=> root.section;
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.seam;
+        }
+        if root.section == "General": VerticalLayout {
+            padding-top: 8px;
+            padding-bottom: 8px;
+            FormRow {
+                label: "Check for updates";
+                Cell {
+                    Switch {
+                        checked: root.updates;
+                        toggled(on) => {
+                            root.updates = on;
+                            root.changed();
+                        }
+                    }
+                }
+            }
+            FormRow {
+                label: "Default preset";
+                Cell {
+                    Dropdown {
+                        width: 160px;
+                        height: 22px;
+                        options: root.presets;
+                        value: root.prefs.preset;
+                        changed(choice) => {
+                            root.prefs.preset = choice;
+                            root.changed();
+                        }
+                    }
+                }
+            }
+            FormRow {
+                label: "Render folder";
+                Cell {
+                    Button {
+                        height: 22px;
+                        text: "Choose…";
+                        clicked => {
+                            root.choose-folder();
+                        }
+                    }
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.prefs.folder == "" ? "Next to the clip" : root.prefs.folder;
+                    color: Theme.muted;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if root.prefs.folder != "": Action {
+                    text: "Reset";
+                    clicked => {
+                        root.prefs.folder = "";
+                        root.changed();
+                    }
+                }
+            }
+            FormRow {
+                label: "Preview memory";
+                Segment {
+                    alignment: start;
+                    options: ["Auto", "512 MB", "1 GB", "2 GB", "4 GB"];
+                    value: root.prefs.memory == 0 ? "Auto" : root.prefs.memory == 512 ? "512 MB" : "\{root.prefs.memory / 1024} GB";
+                    changed(choice) => {
+                        root.prefs.memory = choice == "Auto" ? 0 : choice == "512 MB" ? 512 : choice.to-float() * 1024;
+                        root.changed();
+                    }
+                }
+            }
+            FormRow {
+                label: "Confirm removal";
+                Cell {
+                    Switch {
+                        checked: root.prefs.confirm-delete;
+                        toggled(on) => {
+                            root.prefs.confirm-delete = on;
+                            root.changed();
+                        }
+                    }
+                }
+            }
+        }
+        if root.section == "Projects": VerticalLayout {
+            padding-top: 8px;
+            padding-bottom: 8px;
+            FormRow {
+                label: "Projects";
+                Cell {
+                    Switch {
+                        checked: root.prefs.projects;
+                        toggled(on) => {
+                            root.prefs.projects = on;
+                            root.changed();
+                        }
+                    }
+                }
+            }
+            FormRow {
+                label: "Autosave";
+                Segment {
+                    alignment: start;
+                    options: ["Off", "1 min", "5 min", "10 min"];
+                    value: root.prefs.autosave == 0 ? "Off" : "\{root.prefs.autosave} min";
+                    changed(choice) => {
+                        root.prefs.autosave = choice == "Off" ? 0 : choice.to-float();
+                        root.changed();
+                    }
+                }
+            }
+            FormRow {
+                label: "Ask to save";
+                Cell {
+                    Switch {
+                        checked: root.prefs.ask-save;
+                        toggled(on) => {
+                            root.prefs.ask-save = on;
+                            root.changed();
+                        }
+                    }
+                }
+            }
+            FormRow {
+                label: "Reopen last project";
+                Cell {
+                    Switch {
+                        checked: root.prefs.reopen;
+                        toggled(on) => {
+                            root.prefs.reopen = on;
+                            root.changed();
+                        }
+                    }
+                }
+            }
+        }
+        parts := Parts {
+            visible: root.section == "Components";
+            height: root.section == "Components" ? self.preferred-height : 0px;
+        }
+    }
+}

@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use std::time::Duration;
 
-use interpolini_core::Job;
 use interpolini_core::config::Target;
 use interpolini_core::work::Cancel;
+use interpolini_core::{Job, Setup};
 use slint::ComponentHandle;
 
 use crate::render::jobs;
@@ -16,6 +16,7 @@ use crate::{App, preview, services};
 struct Asked {
     jobs: Vec<Job>,
     separate: bool,
+    setup: Setup,
     stop: Cancel,
     done: bool,
 }
@@ -47,12 +48,14 @@ fn measure(ui: &App, shared: &Shared) {
         });
     }
     let separate = ui.get_separate();
-    let (mut jobs, sounds, ..) = jobs(&state, separate, false);
+    let (mut jobs, sounds, ..) = jobs(&state, separate, false, crate::render::folder(ui));
     if state.current(ui).config.output.target == Target::Size || ui.get_lossless() {
         jobs.clear();
     }
+    let setup = state.project.setup();
     drop(state);
-    let same = |asked: &Asked| asked.jobs == jobs && asked.separate == separate;
+    let same =
+        |asked: &Asked| asked.jobs == jobs && asked.separate == separate && asked.setup == setup;
     if ASKED.with_borrow(|asked| asked.as_ref().is_some_and(same)) {
         return;
     }
@@ -60,6 +63,7 @@ fn measure(ui: &App, shared: &Shared) {
     ASKED.set(Some(Asked {
         jobs: jobs.clone(),
         separate,
+        setup,
         stop: stop.clone(),
         done: jobs.is_empty(),
     }));
@@ -83,6 +87,7 @@ fn measure(ui: &App, shared: &Shared) {
     preview::measure(preview::Measure {
         jobs,
         sounds: (!separate).then_some(sounds),
+        setup,
         done: Box::new(done),
     });
 }

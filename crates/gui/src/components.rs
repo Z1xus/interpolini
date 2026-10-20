@@ -13,7 +13,7 @@ use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
 #[cfg(target_os = "linux")]
 use crate::icon;
-use crate::{App, Components, Download, Theme, ffmpeg, services, themes};
+use crate::{App, Download, Preferences, Theme, ffmpeg, services, settings, themes};
 
 const MODELS_URL: &str =
     "https://github.com/AmusementClub/vs-mlrt/releases/download/external-models/";
@@ -305,7 +305,7 @@ fn show(ui: &App) {
     ui.set_tensorrt_fixable(support.fixable());
 }
 
-fn refresh(ui: &App, window: &Components) {
+fn refresh(ui: &App, window: &Preferences) {
     let list = |backend: Backend, names: Vec<&str>| {
         let have = config::models(backend);
         let models = names.into_iter().map(|name| Download {
@@ -329,7 +329,7 @@ fn refresh(ui: &App, window: &Components) {
     ui.invoke_select(ui.get_selected());
 }
 
-pub fn finish(ui: &App, window: &Components, outcome: Outcome) {
+pub fn finish(ui: &App, window: &Preferences, outcome: Outcome) {
     window.set_busy("".into());
     window.set_note(outcome.err().unwrap_or_default().into());
     refresh(ui, window);
@@ -337,30 +337,60 @@ pub fn finish(ui: &App, window: &Components, outcome: Outcome) {
 
 pub fn wire(ui: &App) {
     ffmpeg::clean();
-    ui.set_components(true);
     let weak = ui.as_weak();
     services::task("support", move |_| {
         interpolini_core::support();
         let _ = weak.upgrade_in_event_loop(|ui| show(&ui));
     });
     // the window is made when it first shows: a window that waits hidden is in the task bar of the desktop
-    let made: Rc<RefCell<Option<Components>>> = Rc::default();
-    let weak = ui.as_weak();
-    ui.on_show_components(move || {
-        let Some(ui) = weak.upgrade() else {
-            return;
+    let made: Rc<RefCell<Option<Preferences>>> = Rc::default();
+    for section in [None, Some("Components")] {
+        let (weak, made) = (ui.as_weak(), Rc::clone(&made));
+        let open = move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let mut made = made.borrow_mut();
+            let make = || {
+                Preferences::new()
+                    .ok()
+                    .inspect(|window| attach(&ui, window))
+            };
+            let Some(window) = reuse(&mut made, make) else {
+                return;
+            };
+            if let Some(section) = section {
+                window.set_section(section.into());
+            }
+            window.set_prefs(ui.get_prefs());
+            window.set_updates(ui.get_updates());
+            window.set_presets(settings::presets());
+            refresh(&ui, window);
+            themes::paint(&window.global::<Theme>(), &ui.get_theme(), ui.get_light());
+            present(window);
         };
-        let mut made = made.borrow_mut();
-        if made.is_none() {
-            *made = Components::new().ok().inspect(|window| attach(&ui, window));
+        match section {
+            Some(_) => ui.on_show_components(open),
+            None => ui.on_show_preferences(open),
         }
-        let Some(window) = made.as_ref() else {
-            return;
-        };
-        refresh(&ui, window);
-        themes::paint(&window.global::<Theme>(), &ui.get_theme(), ui.get_light());
-        present(window);
-    });
+    }
+}
+
+// slint keeps the size limits of a hidden window, and wayland makes the window again
+pub fn reuse<T: ComponentHandle>(
+    made: &mut Option<T>,
+    make: impl FnOnce() -> Option<T>,
+) -> Option<&T> {
+    if made
+        .as_ref()
+        .is_some_and(|window| !window.window().is_visible())
+    {
+        *made = None;
+    }
+    if made.is_none() {
+        *made = make();
+    }
+    made.as_ref()
 }
 
 pub fn present(window: &(impl ComponentHandle + 'static)) {
@@ -385,7 +415,7 @@ pub fn restart(ui: &App) {
 }
 
 // the things that the window can do
-fn attach(ui: &App, window: &Components) {
+fn attach(ui: &App, window: &Preferences) {
     let job = {
         let (weak, shown) = (ui.as_weak(), window.as_weak());
         move |name: String| {
@@ -431,9 +461,10 @@ fn attach(ui: &App, window: &Components) {
     });
 
     ffmpeg::wire(ui, window);
+    settings::attach(ui, window);
 }
 
-fn done(ui: Weak<App>, window: Weak<Components>, outcome: Outcome) {
+fn done(ui: Weak<App>, window: Weak<Preferences>, outcome: Outcome) {
     let _ = ui.upgrade_in_event_loop(move |ui| {
         if let Some(window) = window.upgrade() {
             finish(&ui, &window, outcome);

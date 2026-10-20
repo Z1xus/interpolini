@@ -7,11 +7,13 @@ mod drop;
 mod edit;
 mod estimate;
 mod ffmpeg;
+mod file;
 mod history;
 #[cfg(target_os = "linux")]
 mod icon;
 mod playback;
 mod preview;
+mod project;
 mod render;
 mod services;
 mod settings;
@@ -29,7 +31,7 @@ use interpolini_core::config::{self, Config};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 use settings::{preferences, settings, smooth_scroll};
-use state::{Entry, Shared, State, Tracks, lock};
+use state::{Entry, Saved, Shared, State, Tracks, lock};
 use view::{fit, select};
 
 slint::include_modules!();
@@ -95,6 +97,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_themes(ModelRc::new(VecModel::from_iter(families)));
     let saved = std::fs::read_to_string(preferences()).unwrap_or_default();
     let value = |key: &str| saved.lines().find_map(|line| line.strip_prefix(key));
+    settings::load_prefs(&ui, &saved);
     let theme = value("theme: ").unwrap_or("interpolini");
     ui.set_theme(theme.into());
     ui.set_light(value("light: ") == Some("yes"));
@@ -131,6 +134,9 @@ fn main() -> Result<(), slint::PlatformError> {
 
     const SHORTCUTS: [&[(&str, &str)]; 2] = [
         &[
+            ("Project", ""),
+            ("New, open", "Ctrl N, O"),
+            ("Save, save as", "Ctrl S, Ctrl Shift S"),
             ("Playback", ""),
             ("Play or pause", "Space, K"),
             ("Back or forward 1 second", "J, L"),
@@ -184,10 +190,7 @@ fn main() -> Result<(), slint::PlatformError> {
             return;
         };
         let mut made = made.borrow_mut();
-        if made.is_none() {
-            *made = Sheet::new().ok();
-        }
-        let Some(sheet) = made.as_ref() else {
+        let Some(sheet) = components::reuse(&mut made, || Sheet::new().ok()) else {
             return;
         };
         let columns: &[&[(&str, &str)]] = if heading == "Credits" {
@@ -218,38 +221,19 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     services::start(ui.as_weak());
-    let loaded = config::load(std::path::Path::new(""), true, "default");
+    let loaded = config::load(std::path::Path::new(""), true, &ui.get_prefs().preset);
     let state: Shared = Arc::new(Mutex::new(State {
         entries: Vec::new(),
         draft: Entry {
-            id: 0,
-            link: 0,
-            clip: PathBuf::new(),
-            audio: None,
-            streams: 0,
-            config: loaded.config,
-            origin: loaded.entry,
-            cut: (0.0, 1.0),
-            seconds: 0.0,
-            fps: 0.0,
-            keys: Arc::default(),
-            at: 0.0,
-            track: 0,
-            still: false,
-            differences: std::sync::Arc::default(),
-            measured: None,
-            size: (0, 0),
-            bytes: 0,
-            place: interpolini_core::Place::default(),
-            gain: 0.0,
-            fade: (0.0, 0.0),
-            cross: 0.0,
-            eases: [config::Ease::Linear; 3],
+            saved: Saved {
+                config: loaded.config,
+                origin: loaded.entry,
+                ..Saved::default()
+            },
+            ..Entry::default()
         },
-        tracks: Tracks {
-            video: vec![64.0],
-            audio: vec![(36.0, false)],
-        },
+        tracks: Tracks::default(),
+        project: project::Project::default(),
         snap: false,
         ids: 0,
         held: None,
@@ -284,20 +268,30 @@ fn main() -> Result<(), slint::PlatformError> {
     settings::wire(&ui, &state);
     history::wire(&ui, &state);
     render::wire(&ui, &state);
+    project::wire(&ui, &state);
+    project::recents(&ui);
+    project::schedule(&ui, &state);
 
-    // a render that runs and settings that are not saved stop the close, and the window asks about them
-    let question = |ui: &App| match (ui.get_rendering(), ui.get_unsaved()) {
-        (true, _) => "render",
-        (false, true) => "save",
-        (false, false) => "",
+    const QUESTIONS: [&str; 3] = ["render", "save", "project"];
+    let question = |ui: &App, from: usize| {
+        let open = |name: &str| match name {
+            "render" => ui.get_rendering(),
+            "save" => ui.get_unsaved(),
+            _ => project::asks(ui),
+        };
+        QUESTIONS[from..]
+            .iter()
+            .find(|name| open(name))
+            .copied()
+            .unwrap_or("")
     };
     let weak = ui.as_weak();
     let close = move || {
-        let ask = weak.upgrade().map_or("", |ui| {
-            ui.set_closing(question(&ui).into());
-            question(&ui)
-        });
-        ask.is_empty()
+        weak.upgrade().is_none_or(|ui| {
+            let ask = question(&ui, 0);
+            project::question(&ui, ask);
+            ask.is_empty()
+        })
     };
     let ask = close.clone();
     ui.window().on_close_requested(move || match ask() {
@@ -314,19 +308,31 @@ fn main() -> Result<(), slint::PlatformError> {
         let Some(ui) = weak.upgrade() else {
             return;
         };
-        // after the question about the render comes the one about the settings
-        if ui.get_closing() == "render" && ui.get_unsaved() {
-            ui.set_closing("save".into());
-            return;
-        }
-        if save {
-            settings::save(&ui, &shared, None);
-            if ui.get_failed() {
-                ui.set_closing("".into());
-                return;
+        let current = ui.get_closing();
+        let Some(at) = QUESTIONS.iter().position(|name| current == *name) else {
+            return project::answer(&ui, &shared, save);
+        };
+        match current.as_str() {
+            "save" if save => {
+                settings::save(&ui, &shared, None);
+                if ui.get_failed() {
+                    ui.set_closing("".into());
+                    return;
+                }
             }
+            "project" if save => {
+                ui.set_closing("".into());
+                let quit = |_: &App, _: &Shared| drop(slint::quit_event_loop());
+                return project::save(&ui, &shared, Some(Box::new(quit)));
+            }
+            "project" => project::clear(&ui, &shared),
+            _ => {}
         }
-        let _ = slint::quit_event_loop();
+        let next = question(&ui, at + 1);
+        project::question(&ui, next);
+        if next.is_empty() {
+            let _ = slint::quit_event_loop();
+        }
     });
 
     ui.on_reveal(|path| reveal(PathBuf::from(path.as_str())));
@@ -354,11 +360,24 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
 
-    let clips = std::env::args().skip(1).map(PathBuf::from).collect();
+    let arguments: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
+    let (projects, clips): (Vec<_>, Vec<_>) = arguments
+        .into_iter()
+        .partition(|path| project::is_project(path));
+    let last = project::SESSION.with_borrow(|session| session.recent.first().cloned());
+    if let Some(first) = projects.first() {
+        project::open_path(&ui, &state, first.clone());
+    } else if !clips.is_empty() || !project::recover(&ui) {
+        let again = last.filter(|_| ui.get_prefs().reopen && ui.get_prefs().projects);
+        if let Some(last) = again.filter(|last| clips.is_empty() && last.exists()) {
+            project::open_path(&ui, &state, last);
+        }
+    }
     clips::import(ui.as_weak(), Arc::clone(&state), clips, None);
     #[cfg(target_os = "linux")]
     clips::drops(&ui, &state);
     ui.run()?;
+    project::finish(&ui, &state);
 
     // the gpu libraries crash when the process exits under a running job
     let left = services::stop();

@@ -8,7 +8,7 @@ use interpolini_core::config;
 use slint::ComponentHandle;
 
 use crate::components::{Outcome, finish, restart, text};
-use crate::{App, Components, services};
+use crate::{App, Preferences, services};
 
 const FFMPEG: [&str; 5] = ["avcodec", "avformat", "avutil", "swscale", "swresample"];
 static LOADED: OnceLock<&str> = OnceLock::new();
@@ -123,7 +123,7 @@ fn use_ffmpeg(choice: &str, folder: Option<&Path>) -> Outcome {
     Ok(())
 }
 
-pub fn show(window: &Components) {
+pub fn show(window: &Preferences) {
     window.set_ffmpeg(ffmpeg().into());
     let bundled = libraries(&config::app_dir()).len() + libraries(&kept()).len();
     // only linux has an ffmpeg of the system that fits
@@ -131,7 +131,7 @@ pub fn show(window: &Components) {
     window.set_ffmpeg_fixed(bundled == 0);
 }
 
-pub fn wire(ui: &App, window: &Components) {
+pub fn wire(ui: &App, window: &Preferences) {
     let weak = ui.as_weak();
     window.on_restart_app(move || {
         if let Some(ui) = weak.upgrade() {

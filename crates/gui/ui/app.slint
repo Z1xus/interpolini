@@ -1,16 +1,17 @@
 import { Button, Piece, Theme, Tip } from "widgets.slint";
-import { Clip, Fact, Family, Ghost, Lane, Note, Sections, Settings } from "types.slint";
+import { Clip, Fact, Family, Ghost, Lane, Note, Prefs, Recent, Sections, Settings } from "types.slint";
 import { Timeline } from "timeline.slint";
 import { Menu } from "menu.slint";
 import { Panel } from "panel.slint";
 import { Sheet } from "sheet.slint";
-import { Components } from "components.slint";
+import { Preferences } from "preferences.slint";
+import { ProjectSettings } from "project.slint";
 import { Change, Update } from "update.slint";
 import { Stage } from "stage.slint";
 import { Transport } from "transport.slint";
 
-export { Change, Sheet, Components, Update }
-export { Note }
+export { Change, Sheet, Preferences, ProjectSettings, Update }
+export { Note, Recent }
 export { Piece, System, Theme } from "widgets.slint";
 
 export component App inherits Window {
@@ -76,8 +77,13 @@ export component App inherits Window {
     in property <[string]> models;
     in property <string> tensorrt-need;
     in property <bool> tensorrt-fixable;
-    // the window for the optional parts exists on this system
-    in property <bool> components;
+    in-out property <Prefs> prefs: { projects: false, autosave: 5, ask-save: true };
+    in property <bool> modified;
+    in property <string> project-name: "Untitled";
+    in property <[Recent]> recent;
+    in property <int> missing;
+    in property <string> note-action;
+    in property <string> ask;
     in-out property <bool> updates: true;
     in-out property <string> update;
     callback show-update();
@@ -113,6 +119,7 @@ export component App inherits Window {
 
     callback add-clips();
     callback remove-clip();
+    callback replace-clip(int);
     callback close-clips();
     callback step(int, float);
     callback hop(bool);
@@ -166,8 +173,18 @@ export component App inherits Window {
     callback preview-theme(string);
     callback quit();
     callback save-preferences();
+    callback prefs-changed();
     callback show-sheet(string);
+    callback show-preferences();
     callback show-components();
+    callback new-project();
+    callback open-project();
+    callback open-recent(string);
+    callback clear-recent();
+    callback save-project();
+    callback save-project-as();
+    callback show-project();
+    callback locate();
     callback save-frame();
     callback switched();
     in-out property <bool> flash;
@@ -199,7 +216,7 @@ export component App inherits Window {
         height: 0;
     }
 
-    title: "interpolini";
+    title: root.prefs.projects ? root.project-name + (root.modified ? " *" : "") + " - interpolini" : "interpolini";
     icon: @image-url("../../../assets/interpolini.svg");
     background: Theme.void;
     preferred-width: 1280px;
@@ -221,6 +238,22 @@ export component App inherits Window {
             }
             if event.modifiers.control && (event.text == "=" || event.text == "+" || event.text == "-") {
                 timeline.magnify(event.text == "-" ? 0.8 : 1.25);
+                return accept;
+            }
+            if root.prefs.projects && event.modifiers.control && event.text == "n" {
+                root.new-project();
+                return accept;
+            }
+            if root.prefs.projects && event.modifiers.control && event.text == "o" {
+                root.open-project();
+                return accept;
+            }
+            if root.prefs.projects && event.modifiers.control && (event.text == "s" || event.text == "S") {
+                if event.modifiers.shift || event.text == "S" {
+                    root.save-project-as();
+                } else {
+                    root.save-project();
+                }
                 return accept;
             }
             if event.modifiers.control && (event.text == "k" || event.text == "b") && root.clips.length > 0 {
@@ -297,10 +330,35 @@ export component App inherits Window {
         theme <=> root.theme;
         light <=> root.light;
         light-available: root.light-available;
-        components: root.components;
-        updates <=> root.updates;
-        show-components => {
-            root.show-components();
+        projects: root.prefs.projects;
+        recent: root.recent;
+        missing: root.missing;
+        new-project => {
+            root.new-project();
+        }
+        open-project => {
+            root.open-project();
+        }
+        open-recent(path) => {
+            root.open-recent(path);
+        }
+        clear-recent => {
+            root.clear-recent();
+        }
+        save-project => {
+            root.save-project();
+        }
+        save-project-as => {
+            root.save-project-as();
+        }
+        show-project => {
+            root.show-project();
+        }
+        locate => {
+            root.locate();
+        }
+        show-preferences => {
+            root.show-preferences();
         }
         separate <=> root.separate;
         copying: root.copying;
@@ -399,6 +457,10 @@ export component App inherits Window {
                 kind: root.note-kind;
                 progress: root.note-progress;
                 shot: root.shot;
+                action: root.note-action;
+                act => {
+                    root.locate();
+                }
                 reveal(path) => {
                     root.reveal(path);
                 }
@@ -520,6 +582,9 @@ export component App inherits Window {
                 }
                 remove-clip => {
                     root.remove-clip();
+                }
+                replace-clip(index) => {
+                    root.replace-clip(index);
                 }
                 trim-done => {
                     root.trim-done();
@@ -685,16 +750,16 @@ export component App inherits Window {
                 padding: 16px;
                 spacing: 18px;
                 Text {
-                    text: root.closing == "render" ? "Stop the render and quit?" : "Save changes to \"\{root.config}\"?";
+                    text: root.closing == "render" ? "Stop the render and quit?" : root.closing == "save" ? "Save changes to \"\{root.config}\"?" : root.ask;
                     color: Theme.ink;
                     font-size: 13px;
                     overflow: elide;
                 }
                 HorizontalLayout {
                     spacing: 8px;
-                    if root.closing == "save": Button {
+                    if root.closing == "save" || root.closing == "project" || root.closing == "switch" || root.closing == "recover": Button {
                         height: 26px;
-                        text: "Don't save";
+                        text: root.closing == "recover" ? "Discard" : "Don't save";
                         clicked => {
                             root.close-answer(false);
                         }
@@ -704,17 +769,17 @@ export component App inherits Window {
                     }
                     Button {
                         height: 26px;
-                        text: "Cancel";
+                        text: root.closing == "recover" ? "Later" : "Cancel";
                         clicked => {
                             root.closing = "";
                         }
                     }
                     Button {
                         height: 26px;
-                        text: root.closing == "render" ? "Quit" : "Save";
+                        text: root.closing == "render" ? "Quit" : root.closing == "delete" ? "Remove" : root.closing == "recover" ? "Recover" : "Save";
                         main: true;
                         clicked => {
-                            root.close-answer(root.closing == "save");
+                            root.close-answer(root.closing != "render");
                         }
                     }
                 }

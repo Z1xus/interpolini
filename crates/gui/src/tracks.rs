@@ -20,6 +20,7 @@ pub fn wire(ui: &App, state: &Shared) {
             true => state.tracks.audio[index].0 = height,
             false => state.tracks.video[index] = height,
         }
+        crate::project::touch(&ui, &mut state);
         lanes(&ui, &state);
     });
 
@@ -40,6 +41,7 @@ pub fn wire(ui: &App, state: &Shared) {
             false => &mut state.tracks.video[index],
         };
         *height = (*height + 8.0 * delta.signum()).clamp(24.0, 400.0);
+        crate::project::touch(&ui, &mut state);
         lanes(&ui, &state);
     });
 

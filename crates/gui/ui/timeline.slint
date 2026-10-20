@@ -111,6 +111,7 @@ export component Timeline inherits Rectangle {
     callback joint(int, bool) -> int;
     callback mark(string);
     callback remove-clip();
+    callback replace-clip(int);
     property <int> chosen;
     // with alt the menu is for one clip, without the other clips of its file
     property <bool> solo;
@@ -256,13 +257,6 @@ export component Timeline inherits Rectangle {
                         }
                     }
                 }
-                if root.clips[root.chosen].paired && !root.solo: Text {
-                    height: 22px;
-                    text: "       Alt right click changes only this clip";
-                    color: Theme.faint;
-                    font-size: 11px;
-                    vertical-alignment: center;
-                }
             }
         }
     }
@@ -326,13 +320,6 @@ export component Timeline inherits Rectangle {
                         }
                     }
                 }
-                if root.clips[root.chosen].paired && !root.solo && !root.copying: Text {
-                    height: 22px;
-                    text: "       Alt right click changes only this clip";
-                    color: Theme.faint;
-                    font-size: 11px;
-                    vertical-alignment: center;
-                }
                 if !root.copying: Rectangle {
                     height: 9px;
                     Rectangle {
@@ -345,6 +332,13 @@ export component Timeline inherits Rectangle {
                     hint: "S";
                     clicked => {
                         root.mark("split");
+                        menu.close();
+                    }
+                }
+                MenuItem {
+                    text: "Replace…";
+                    clicked => {
+                        root.replace-clip(root.chosen);
                         menu.close();
                     }
                 }
@@ -728,7 +722,7 @@ export component Timeline inherits Rectangle {
                                 width: parent.width - 10px;
                                 height: 14px;
                                 text: clip.state == "" ? clip.name : clip.state + "  " + clip.name;
-                                color: clip.state == "Done" ? Theme.ok : current ? Theme.ink : Theme.muted;
+                                color: clip.state == "Done" ? Theme.ok : clip.state == "Missing" ? Theme.accent : current ? Theme.ink : Theme.muted;
                                 font-size: 10px;
                                 overflow: elide;
                                 vertical-alignment: center;

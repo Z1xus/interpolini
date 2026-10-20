@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use interpolini_core::{Event, Fade, Job, Setup, Sound, budget, run};
+use std::path::PathBuf;
+
+use interpolini_core::{Event, Fade, Job, Place, Setup, Sound, budget, run};
 use slint::{ComponentHandle, Model};
 
 use crate::state::{Shared, State, lock, sounds};
@@ -78,7 +80,12 @@ fn show(ui: &App, event: Event, row: Option<usize>, lead: f32, current: usize, c
     }
 }
 
-pub fn jobs(state: &State, separate: bool, copy: bool) -> (Vec<Job>, Vec<Sound>, Vec<usize>, f64) {
+pub fn jobs(
+    state: &State,
+    separate: bool,
+    copy: bool,
+    folder: Option<PathBuf>,
+) -> (Vec<Job>, Vec<Sound>, Vec<usize>, f64) {
     let mut heard = sounds(state);
     // an image goes into the file of the timeline, and has no file of its own
     let mut rows = state.videos();
@@ -110,13 +117,17 @@ pub fn jobs(state: &State, separate: bool, copy: bool) -> (Vec<Job>, Vec<Sound>,
             copy,
             at: if faded { span.at } else { entry.at },
             track: entry.track,
-            place: entry.place,
+            place: if separate && state.project.auto(entry.size) == Some(entry.place) {
+                Place::default()
+            } else {
+                entry.place
+            },
+            folder: folder.clone(),
             fade: if separate {
                 Fade::default()
             } else {
                 span.picture()
             },
-            folder: None,
             hold: if faded {
                 (end - entry.seconds).max(0.0)
             } else {
@@ -136,16 +147,30 @@ pub fn jobs(state: &State, separate: bool, copy: bool) -> (Vec<Job>, Vec<Sound>,
     (jobs, heard, rows, lead)
 }
 
+pub fn folder(ui: &App) -> Option<PathBuf> {
+    let folder = ui.get_prefs().folder;
+    (!folder.is_empty()).then(|| PathBuf::from(folder.as_str()))
+}
+
 fn render(ui: &App, shared: &Shared) {
     // a copy makes one file for each clip
     let copy = ui.get_copying();
     let separate = ui.get_separate() || copy;
+    let setup = match copy {
+        true => Setup::default(),
+        false => lock(shared).project.setup(),
+    };
     let (jobs, sounds, rows, lead) = {
         let mut state = lock(shared);
         layout(ui, &mut state);
-        let (jobs, sounds, rows, lead) = jobs(&state, separate, copy);
+        let (jobs, sounds, rows, lead) = jobs(&state, separate, copy, folder(ui));
         (jobs, sounds, rows, lead as f32)
     };
+    if ui.get_missing() > 0 {
+        ui.set_failed(true);
+        ui.set_status("Locate missing files first".into());
+        return;
+    }
     if ui.get_videos() == 0 {
         ui.set_failed(true);
         ui.set_status("The timeline has no video".into());
@@ -194,7 +219,7 @@ fn render(ui: &App, shared: &Shared) {
             run(
                 &jobs,
                 (!separate).then_some(&sounds[..]),
-                &Setup::default(),
+                &setup,
                 &sink,
                 cancel,
             );

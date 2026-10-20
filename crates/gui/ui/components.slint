@@ -1,4 +1,4 @@
-import { Button, Row, Segment, Tabs, Theme } from "widgets.slint";
+import { Button, FormRow, Segment, Tabs, Theme } from "widgets.slint";
 
 export struct Download {
     name: string,
@@ -12,14 +12,14 @@ component Group inherits VerticalLayout {
     Rectangle {
         height: 36px;
         Text {
-            x: 12px;
+            x: 16px;
             text: root.title;
             color: Theme.ink;
             font-size: 13px;
             vertical-alignment: center;
         }
         Tabs {
-            x: parent.width - self.preferred-width - 12px;
+            x: parent.width - self.preferred-width - 16px;
             width: self.preferred-width;
             options: root.tabs;
             value <=> root.tab;
@@ -40,8 +40,8 @@ component Hint inherits HorizontalLayout {
     in property <string> text;
     in property <color> color: Theme.faint;
     height: 28px;
-    padding-left: 28px;
-    padding-right: 12px;
+    padding-left: 158px;
+    padding-right: 16px;
     Text {
         text: root.text;
         color: root.color;
@@ -51,7 +51,7 @@ component Hint inherits HorizontalLayout {
     }
 }
 
-component Item inherits Row {
+component Item inherits FormRow {
     in property <string> name;
     in property <bool> installed;
     in property <bool> enabled: true;
@@ -106,7 +106,8 @@ component Item inherits Row {
     }
 }
 
-export component Components inherits Window {
+export component Parts inherits VerticalLayout {
+    alignment: start;
     // bundled, system or custom
     in-out property <string> ffmpeg;
     // this system has an ffmpeg of its own that the app can use
@@ -133,20 +134,15 @@ export component Components inherits Window {
     callback install(string);
     callback remove(string);
     callback cancel();
-    title: "Components";
-    icon: @image-url("../../../assets/interpolini.svg");
-    background: Theme.rack;
-    default-font-size: 12px;
-    // one fixed size, so the window cannot be resized: the groups, their lines and the notes
-    width: 500px;
-    height: 2 * 47px + (root.shown.length + 1 + (root.backend == "tensorrt" ? (root.tensorrt-need != "" ? 2 : 1) : 0) + (root.restart ? 1 : 0) + (root.note != "" ? 1 : 0)) * 28px;
     VerticalLayout {
         alignment: start;
         Group {
             title: "FFmpeg";
-            Row {
+            FormRow {
                 label: "Source";
                 Segment {
+                    width: self.preferred-width;
+                    alignment: start;
                     options: root.ffmpeg-fixed ? ["system"] : !root.ffmpeg-system ? (root.ffmpeg == "custom" ? ["bundled", "custom"] : ["bundled"]) : root.ffmpeg == "custom" ? ["bundled", "system", "custom"] : ["bundled", "system"];
                     value <=> root.ffmpeg;
                     changed(choice) => {
@@ -168,7 +164,7 @@ export component Components inherits Window {
                     }
                 }
             }
-            if root.restart: Row {
+            if root.restart: FormRow {
                 label: "";
                 Text {
                     horizontal-stretch: 1;

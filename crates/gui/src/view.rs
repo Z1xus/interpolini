@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use interpolini_core::config::{self, Config, Ease};
-use interpolini_core::{Fade, Part, Place, Plan, lossless};
+use interpolini_core::{Fade, Part, Place, Plan, Setup, lossless};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::settings::settings;
@@ -106,6 +106,12 @@ pub fn lanes(ui: &App, state: &State) {
 pub fn fit(ui: &App, shared: &Shared) {
     let mut state = lock(shared);
     layout(ui, &mut state);
+    if state.entries.is_empty() && !state.project.look.chosen {
+        state.project.look.size = None;
+    }
+    let missing = state.entries.iter().filter(|entry| entry.missing);
+    let missing: std::collections::HashSet<_> = missing.map(|entry| &entry.clip).collect();
+    ui.set_missing(missing.len() as i32);
     ui.set_extent(state.seconds().max(1.0) as f32);
     lanes(ui, &state);
     drop(state);
@@ -314,6 +320,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
         preview::show(preview::Show {
             parts: Vec::new(),
             canvas: Default::default(),
+            setup: Setup::default(),
             play: false,
             quiet: false,
             view: preview::View::Result,
@@ -362,14 +369,22 @@ pub fn refresh(ui: &App, shared: &Shared) {
     };
     // a copy shows each video as its file has it
     let copying = ui.get_copying();
-    let shrink = shrink(ui, base.size.0);
+    let mut setup = match copying {
+        true => Setup::default(),
+        false => state.project.setup(),
+    };
+    if base.missing {
+        setup.size.get_or_insert(base.size);
+    }
+    let canvas = setup.size.unwrap_or(base.size);
+    let shrink = shrink(ui, canvas.0);
     let place = |entry: &crate::state::Entry| match copying {
         true => Place::default(),
         false => entry.place,
     };
     let covers = |index: &usize| {
         let entry = &state.entries[*index];
-        !entry.still && place(entry).covers(base.size, entry.size)
+        !entry.still && place(entry).covers(canvas, entry.size)
     };
     let stretch = |part: &Part, time: f64| {
         // a video that fills the picture hides the clips under it
@@ -389,7 +404,8 @@ pub fn refresh(ui: &App, shared: &Shared) {
                         false => entry.settled(),
                     }
                 },
-                still: entry.still,
+                still: entry.still || entry.missing,
+                missing: entry.missing.then_some(entry.size),
                 place: place(entry),
                 start: span.start + time - span.at,
                 inside: time - span.at,
@@ -421,11 +437,12 @@ pub fn refresh(ui: &App, shared: &Shared) {
         let request = preview::Show {
             parts,
             canvas: base.clip.clone(),
+            setup,
             play: ui.get_playing(),
             quiet,
             view,
-            width: (width as u32).min(base.size.0 / shrink),
-            size: base.size,
+            width: (width as u32).min(canvas.0 / shrink),
+            size: canvas,
             total: state.seconds(),
             save,
         };

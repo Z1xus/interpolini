@@ -57,6 +57,8 @@ export component Stage inherits Rectangle {
     in property <Note> kind;
     in property <float> progress;
     in property <string> shot;
+    in property <string> action;
+    callback act();
     callback reveal(string);
     property <bool> closed;
     property <string> last;
@@ -456,9 +458,9 @@ export component Stage inherits Rectangle {
             padding-top: 8px;
             padding-bottom: 8px;
             padding-left: 14px;
-            padding-right: root.kind == Note.warning ? 8px : 14px;
+            padding-right: root.kind == Note.warning || root.kind == Note.notice ? 8px : 14px;
             spacing: 12px;
-            if root.kind == Note.warning: Rectangle {
+            if root.kind == Note.warning || root.kind == Note.notice: Rectangle {
                 width: 16px;
                 Icon {
                     x: 0;
@@ -484,7 +486,14 @@ export component Stage inherits Rectangle {
                     root.reveal(root.shot);
                 }
             }
-            if root.kind == Note.warning: IconButton {
+            if root.kind == Note.notice && root.action != "": Action {
+                text: root.action;
+                size: 12px;
+                clicked => {
+                    root.act();
+                }
+            }
+            if root.kind == Note.warning || root.kind == Note.notice: IconButton {
                 y: (parent.height - self.height) / 2;
                 width: 20px;
                 height: 20px;

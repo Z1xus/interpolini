@@ -86,13 +86,11 @@ pub fn overwrite(ui: &App, state: &mut State, link: u64, moved: f64) {
                         state.ids
                     });
                     rest.link = fresh as i32;
-                    let copy = Entry {
-                        id,
-                        link: fresh,
-                        cut: (rest.cut_in, rest.cut_out),
-                        at: to,
-                        ..other.clone()
-                    };
+                    let mut copy = other.clone();
+                    copy.saved.id = id;
+                    copy.saved.link = fresh;
+                    copy.saved.cut = (rest.cut_in, rest.cut_out);
+                    copy.saved.at = to;
                     state.entries.insert(index + 1, copy);
                     model.insert(index + 1, rest);
                 }
@@ -258,17 +256,31 @@ pub fn wire(ui: &App, state: &Shared) {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            let mut state = lock(&shared);
+            let state = lock(&shared);
             let links = chosen(&ui, &state);
-            if (links.is_empty() && !all) || ui.get_rendering() {
+            if (links.is_empty() && !all) || state.entries.is_empty() || ui.get_rendering() {
                 return;
             }
-            record(&ui, &mut state, false);
-            discard(&ui, &mut state, |entry| all || links.contains(&entry.link));
             drop(state);
-            fit(&ui, &shared);
-            select(&ui, &shared, -1);
-            refresh(&ui, &shared);
+            let count = links.len();
+            let now = move |ui: &App, shared: &Shared| {
+                let mut state = lock(shared);
+                record(ui, &mut state, false);
+                discard(ui, &mut state, |entry| all || links.contains(&entry.link));
+                drop(state);
+                fit(ui, shared);
+                select(ui, shared, -1);
+                refresh(ui, shared);
+            };
+            if !ui.get_prefs().confirm_delete {
+                return now(&ui, &shared);
+            }
+            let text = match (all, count) {
+                (true, _) => "Close all clips?".to_owned(),
+                (false, 1) => "Remove this clip?".to_owned(),
+                (false, count) => format!("Remove {count} clips?"),
+            };
+            crate::project::ask(&ui, "delete", text, Box::new(now));
         }
     };
     ui.on_remove_clip(remove(false));
@@ -367,11 +379,9 @@ pub fn wire(ui: &App, state: &Shared) {
                     (row.fade_out, second.fade_in, second.cross) = (0.0, 0.0, 0.0);
                     model.insert(index + 1, second);
                     state.ids += 1;
-                    let copy = Entry {
-                        id: first + state.ids + entry.link,
-                        link: first + entry.link,
-                        ..entry
-                    };
+                    let mut copy = entry;
+                    copy.saved.id = first + state.ids + copy.link;
+                    copy.saved.link = first + copy.link;
                     state.entries.insert(index + 1, copy);
                 }
                 "clear" if !entry.still => {

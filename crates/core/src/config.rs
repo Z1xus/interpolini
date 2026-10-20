@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use serde::Deserialize;
+
 const STEM: &str = "interpolini";
 
 trait Value {
@@ -10,7 +12,7 @@ trait Value {
 }
 
 macro_rules! named {
-    ($name:ident { $($variant:ident = $text:literal),+ }) => {
+    ($name:ident { $($variant:ident = $text:literal),+ } $default:ident) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum $name {
             $($variant),+
@@ -30,6 +32,26 @@ macro_rules! named {
             }
         }
 
+        impl Default for $name {
+            fn default() -> Self {
+                Self::$default
+            }
+        }
+
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+                out.serialize_str(self.name())
+            }
+        }
+
+        // an unknown name gives the default, so one bad value does not fail a file
+        impl<'a> serde::Deserialize<'a> for $name {
+            fn deserialize<D: serde::Deserializer<'a>>(from: D) -> Result<Self, D::Error> {
+                let text = String::deserialize(from)?;
+                Ok(Self::parse(&text).unwrap_or_default())
+            }
+        }
+
         impl Value for &mut $name {
             fn read(&mut self, text: &str) -> bool {
                 $name::parse(text).map(|value| **self = value).is_some()
@@ -42,12 +64,12 @@ macro_rules! named {
     };
 }
 
-named!(Engine { Svp = "svp", Rife = "rife" });
-named!(Backend { Vulkan = "vulkan", Tensorrt = "tensorrt" });
-named!(Masking { Peel = "peel", Still = "still" });
-named!(Speed { Medium = "medium", Fast = "fast", Faster = "faster", Fastest = "fastest" });
-named!(Tuning { Weak = "weak", Smooth = "smooth", Film = "film", Animation = "animation" });
-named!(Algorithm { Sharp = "2", Standard = "13", Smooth = "23" });
+named!(Engine { Svp = "svp", Rife = "rife" } Svp);
+named!(Backend { Vulkan = "vulkan", Tensorrt = "tensorrt" } Vulkan);
+named!(Masking { Peel = "peel", Still = "still" } Peel);
+named!(Speed { Medium = "medium", Fast = "fast", Faster = "faster", Fastest = "fastest" } Faster);
+named!(Tuning { Weak = "weak", Smooth = "smooth", Film = "film", Animation = "animation" } Film);
+named!(Algorithm { Sharp = "2", Standard = "13", Smooth = "23" } Standard);
 named!(Weighting {
     Equal = "equal",
     Gaussian = "gaussian",
@@ -57,21 +79,21 @@ named!(Weighting {
     Descending = "descending",
     Vegas = "vegas",
     Custom = "custom"
-});
-named!(Resolution { P1080 = "1080p", P1440 = "1440p", P2160 = "2160p" });
-named!(Method { Nearest = "nearest", Bilinear = "bilinear", Bicubic = "bicubic", Lanczos = "lanczos" });
-named!(Codec { H264 = "h264", Hevc = "hevc", Av1 = "av1" });
-named!(Encoder { Auto = "auto", Hardware = "hardware", Software = "software" });
-named!(Target { Quality = "quality", Size = "size" });
+} Equal);
+named!(Resolution { P1080 = "1080p", P1440 = "1440p", P2160 = "2160p" } P2160);
+named!(Method { Nearest = "nearest", Bilinear = "bilinear", Bicubic = "bicubic", Lanczos = "lanczos" } Nearest);
+named!(Codec { H264 = "h264", Hevc = "hevc", Av1 = "av1" } H264);
+named!(Encoder { Auto = "auto", Hardware = "hardware", Software = "software" } Auto);
+named!(Target { Quality = "quality", Size = "size" } Quality);
 named!(Effort {
     Fastest = "fastest",
     Fast = "fast",
     Balanced = "balanced",
     Best = "best"
-});
-named!(Container { Mp4 = "mp4", Mkv = "mkv", Mov = "mov" });
-named!(Audio { Separate = "separate", Mix = "mix" });
-named!(Ease { Linear = "linear", Smooth = "smooth", EaseIn = "ease in", EaseOut = "ease out" });
+} Fast);
+named!(Container { Mp4 = "mp4", Mkv = "mkv", Mov = "mov" } Mp4);
+named!(Audio { Separate = "separate", Mix = "mix" } Mix);
+named!(Ease { Linear = "linear", Smooth = "smooth", EaseIn = "ease in", EaseOut = "ease out" } Linear);
 
 impl Value for &mut bool {
     fn read(&mut self, text: &str) -> bool {
@@ -142,6 +164,19 @@ impl std::fmt::Display for Rate {
     }
 }
 
+impl serde::Serialize for Rate {
+    fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        out.collect_str(self)
+    }
+}
+
+impl<'a> serde::Deserialize<'a> for Rate {
+    fn deserialize<D: serde::Deserializer<'a>>(from: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(from)?;
+        Ok(Self::parse(&text).unwrap_or(Self::Times(1.0)))
+    }
+}
+
 impl Value for &mut Rate {
     fn read(&mut self, text: &str) -> bool {
         Rate::parse(text).map(|rate| **self = rate).is_some()
@@ -203,20 +238,24 @@ impl Value for Curve<'_> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct Dedup {
     pub enabled: bool,
     pub repeats: f32,
+    #[serde(skip)]
     pub threshold: f32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct Pre {
     pub enabled: bool,
     pub fps: Rate,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct Interpolation {
     pub enabled: bool,
     pub engine: Engine,
@@ -227,13 +266,15 @@ pub struct Interpolation {
     pub half: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct Rife {
     pub backend: Backend,
     pub model: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct Mask {
     pub enabled: bool,
     pub method: Masking,
@@ -243,7 +284,8 @@ pub struct Mask {
     pub tolerance: f32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct Blending {
     pub enabled: bool,
     pub fps: u32,
@@ -253,7 +295,8 @@ pub struct Blending {
     pub custom: Vec<f32>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct Color {
     pub enabled: bool,
     pub brightness: f32,
@@ -263,14 +306,16 @@ pub struct Color {
     pub lut: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct Upscale {
     pub enabled: bool,
     pub resolution: Resolution,
     pub method: Method,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct Output {
     pub codec: Codec,
     pub encoder: Encoder,
@@ -284,7 +329,8 @@ pub struct Output {
     pub options: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub dedup: Dedup,
     pub pre: Pre,
@@ -296,75 +342,130 @@ pub struct Config {
     pub upscale: Upscale,
     pub output: Output,
     // the preview divides the picture by this, a render keeps 1
+    #[serde(skip)]
     pub shrink: u32,
+}
+
+impl Default for Dedup {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            repeats: 100.0,
+            threshold: 0.0,
+        }
+    }
+}
+
+impl Default for Pre {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            fps: Rate::Times(2.0),
+        }
+    }
+}
+
+impl Default for Interpolation {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            engine: Engine::Svp,
+            fps: Rate::Fps(960),
+            speed: Speed::Faster,
+            tuning: Tuning::Film,
+            algorithm: Algorithm::Standard,
+            half: true,
+        }
+    }
+}
+
+impl Default for Rife {
+    fn default() -> Self {
+        Self {
+            backend: Backend::Vulkan,
+            model: "rife-v4.6".into(),
+        }
+    }
+}
+
+// the defaults of open-svpflow
+impl Default for Mask {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            method: Masking::Peel,
+            peel: 6.0,
+            limit: 4.5,
+            edge: 5.0,
+            tolerance: 30.0,
+        }
+    }
+}
+
+impl Default for Blending {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            fps: 60,
+            intensity: 1.0,
+            gamma: 1.0,
+            weighting: Weighting::Equal,
+            custom: vec![1.0, 2.0, 5.0],
+        }
+    }
+}
+
+impl Default for Color {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            brightness: 1.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            hue: 0.0,
+            lut: String::new(),
+        }
+    }
+}
+
+impl Default for Upscale {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            resolution: Resolution::P2160,
+            method: Method::Nearest,
+        }
+    }
+}
+
+impl Default for Output {
+    fn default() -> Self {
+        Self {
+            codec: Codec::H264,
+            encoder: Encoder::Auto,
+            target: Target::Quality,
+            quality: 20,
+            size: 10,
+            effort: Effort::Fast,
+            container: Container::Mp4,
+            audio: Audio::Mix,
+            options: String::new(),
+        }
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            dedup: Dedup {
-                enabled: true,
-                repeats: 100.0,
-                threshold: 0.0,
-            },
-            pre: Pre {
-                enabled: false,
-                fps: Rate::Times(2.0),
-            },
-            interpolation: Interpolation {
-                enabled: true,
-                engine: Engine::Svp,
-                fps: Rate::Fps(960),
-                speed: Speed::Faster,
-                tuning: Tuning::Film,
-                algorithm: Algorithm::Standard,
-                half: true,
-            },
-            rife: Rife {
-                backend: Backend::Vulkan,
-                model: "rife-v4.6".into(),
-            },
-            // the defaults of open-svpflow
-            mask: Mask {
-                enabled: true,
-                method: Masking::Peel,
-                peel: 6.0,
-                limit: 4.5,
-                edge: 5.0,
-                tolerance: 30.0,
-            },
-            blending: Blending {
-                enabled: true,
-                fps: 60,
-                intensity: 1.0,
-                gamma: 1.0,
-                weighting: Weighting::Equal,
-                custom: vec![1.0, 2.0, 5.0],
-            },
-            color: Color {
-                enabled: false,
-                brightness: 1.0,
-                contrast: 1.0,
-                saturation: 1.0,
-                hue: 0.0,
-                lut: String::new(),
-            },
-            upscale: Upscale {
-                enabled: false,
-                resolution: Resolution::P2160,
-                method: Method::Nearest,
-            },
-            output: Output {
-                codec: Codec::H264,
-                encoder: Encoder::Auto,
-                target: Target::Quality,
-                quality: 20,
-                size: 10,
-                effort: Effort::Fast,
-                container: Container::Mp4,
-                audio: Audio::Mix,
-                options: String::new(),
-            },
+            dedup: Dedup::default(),
+            pre: Pre::default(),
+            interpolation: Interpolation::default(),
+            rife: Rife::default(),
+            mask: Mask::default(),
+            blending: Blending::default(),
+            color: Color::default(),
+            upscale: Upscale::default(),
+            output: Output::default(),
             shrink: 1,
         }
     }
@@ -518,11 +619,22 @@ pub fn app_dir() -> PathBuf {
     exe().parent().map(Path::to_owned).unwrap_or_default()
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Entry {
     pub name: String,
     pub path: PathBuf,
     pub local: bool,
+}
+
+impl Default for Entry {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            path: PathBuf::new(),
+            local: false,
+        }
+    }
 }
 
 pub fn path(directory: &Path, name: &str) -> PathBuf {

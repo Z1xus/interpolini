@@ -8,7 +8,8 @@ use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
 use crate::edit::overwrite;
 use crate::history::record;
-use crate::state::{Entry, STILL, Shared, State, lock};
+use crate::project::{even, placement};
+use crate::state::{Entry, STILL, Saved, Shared, State, lock};
 use crate::view::{fit, lanes, refresh, update};
 use crate::{App, Clip, preview, services};
 #[cfg(target_os = "linux")]
@@ -88,6 +89,11 @@ fn inspect(clip: &Path) -> interpolini_core::Result<Found> {
 }
 
 pub fn import(ui: Weak<App>, state: Shared, clips: Vec<PathBuf>, point: Option<(f32, f32)>) {
+    if let Some(project) = clips.iter().find(|clip| crate::project::is_project(clip)) {
+        let project = project.clone();
+        let _ = ui.upgrade_in_event_loop(move |ui| crate::project::open_path(&ui, &state, project));
+        return;
+    }
     services::background(&services::key("import"), move |cancel| {
         let next = Arc::new(Mutex::new(None));
         let last = clips.len();
@@ -126,6 +132,7 @@ pub fn add(
     let Some(rows) = rows.as_any().downcast_ref::<VecModel<Clip>>() else {
         return place;
     };
+    let mut warning = None;
     for (clip, found) in clips {
         let Found {
             probe: probed,
@@ -147,7 +154,6 @@ pub fn add(
             Some(local) => local,
             None => (guard.draft.config.clone(), guard.draft.origin.clone()),
         };
-        let name = clip.file_name().unwrap_or_default().to_string_lossy();
         let at = place.map_or(guard.seconds(), |place| place.0);
         // an image starts as 5 seconds from the middle of its source
         let (seconds, cut) = match probed.still {
@@ -155,6 +161,19 @@ pub fn add(
             false => (probed.seconds, (0.0, 1.0)),
         };
         let pictured = probed.fps > 0.0 || probed.still;
+        let size = (probed.width, probed.height);
+        let mut shape = Place::default();
+        if pictured && ui.get_prefs().projects {
+            let project = &mut guard.project;
+            let canvas = *project.look.size.get_or_insert(even(size));
+            shape = placement(canvas, size, project.look.fit);
+            if canvas != even(size) {
+                warning.get_or_insert(format!(
+                    "Clip is {}x{}, project is {}x{}",
+                    size.0, size.1, canvas.0, canvas.1
+                ));
+            }
+        }
         let (video, alone) = guard.aim(place, pictured);
         guard.spare = None;
         place = place.map(|place| (place.0 + seconds * f64::from(cut.1 - cut.0), place.1));
@@ -176,53 +195,34 @@ pub fn add(
             if audio.is_some() && guard.tracks.audio.len() <= track {
                 guard.tracks.audio.resize(track + 1, (36.0, false));
             }
-            rows.push(Clip {
-                name: name.as_ref().into(),
-                at: at as f32,
-                track: track as i32,
-                cut_in: cut.0,
-                cut_out: cut.1,
-                audio: audio.is_some(),
-                link: link as i32,
-                still: probed.still,
-                ratio: probed.width as f32 / probed.height.max(1) as f32,
-                zoom_x: 1.0,
-                zoom_y: 1.0,
-                ease_in: "linear".into(),
-                ease_out: "linear".into(),
-                ease_cross: "linear".into(),
-                thumbs: ModelRc::new(VecModel::from(vec![
-                    slint::Image::default();
-                    preview::THUMBS
-                ])),
-                ..Default::default()
-            });
-            let id = guard.ids;
-            guard.entries.push(Entry {
-                id,
-                link,
+            let entry = Entry {
+                saved: Saved {
+                    id: guard.ids,
+                    link,
+                    audio,
+                    streams: probed.tracks.len(),
+                    config: config.clone(),
+                    origin: origin.clone(),
+                    cut,
+                    seconds,
+                    fps: probed.fps,
+                    at,
+                    track,
+                    still: probed.still,
+                    size,
+                    place: if audio.is_none() {
+                        shape
+                    } else {
+                        Place::default()
+                    },
+                    ..Saved::default()
+                },
                 clip: clip.clone(),
-                audio,
-                streams: probed.tracks.len(),
-                config: config.clone(),
-                origin: origin.clone(),
-                cut,
-                seconds,
-                fps: probed.fps,
-                keys: Arc::default(),
-                at,
-                track,
-                still: probed.still,
-                differences: Arc::default(),
-                measured: None,
-                size: (probed.width, probed.height),
                 bytes,
-                place: Place::default(),
-                gain: 0.0,
-                fade: (0.0, 0.0),
-                cross: 0.0,
-                eases: [config::Ease::Linear; 3],
-            });
+                ..Entry::default()
+            };
+            rows.push(row(&entry));
+            guard.entries.push(entry);
         }
         if place.is_some() {
             overwrite(ui, &mut guard, link, 0.0);
@@ -231,7 +231,53 @@ pub fn add(
     }
     fit(ui, state);
     refresh(ui, state);
+    if let Some(text) = warning {
+        preview::announce(ui, text, "");
+    }
     place
+}
+
+pub fn row(entry: &Entry) -> Clip {
+    let place = entry.place;
+    let image = match entry.missing {
+        true => crate::project::missing().image(),
+        false => slint::Image::default(),
+    };
+    Clip {
+        name: entry
+            .clip
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .as_ref()
+            .into(),
+        state: if entry.missing { "Missing" } else { "" }.into(),
+        at: entry.at as f32,
+        track: entry.track as i32,
+        cut_in: entry.cut.0,
+        cut_out: entry.cut.1,
+        audio: entry.audio.is_some(),
+        link: entry.link as i32,
+        still: entry.still,
+        ratio: entry.size.0 as f32 / entry.size.1.max(1) as f32,
+        x: place.x,
+        y: place.y,
+        zoom_x: place.scale[0],
+        zoom_y: place.scale[1],
+        crop_left: place.crop[0],
+        crop_top: place.crop[1],
+        crop_right: place.crop[2],
+        crop_bottom: place.crop[3],
+        gain: entry.gain,
+        fade_in: entry.fade.0,
+        fade_out: entry.fade.1,
+        cross: entry.cross,
+        ease_in: entry.eases[0].name().into(),
+        ease_out: entry.eases[1].name().into(),
+        ease_cross: entry.eases[2].name().into(),
+        thumbs: ModelRc::new(VecModel::from(vec![image; preview::THUMBS])),
+        ..Default::default()
+    }
 }
 
 pub fn fill(ui: &App, state: &Shared) {
@@ -246,7 +292,7 @@ pub fn fill(ui: &App, state: &Shared) {
             .iter()
             .enumerate()
             .filter(|(_, entry)| own(entry));
-        let Some((first, any)) = entries.next() else {
+        let Some((first, any)) = entries.next().filter(|(_, entry)| !entry.missing) else {
             continue;
         };
         let picture = std::iter::once((first, any))
@@ -360,7 +406,7 @@ pub fn forget(state: &State, gone: &Entry) {
 // measures the repeats of each video whose cut changed, in the part that is kept
 pub fn measure(ui: &App, state: &Shared) {
     let mut guard = lock(state);
-    let video = |entry: &&mut Entry| entry.audio.is_none() && !entry.still;
+    let video = |entry: &&mut Entry| entry.audio.is_none() && !entry.still && !entry.missing;
     for entry in guard.entries.iter_mut().filter(video) {
         if entry.measured == Some(entry.cut) {
             continue;

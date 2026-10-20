@@ -1,17 +1,19 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use interpolini_core::budget;
 use interpolini_core::config::{
     self, Algorithm, Backend, Codec, Config, Container, Effort, Encoder, Engine, Masking, Method,
     Rate, Resolution, Speed, Target, Tuning, Weighting,
 };
-use slint::ComponentHandle;
+use slint::{ComponentHandle, ModelRc, VecModel};
 
 use crate::clips::pick;
 use crate::history::record;
+use crate::project::SESSION;
 use crate::state::{Shared, State, lock};
 use crate::view::{label, models, refresh, select, selected, unsaved};
-use crate::{App, Settings, themes};
+use crate::{App, Preferences, Prefs, Settings, themes};
 
 const LOOKS: [(Algorithm, &str); 3] = [
     (Algorithm::Sharp, "sharp"),
@@ -207,8 +209,9 @@ pub fn save_preferences(ui: &App) {
         .filter(|open| open.1)
         .map(|open| open.0)
         .collect();
-    let text = format!(
-        "theme: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\n",
+    let prefs = ui.get_prefs();
+    let mut text = format!(
+        "theme: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\nprojects: {}\nautosave: {}\nasksave: {}\nreopen: {}\nconfirm: {}\nmemory: {}\nfolder: {}\npreset: {}\n",
         ui.get_theme(),
         yes(ui.get_light()),
         yes(ui.get_separate()),
@@ -218,9 +221,86 @@ pub fn save_preferences(ui: &App) {
         ui.get_resolution(),
         yes(ui.get_updates()),
         ui.get_volume(),
-        open.join(" ")
+        open.join(" "),
+        yes(prefs.projects),
+        prefs.autosave,
+        yes(prefs.ask_save),
+        yes(prefs.reopen),
+        yes(prefs.confirm_delete),
+        prefs.memory,
+        prefs.folder,
+        prefs.preset,
     );
+    SESSION.with_borrow(|session| {
+        for path in &session.recent {
+            text.push_str(&format!("recent: {}\n", path.display()));
+        }
+        if let Some(path) = &session.recovery {
+            text.push_str(&format!("recovery: {}\n", path.display()));
+        }
+    });
     let _ = std::fs::write(preferences(), text);
+}
+
+pub fn load_prefs(ui: &App, saved: &str) {
+    let value = |key: &str| saved.lines().find_map(|line| line.strip_prefix(key));
+    let lines = |key: &'static str| saved.lines().filter_map(move |line| line.strip_prefix(key));
+    let number = |key: &str, other: i32| {
+        value(key)
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(other)
+    };
+    ui.set_prefs(Prefs {
+        projects: value("projects: ") == Some("yes"),
+        autosave: number("autosave: ", 5).clamp(0, 60),
+        ask_save: value("asksave: ") != Some("no"),
+        reopen: value("reopen: ") == Some("yes"),
+        confirm_delete: value("confirm: ") == Some("yes"),
+        memory: number("memory: ", 0).max(0),
+        folder: value("folder: ").unwrap_or_default().into(),
+        preset: value("preset: ").unwrap_or("default").into(),
+    });
+    SESSION.with_borrow_mut(|session| {
+        session.recent = lines("recent: ").map(PathBuf::from).collect();
+        session.recovery = value("recovery: ").map(PathBuf::from);
+    });
+    limit(ui);
+}
+
+pub fn presets() -> ModelRc<slint::SharedString> {
+    let found = config::entries(Path::new(""));
+    let names = found.into_iter().filter(|entry| !entry.local);
+    ModelRc::new(VecModel::from_iter(
+        names.map(|entry| slint::SharedString::from(entry.name)),
+    ))
+}
+
+fn limit(ui: &App) {
+    budget::limit(ui.get_prefs().memory as usize * (1 << 20));
+}
+
+pub fn attach(ui: &App, window: &Preferences) {
+    let (weak, shown) = (ui.as_weak(), window.as_weak());
+    window.on_changed(move || {
+        if let (Some(ui), Some(window)) = (weak.upgrade(), shown.upgrade()) {
+            ui.set_prefs(window.get_prefs());
+            ui.set_updates(window.get_updates());
+            ui.invoke_prefs_changed();
+        }
+    });
+    let shown = window.as_weak();
+    window.on_choose_folder(move || {
+        let shown = shown.clone();
+        let _ = slint::spawn_local(async move {
+            let folder = rfd::AsyncFileDialog::new().pick_folder().await;
+            if let (Some(folder), Some(window)) = (folder, shown.upgrade()) {
+                let mut prefs = window.get_prefs();
+                prefs.folder = folder.path().to_string_lossy().as_ref().into();
+                window.set_prefs(prefs);
+                window.invoke_changed();
+            }
+        });
+    });
 }
 
 pub fn smooth_scroll() -> bool {
@@ -350,6 +430,15 @@ pub fn wire(ui: &App, state: &Shared) {
     ui.on_preview_theme(move |name| {
         if let Some(ui) = weak.upgrade() {
             themes::apply(&ui, &name, ui.get_light());
+        }
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_prefs_changed(move || {
+        if let Some(ui) = weak.upgrade() {
+            limit(&ui);
+            crate::project::schedule(&ui, &shared);
+            save_preferences(&ui);
         }
     });
 

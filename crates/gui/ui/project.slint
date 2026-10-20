@@ -1,0 +1,163 @@
+import { Cell, Field, FormRow, Segment, Theme } from "widgets.slint";
+
+export component ProjectSettings inherits Window {
+    in-out property <string> wide;
+    in-out property <string> high;
+    in-out property <string> rate;
+    in-out property <string> color-text;
+    in-out property <string> fit;
+    in-out property <string> size-choice;
+    in-out property <string> rate-choice;
+    in-out property <string> color-choice;
+    in-out property <string> fit-choice;
+    in property <color> swatch: black;
+    callback changed();
+    title: "Project settings";
+    icon: @image-url("../../../assets/interpolini.svg");
+    background: Theme.rack;
+    default-font-size: 12px;
+    width: 490px;
+    height: 4 * 28px + 32px;
+    VerticalLayout {
+        padding: 16px;
+        alignment: start;
+        FormRow {
+            label: "Resolution";
+            label-width: 84px;
+            Segment {
+                width: self.preferred-width;
+                alignment: start;
+                options: ["Auto", "720p", "1080p", "1440p", "4K"];
+                value <=> root.size-choice;
+                changed(choice) => {
+                    if choice == "Auto" {
+                        root.wide = "";
+                        root.high = "";
+                    } else if choice == "720p" {
+                        root.wide = "1280";
+                        root.high = "720";
+                    } else if choice == "1080p" {
+                        root.wide = "1920";
+                        root.high = "1080";
+                    } else if choice == "1440p" {
+                        root.wide = "2560";
+                        root.high = "1440";
+                    } else if choice == "4K" {
+                        root.wide = "3840";
+                        root.high = "2160";
+                    }
+                    root.changed();
+                }
+            }
+            Cell {
+                Field {
+                    width: 52px;
+                    height: 22px;
+                    placeholder: "Width";
+                    text <=> root.wide;
+                    edited => {
+                        root.size-choice = "";
+                    }
+                    accepted(text) => {
+                        root.changed();
+                    }
+                }
+            }
+            Text {
+                text: "x";
+                color: Theme.faint;
+                vertical-alignment: center;
+            }
+            Cell {
+                Field {
+                    width: 52px;
+                    height: 22px;
+                    placeholder: "Height";
+                    text <=> root.high;
+                    edited => {
+                        root.size-choice = "";
+                    }
+                    accepted(text) => {
+                        root.changed();
+                    }
+                }
+            }
+        }
+        FormRow {
+            label: "Frame rate";
+            label-width: 84px;
+            Segment {
+                width: self.preferred-width;
+                alignment: start;
+                options: ["Auto", "24", "25", "30", "50", "60"];
+                value <=> root.rate-choice;
+                changed(choice) => {
+                    root.rate = choice == "Auto" ? "" : choice;
+                    root.changed();
+                }
+            }
+            Cell {
+                Field {
+                    width: 52px;
+                    height: 22px;
+                    placeholder: "Auto";
+                    text <=> root.rate;
+                    edited => {
+                        root.rate-choice = "";
+                    }
+                    accepted(text) => {
+                        root.changed();
+                    }
+                }
+            }
+        }
+        FormRow {
+            label: "Background";
+            label-width: 84px;
+            Cell {
+                Rectangle {
+                    width: 22px;
+                    height: 22px;
+                    background: root.swatch;
+                    border-width: 1px;
+                    border-color: Theme.seam;
+                }
+            }
+            Cell {
+                Field {
+                    width: 76px;
+                    height: 22px;
+                    text <=> root.color-text;
+                    edited => {
+                        root.color-choice = "";
+                    }
+                    accepted(text) => {
+                        root.changed();
+                    }
+                }
+            }
+            Segment {
+                alignment: start;
+                options: ["Black", "Gray", "White"];
+                value <=> root.color-choice;
+                changed(choice) => {
+                    root.color-text = choice == "Black" ? "#000000" : choice == "Gray" ? "#808080" : "#ffffff";
+                    root.changed();
+                }
+            }
+        }
+        FormRow {
+            label: "Import fit";
+            label-width: 84px;
+            Segment {
+                alignment: start;
+                options: ["Fit", "Fill", "Original size"];
+                value <=> root.fit-choice;
+                changed(choice) => {
+                    root.fit = choice == "Fit" ? "fit" : choice == "Fill" ? "fill" : "original";
+                    root.changed();
+                }
+            }
+        }
+    }
+}

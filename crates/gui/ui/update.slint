@@ -25,7 +25,7 @@ export component Update inherits Window {
     default-font-size: 12px;
     width: 420px;
     property <length> notes: min(notes.content-height, 220px);
-    height: (root.status ? 136px : 108px) + (root.changes.length > 0 ? root.notes + 12px : 0px);
+    height: 136px + (root.changes.length > 0 ? root.notes + 12px : 0px);
     VerticalLayout {
         padding: 16px;
         HorizontalLayout {

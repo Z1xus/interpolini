@@ -44,7 +44,8 @@ impl Drop for Scaler {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Place {
     // the middle of the clip from the middle of the canvas, as a part of the canvas
     pub x: f32,

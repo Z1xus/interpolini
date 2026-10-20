@@ -10,10 +10,12 @@ use interpolini_core::budget::{self, Class};
 use interpolini_core::config::Config;
 use interpolini_core::work::{self, Cancel};
 use interpolini_core::{
-    Canvas, Event, Fade, Graph, Image, Job, Place, Setup, Sound, Source, Sources, estimate, peaks,
+    Canvas, Event, Fade, Graph, Image, Job, Place, Setup, Sink, Sound, Source, Sources, estimate,
+    peaks,
 };
 use slint::{Model, Rgba8Pixel, SharedPixelBuffer, Weak};
 
+use crate::project::missing;
 use crate::view::clock;
 use crate::{App, Note, services};
 
@@ -42,6 +44,7 @@ pub struct Layer {
     pub length: f64,
     pub fade: Fade,
     pub fills: bool,
+    pub missing: Option<(u32, u32)>,
 }
 
 pub struct Stretch {
@@ -63,6 +66,7 @@ pub struct Show {
     // a playback has all stretches up to a gap, a paused picture has one
     pub parts: Vec<Stretch>,
     pub canvas: PathBuf,
+    pub setup: Setup,
     pub play: bool,
     // nothing shows, the clips get ready during a gap
     pub quiet: bool,
@@ -77,6 +81,7 @@ pub struct Show {
 pub struct Measure {
     pub jobs: Vec<Job>,
     pub sounds: Option<Vec<Sound>>,
+    pub setup: Setup,
     pub done: Box<dyn FnOnce(Option<u64>) + Send>,
 }
 
@@ -181,6 +186,21 @@ fn idle(layers: &[Layer], view: View, size: (u32, u32)) -> Vec<(&Layer, Config)>
         .collect()
 }
 
+fn start(
+    layer: &Layer,
+    config: &Config,
+    warn: Sink,
+    cancel: &Cancel,
+) -> interpolini_core::Result<Source> {
+    match layer.missing {
+        Some(size) => {
+            let art = missing();
+            Source::flat(art.rgba(), art.size(), size)
+        }
+        None => Source::open(&layer.clip, config, layer.still, warn, cancel),
+    }
+}
+
 fn key((layer, config): &(&Layer, Config)) -> Key {
     (layer.clip.clone(), config.clone())
 }
@@ -233,7 +253,7 @@ fn pair(
 }
 
 // the video on top gives the details and the speed
-fn details(open: &Sources, layers: &[Layer], original: bool) -> (String, f64) {
+fn details(open: &Sources, layers: &[Layer], original: bool, setup: &Setup) -> (String, f64) {
     let mut graphs = layers.iter().rev().filter_map(|layer| {
         let source = open.get(&layer.clip, &used(layer, original))?;
         source.graph()
@@ -242,13 +262,14 @@ fn details(open: &Sources, layers: &[Layer], original: bool) -> (String, f64) {
         return (String::new(), 30.0);
     };
     let info = graph.info;
-    let fps = info.fps.0 as f64 / info.fps.1 as f64;
+    let fps = setup.fps.unwrap_or(info.fps.0 as f64 / info.fps.1 as f64);
     let source = graph.source_fps();
     let rate = match source.round() == fps.round() {
         true => format!("{fps:.0} fps"),
         false => format!("{source:.0} to {fps:.0} fps"),
     };
-    let details = format!("{}x{}  |  {rate}", info.width, info.height);
+    let (width, height) = setup.size.unwrap_or((info.width, info.height));
+    let details = format!("{width}x{height}  |  {rate}");
     (details, fps)
 }
 
@@ -256,6 +277,17 @@ fn say(ui: &App, text: String, kind: Note, progress: f32) {
     ui.set_preview_note(text.into());
     ui.set_note_kind(kind);
     ui.set_note_progress(progress);
+    ui.set_note_action("".into());
+}
+
+pub fn announce(ui: &App, text: String, action: &str) {
+    let kind = if text.is_empty() {
+        Note::Sticky
+    } else {
+        Note::Notice
+    };
+    say(ui, text, kind, -1.0);
+    ui.set_note_action(action.into());
 }
 
 fn note(ui: &Weak<App>, text: String, kind: Note, progress: f32) {
@@ -333,7 +365,7 @@ fn post(
 pub struct Worker {
     ui: Weak<App>,
     open: Sources,
-    canvas: Option<(PathBuf, Canvas)>,
+    canvas: Option<(PathBuf, Setup, Canvas)>,
     recent: Vec<Key>,
 }
 
@@ -345,6 +377,7 @@ struct Play {
     width: u32,
     ahead: usize,
     held: Vec<Key>,
+    setup: Setup,
 }
 
 // the most pixels of a picture, with the copies of it, that the memory of the preview holds
@@ -382,6 +415,7 @@ impl Worker {
         let Show {
             parts,
             canvas: base,
+            setup,
             play,
             quiet,
             view,
@@ -398,7 +432,11 @@ impl Worker {
             return None;
         };
         if !quiet {
-            note(ui, "Rendering…".into(), Note::Sticky, -1.0);
+            let _ = ui.upgrade_in_event_loop(|ui| {
+                if ui.get_note_kind() != Note::Notice {
+                    say(&ui, "Rendering…".into(), Note::Sticky, -1.0);
+                }
+            });
         }
         let view = match (view, save) {
             (View::Result, Some(true)) => View::Both,
@@ -416,8 +454,12 @@ impl Worker {
         let warn = warn(ui);
         let mut failed = None;
         for (layer, config) in &shown {
-            if let Err(error) = open.open(&layer.clip, config, layer.still, &warn, cancel) {
-                failed = Some(error);
+            if open.get(&layer.clip, config).is_some() {
+                continue;
+            }
+            match start(layer, config, &warn, cancel) {
+                Ok(source) => open.add(layer.clip.clone(), config.clone(), source),
+                Err(error) => failed = Some(error),
             }
         }
         if cancel.stopped() {
@@ -431,9 +473,9 @@ impl Worker {
             }
             return None;
         }
-        if !matches!(canvas, Some(canvas) if canvas.0 == base) {
-            *canvas = match Canvas::open(&base, &Setup::default()) {
-                Ok(canvas) => Some((base, canvas)),
+        if !matches!(canvas, Some(canvas) if canvas.0 == base && canvas.1 == setup) {
+            *canvas = match Canvas::open(&base, &setup) {
+                Ok(canvas) => Some((base, setup, canvas)),
                 Err(error) => {
                     failed = Some(error);
                     None
@@ -444,7 +486,7 @@ impl Worker {
             fail(ui, error);
             return None;
         }
-        let (_, canvas) = canvas.as_mut()?;
+        let (_, _, canvas) = canvas.as_mut()?;
         let width = width.min(widest(size));
         let layers = &first.layers;
         if let Some(original) = save {
@@ -456,7 +498,7 @@ impl Worker {
                     ui.set_shot(path.to_string_lossy().as_ref().into());
                     ui.set_flash(true);
                 }
-                None => say(&ui, "Could not save the frame".into(), Note::Warning, -1.0),
+                None => say(&ui, "Couldn't save the frame".into(), Note::Warning, -1.0),
             });
             return None;
         }
@@ -468,11 +510,12 @@ impl Worker {
                 width: width.min(WIDTH),
                 ahead: ahead(size, view),
                 held: open.keys(),
+                setup,
                 parts,
             });
         }
         let (image, before) = pair(open, canvas, layers, view, 0.0, width, cancel).ok()?;
-        let (details, fps) = details(open, layers, view == View::Original);
+        let (details, fps) = details(open, layers, view == View::Original, &setup);
         let frame = Frame {
             moved: 0.0,
             image,
@@ -507,11 +550,18 @@ pub fn show(show: Show) {
     });
 }
 
-pub fn measure(Measure { jobs, sounds, done }: Measure) {
+pub fn measure(
+    Measure {
+        jobs,
+        sounds,
+        setup,
+        done,
+    }: Measure,
+) {
     services::with(|services| {
         services.measure.submit(move |cancel| {
             let mut open = Sources::default();
-            let bytes = estimate(&jobs, sounds.as_deref(), &Setup::default(), cancel, &mut open).ok();
+            let bytes = estimate(&jobs, sounds.as_deref(), &setup, cancel, &mut open).ok();
             if !cancel.stopped() {
                 done(bytes);
             }
@@ -575,7 +625,7 @@ fn open_next(
             }
             // the first picture of a clip takes long, so it is made here
             let layer = wanted.0;
-            let source = Source::open(&key.0, &key.1, layer.still, &warn, stop)
+            let source = start(layer, &key.1, &warn, stop)
                 .and_then(|mut source| source.at(layer.start, stop).map(|_| source));
             there.push(key.clone());
             if opened.send(source.map(|source| (key, source))).is_err() {
@@ -588,16 +638,16 @@ fn open_next(
 // in order: the host is slow after a picture that is left out
 fn compose_all(
     worker: &Mutex<Worker>,
-    play: (&Weak<App>, &[Stretch], View, u32),
+    play: (&Weak<App>, &[Stretch], View, u32, Setup),
     reach: &Reach,
     stop: &Cancel,
     ready: &Receiver<interpolini_core::Result<(Key, Source)>>,
     pictures: &SyncSender<Frame>,
 ) {
-    let (ui, parts, view, width) = play;
+    let (ui, parts, view, width, setup) = play;
     let mut worker = locked(worker);
     let Worker { open, canvas, .. } = &mut *worker;
-    let Some((_, canvas)) = canvas else {
+    let Some((_, _, canvas)) = canvas else {
         return;
     };
     'play: for (index, stretch) in parts.iter().enumerate() {
@@ -631,7 +681,7 @@ fn compose_all(
             reach.current.store(index, Ordering::Relaxed);
             reach.notify();
         }
-        let (details, fps) = details(open, &stretch.layers, view == View::Original);
+        let (details, fps) = details(open, &stretch.layers, view == View::Original, &setup);
         let step = (fps / SHOWN_FPS).round().max(1.0) / fps;
         let layers = &stretch.layers;
         for moved in (0..).map(|index| f64::from(index) * step) {
@@ -723,6 +773,7 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
         width,
         ahead,
         held,
+        setup,
     } = play;
     let time = parts[0].time;
     let parts = Arc::new(parts);
@@ -743,7 +794,7 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
         let (ui, worker, parts) = (ui.clone(), Arc::clone(worker), Arc::clone(&parts));
         let (reach, stop) = (Arc::clone(&reach), stop.clone());
         move || {
-            let play = (&ui, &parts[..], view, width);
+            let play = (&ui, &parts[..], view, width, setup);
             compose_all(&worker, play, &reach, &stop, &ready, &pictures)
         }
     });

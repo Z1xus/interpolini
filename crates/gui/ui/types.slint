@@ -1,8 +1,8 @@
-// brief notes fade, warnings stay until closed
 export enum Note {
     sticky,
     brief,
     warning,
+    notice,
 }
 
 export struct Clip {
@@ -136,4 +136,23 @@ export struct Sections {
     color: bool,
     upscale: bool,
     output: bool,
+}
+
+export struct Recent {
+    name: string,
+    folder: string,
+    path: string,
+}
+
+export struct Prefs {
+    projects: bool,
+    // minutes, 0 is off
+    autosave: int,
+    ask-save: bool,
+    reopen: bool,
+    confirm-delete: bool,
+    folder: string,
+    preset: string,
+    // megabytes, 0 is automatic
+    memory: int,
 }

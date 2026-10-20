@@ -329,10 +329,8 @@ pub fn wire(ui: &App) {
             return;
         };
         let mut made = made.borrow_mut();
-        if made.is_none() {
-            *made = Update::new().ok().inspect(|window| attach(&ui, window));
-        }
-        let Some(window) = made.as_ref() else {
+        let make = || Update::new().ok().inspect(|window| attach(&ui, window));
+        let Some(window) = crate::components::reuse(&mut made, make) else {
             return;
         };
         let version = ui.get_update().to_string();
