@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use interpolini_core::config::{self, Config};
 use interpolini_core::{Place, Probe, keyframes, probe};
@@ -87,33 +87,44 @@ fn inspect(clip: &Path) -> interpolini_core::Result<Found> {
     })
 }
 
-// the files are opened on another thread, so the window stays live, and then go to the timeline
 pub fn import(ui: Weak<App>, state: Shared, clips: Vec<PathBuf>, point: Option<(f32, f32)>) {
     services::background(&services::key("import"), move |cancel| {
-        let mut probed: Vec<Probed> = Vec::new();
-        for clip in clips {
+        let next = Arc::new(Mutex::new(None));
+        let last = clips.len();
+        for (index, clip) in clips.into_iter().enumerate() {
             if cancel.stopped() {
                 return;
             }
-            let found = inspect(&clip);
-            probed.push((clip, found));
+            let probed = vec![(clip.clone(), inspect(&clip))];
+            let (state, next) = (Arc::clone(&state), Arc::clone(&next));
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                let mut next = next.lock().unwrap_or_else(|poison| poison.into_inner());
+                let place = next.take().unwrap_or_else(|| {
+                    let time = point.map_or(-1.0, |point| ui.invoke_drop_time(point.0, point.1));
+                    point
+                        .filter(|_| time >= 0.0)
+                        .map(|point| (f64::from(time), ui.invoke_drop_depth(point.1)))
+                });
+                *next = Some(add(&ui, &state, probed, place));
+                if index + 1 == last {
+                    fill(&ui, &state);
+                }
+            });
         }
-        let _ = ui.upgrade_in_event_loop(move |ui| {
-            let time = point.map_or(-1.0, |point| ui.invoke_drop_time(point.0, point.1));
-            let place = point
-                .filter(|_| time >= 0.0)
-                .map(|point| (f64::from(time), ui.invoke_drop_depth(point.1)));
-            add(&ui, &state, probed, place);
-        });
     });
 }
 
-pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32)>) {
+pub fn add(
+    ui: &App,
+    state: &Shared,
+    clips: Vec<Probed>,
+    place: Option<(f64, f32)>,
+) -> Option<(f64, f32)> {
     // a copy has no timeline, so a new clip does not cut into the clips that are there
     let mut place = place.filter(|_| !ui.get_copying());
     let rows = ui.get_clips();
     let Some(rows) = rows.as_any().downcast_ref::<VecModel<Clip>>() else {
-        return;
+        return place;
     };
     for (clip, found) in clips {
         let Found {
@@ -218,9 +229,9 @@ pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32
         }
         drop(guard);
     }
-    fill(ui, state);
     fit(ui, state);
     refresh(ui, state);
+    place
 }
 
 pub fn fill(ui: &App, state: &Shared) {
