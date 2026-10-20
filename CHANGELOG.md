@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.22
+- Changed: Project settings are available without project files
+- Changed: Cleaner project settings window
+- Fixed: Project menu items that did nothing
+- Fixed: Release notes cut off in the update window
+- Fixed: Update window ignored the smooth scroll setting
+
 ## 0.1.21
 - New: Project files to save and reopen your timeline
 - New: Canvas size, frame rate and background for each project
