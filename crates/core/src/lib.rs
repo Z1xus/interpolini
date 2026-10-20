@@ -19,6 +19,7 @@ macro_rules! api {
 mod about;
 mod audio;
 mod blend;
+pub mod budget;
 mod color;
 mod compose;
 pub mod config;
@@ -39,6 +40,7 @@ mod tensorrt;
 mod timeline;
 mod upscale;
 mod weights;
+pub mod work;
 
 pub use about::about;
 pub use audio::{Mixer, RATE, Sound, peaks};

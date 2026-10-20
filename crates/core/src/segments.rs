@@ -13,6 +13,7 @@ use ffmpeg_next::{Packet, encoder, ffi, frame, picture};
 
 use crate::Result;
 use crate::blend::Blend;
+use crate::budget;
 use crate::config::Blending;
 use crate::decode::{Ahead, Decoder, Gpu, Meta, gpus};
 use crate::encode::{GOP, Spare};
@@ -167,59 +168,6 @@ fn feed(clip: &Path, threads: usize, gpu: Option<Gpu>) -> Result<(usize, Feed)> 
         threads => Feed::Cpu(Box::new(Decoder::threaded(clip, threads)?)),
     };
     Ok((threads, feed))
-}
-
-#[cfg(target_os = "linux")]
-pub fn memory() -> Option<usize> {
-    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let line = text.lines().find(|line| line.starts_with("MemTotal:"))?;
-    Some(line.split_whitespace().nth(1)?.parse::<usize>().ok()? * 1024)
-}
-
-#[cfg(windows)]
-pub fn memory() -> Option<usize> {
-    // MEMORYSTATUSEX, the fields after the total are not read
-    #[repr(C)]
-    struct Status {
-        length: u32,
-        load: u32,
-        total: u64,
-        rest: [u64; 6],
-    }
-    unsafe extern "system" {
-        fn GlobalMemoryStatusEx(status: *mut Status) -> i32;
-    }
-    let mut status = Status {
-        length: size_of::<Status>() as u32,
-        load: 0,
-        total: 0,
-        rest: [0; 6],
-    };
-    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(status.total as usize)
-}
-
-#[cfg(target_os = "macos")]
-pub fn memory() -> Option<usize> {
-    use std::ffi::{c_char, c_void};
-    unsafe extern "C" {
-        fn sysctlbyname(
-            name: *const c_char,
-            value: *mut c_void,
-            size: *mut usize,
-            new: *mut c_void,
-            new_size: usize,
-        ) -> i32;
-    }
-    let (mut total, mut size) = (0u64, size_of::<u64>());
-    let name = c"hw.memsize".as_ptr();
-    let none = std::ptr::null_mut();
-    let code = unsafe { sysctlbyname(name, (&raw mut total).cast(), &raw mut size, none, 0) };
-    (code == 0).then_some(total as usize)
-}
-
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
-pub fn memory() -> Option<usize> {
-    None
 }
 
 fn pixels(picture: &frame::Video, size: (u32, u32)) -> Option<Vec<u8>> {
@@ -401,11 +349,11 @@ impl Segments {
         let (weights, blending) = (weights.to_vec(), blending.clone());
         let blend = move || Blend::new(&weights, fps, &blending, frames);
         let math = blend();
-        let cores = std::thread::available_parallelism().map_or(1, usize::from);
+        let cores = budget::threads(budget::current());
         let luma = width as usize * height as usize;
         let picture = luma + 2 * (luma >> (meta.shift() * 2));
         // a quarter of the memory: half for the pictures of the lanes, half for the frames that wait
-        let budget = memory().map_or(2 << 30, |memory| (memory / 4).clamp(1 << 30, 8 << 30));
+        let budget = budget::bytes(budget::current());
         let lanes = budget / 2 / ((math.window() + HELD) * picture);
         let most = (cores / THREADS).min(lanes).max(1);
         Self {

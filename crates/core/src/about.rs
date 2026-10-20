@@ -2,7 +2,9 @@ use std::process::Command;
 
 use ffmpeg_next::encoder;
 
+use crate::budget::{self, Class};
 use crate::config::{self, Backend};
+use crate::work;
 
 const ENCODERS: [&str; 19] = [
     "h264_nvenc",
@@ -135,7 +137,7 @@ fn system() -> Vec<(&'static str, String)> {
         ),
         (
             "memory",
-            crate::segments::memory().map_or(String::new(), |bytes| format!("{} GB", bytes >> 30)),
+            format!("{} GB", crate::budget::machine().ram >> 30),
         ),
         ("gpu", chips.collect::<Vec<_>>().join(", ")),
     ]
@@ -162,9 +164,20 @@ pub fn about() -> String {
         format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
     )];
     lines.extend(system());
-    let threads = std::thread::available_parallelism().map_or(0, usize::from);
+    let machine = budget::machine();
+    let share = |class| budget::threads(class).to_string();
     lines.extend([
-        ("threads", threads.to_string()),
+        ("threads", machine.cores.to_string()),
+        (
+            "thread budget",
+            format!(
+                "preview {}, background {}, render {}",
+                share(Class::Interactive),
+                share(Class::Background),
+                share(Class::Render)
+            ),
+        ),
+        ("live threads", work::live().to_string()),
         ("gpu decoders", crate::decode::decoders().join(" ")),
         ("nvidia", nvidia.unwrap_or_default().replace('\n', ", ")),
         (
