@@ -95,6 +95,7 @@ export component App inherits Window {
     in property <[Fact]> left;
     in property <string> estimate;
     in-out property <bool> separate;
+    in-out property <bool> preview-off;
     in-out property <string> scope: "all clips";
     in property <[Piece]> art;
     in property <[Family]> themes;
@@ -160,6 +161,7 @@ export component App inherits Window {
     callback show-sheet(string);
     callback show-components();
     callback save-frame();
+    callback switched();
     in-out property <bool> flash;
     // the files that the notes name, a click shows them in their folder
     in property <string> shot;
@@ -354,6 +356,10 @@ export component App inherits Window {
                 original: root.original;
                 view <=> root.view;
                 copying: root.copying;
+                off <=> root.preview-off;
+                switched => {
+                    root.switched();
+                }
                 held: root.held;
                 viewed => {
                     root.viewed();

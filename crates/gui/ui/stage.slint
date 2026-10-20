@@ -98,7 +98,8 @@ export component Stage inherits Rectangle {
     in property <bool> transform;
     in property <int> framed;
     in property <bool> copying;
-    property <string> shown: root.copying ? "result" : root.held ? "original" : root.view;
+    in-out property <bool> off;
+    property <string> shown: root.off ? "off" : root.copying ? "result" : root.held ? "original" : root.view;
     property <length> pane: shown == "side" ? (root.width - 1px) / 2 : root.width;
     property <float> ratio: root.preview.height > 0 ? root.preview.width / root.preview.height : 16 / 9;
     property <length> wide: min(pane, root.height * ratio) * root.scale;
@@ -111,6 +112,7 @@ export component Stage inherits Rectangle {
     callback add-clips();
     callback viewed();
     callback save-frame();
+    callback switched();
     property <length> menu-x;
     property <length> menu-y;
     menu := PopupWindow {
@@ -121,7 +123,17 @@ export component Stage inherits Rectangle {
             VerticalLayout {
                 padding: 4px;
                 MenuItem {
+                    text: "Preview";
+                    checked: !root.off;
+                    clicked => {
+                        root.off = !root.off;
+                        root.switched();
+                        menu.close();
+                    }
+                }
+                MenuItem {
                     text: "Save frame";
+                    enabled: !root.off;
                     hint: "Ctrl Shift E";
                     clicked => {
                         root.save-frame();
@@ -161,7 +173,7 @@ export component Stage inherits Rectangle {
             root.scale = root.next;
             root.viewed();
         }
-        Pane {
+        if root.shown != "off": Pane {
             x: 0;
             width: root.pane;
             source: root.shown == "result" ? root.preview : root.original;
@@ -195,7 +207,7 @@ export component Stage inherits Rectangle {
             pan-x: root.pan-x;
             pan-y: root.pan-y;
         }
-        if (root.held && !root.copying) || root.shown == "split" || root.shown == "side": Tag {
+        if (root.held && !root.copying && !root.off) || root.shown == "split" || root.shown == "side": Tag {
             x: 8px;
             y: parent.height - self.height - 8px;
             text: "original";
@@ -205,13 +217,20 @@ export component Stage inherits Rectangle {
             y: parent.height - self.height - 8px;
             text: "result";
         }
+        if root.off: Text {
+            text: "Preview is off";
+            color: Theme.faint;
+            font-size: 13px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
         look := TouchArea {
             scroll-event(event) => {
                 parent.zoom(mod(self.mouse-x, root.pane + 1px) - root.pane / 2, self.mouse-y - parent.height / 2, event.delta-y > 0);
                 accept
             }
             pointer-event(event) => {
-                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down && root.preview.width > 0 {
+                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down && (root.preview.width > 0 || root.off) {
                     root.menu-x = self.absolute-position.x + self.mouse-x - root.absolute-position.x;
                     root.menu-y = self.absolute-position.y + self.mouse-y - root.absolute-position.y;
                     menu.show();
@@ -253,7 +272,7 @@ export component Stage inherits Rectangle {
                     }
                 }
             }
-            if root.transform && root.shown != "side" && root.framed >= 0 && root.framed < root.clips.length && now >= framed.at - 0.001 && now <= framed.at + framed.kept: Frame {
+            if root.transform && root.shown != "side" && !root.off && root.framed >= 0 && root.framed < root.clips.length && now >= framed.at - 0.001 && now <= framed.at + framed.kept: Frame {
                 x: (parent.width - self.width) / 2 + root.pan-x;
                 y: (parent.height - self.height) / 2 + root.pan-y;
                 width: wide;

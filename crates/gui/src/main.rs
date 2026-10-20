@@ -99,6 +99,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_theme(theme.into());
     ui.set_light(value("light: ") == Some("yes"));
     ui.set_separate(value("separate: ") == Some("yes"));
+    ui.set_preview_off(value("preview: ") == Some("no"));
     ui.set_updates(value("updates: ") != Some("no"));
     let size = |key: &str| value(key).and_then(|size| size.parse::<f32>().ok());
     ui.set_rail(size("rail: ").unwrap_or(340.0));

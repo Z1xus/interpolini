@@ -137,6 +137,14 @@ pub fn wire(ui: &App, state: &Shared) {
     });
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_switched(move || {
+        if let Some(ui) = weak.upgrade() {
+            save_preferences(&ui);
+            refresh(&ui, &shared);
+        }
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_play(move || {
         if let Some(ui) = weak.upgrade().filter(|ui| !ui.get_rendering()) {
             ui.set_playing(!ui.get_playing());

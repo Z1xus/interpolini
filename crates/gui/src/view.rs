@@ -291,7 +291,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
     let snap = std::mem::take(&mut state.snap);
     ui.set_shot("".into());
     // a render gets all of the gpu, so the preview closes its clips until the render is done
-    if ui.get_rendering() {
+    if ui.get_rendering() || ui.get_preview_off() {
         preview::show(preview::Show {
             parts: Vec::new(),
             canvas: Default::default(),
@@ -303,6 +303,16 @@ pub fn refresh(ui: &App, shared: &Shared) {
             total: 0.0,
             save: None,
         });
+        if ui.get_preview_off() {
+            ui.set_preview(slint::Image::default());
+            ui.set_original(slint::Image::default());
+        }
+        // a hidden preview has no frames to time playback, so the clock does
+        let walk = ui.get_playing() && !state.entries.is_empty();
+        drop(state);
+        if walk {
+            idle(ui, shared);
+        }
         return;
     }
     let empty = || {
@@ -448,7 +458,7 @@ pub fn idle(ui: &App, shared: &Shared) {
             let next =
                 f64::from(ui.get_position()) + STEP.as_secs_f64() / state.seconds().max(0.001);
             let over = next >= 1.0 || !ui.get_playing();
-            let clip = state.locate(next as f32).is_some();
+            let clip = !ui.get_preview_off() && state.locate(next as f32).is_some();
             drop(state);
             if over || clip {
                 WALK.with(slint::Timer::stop);

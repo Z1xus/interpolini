@@ -206,12 +206,13 @@ pub fn save_preferences(ui: &App) {
         .map(|open| open.0)
         .collect();
     let text = format!(
-        "theme: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\nupdates: {}\nvolume: {}\nsections: {}\n",
+        "theme: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nupdates: {}\nvolume: {}\nsections: {}\n",
         ui.get_theme(),
         yes(ui.get_light()),
         yes(ui.get_separate()),
         ui.get_rail(),
         ui.get_deck(),
+        yes(!ui.get_preview_off()),
         yes(ui.get_updates()),
         ui.get_volume(),
         open.join(" ")
@@ -247,8 +248,6 @@ pub fn wire(ui: &App, state: &Shared) {
         // a value that is not valid goes back to the last good one
         ui.set_settings(settings(&entry.config));
         ui.set_unsaved(unsaved(entry));
-        // without a selection, or with the scope on all clips, every clip gets these settings
-        // with more clips selected, each of them gets these settings
         let chosen = crate::edit::chosen(&ui, &state);
         let config = state.current(&ui).config.clone();
         let videos = state
