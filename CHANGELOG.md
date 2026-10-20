@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.21
+- New: Project files to save and reopen your timeline
+- New: Canvas size, frame rate and background for each project
+- New: Settings window
+- New: Share configs with a short code
+- New: Replace a clip on the timeline
+- New: Lower preview resolution for smoother playback
+- New: Turn off the preview
+- Faster: RIFE v4.25 and newer models
+- Faster: Preview when moving the playhead or changing settings
+- Faster: Timeline with many clips
+- Changed: Pre-interpolation is only available with SVP
+- Changed: Model list links to more RIFE models
+- Fixed: High VRAM use with SVP
+- Fixed: Audio too loud in clips with several audio tracks
+- Fixed: Crash when TensorRT fails
+- Fixed: Broken TensorRT after an interrupted install
+- Fixed: Playback could start during a render
+
 ## 0.1.20
 - Fixed: Crash on Windows when moving the playhead or changing settings
 - Faster: Preview when moving the playhead between clips
