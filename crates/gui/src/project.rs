@@ -592,7 +592,7 @@ fn restore(ui: &App, shared: &Shared, document: Document, path: Option<PathBuf>,
         fps: look.fps.filter(|fps| RATES.contains(fps)),
         ..look
     };
-    let (canvas, kind) = (look.size.filter(|_| ui.get_prefs().projects), look.fit);
+    let (canvas, kind) = (look.size, look.fit);
     let clips = clips
         .into_iter()
         .filter(|clip| (clip.media as usize) < media.len());
@@ -1070,7 +1070,7 @@ fn swap(ui: &App, shared: &Shared, id: u64, file: &Path) {
     let old: Vec<Entry> = parts().cloned().collect();
     record(ui, &mut state, false);
     let fresh = Media::read(file, state.project.path.as_deref()).ok();
-    let canvas = state.project.look.size.filter(|_| ui.get_prefs().projects);
+    let canvas = state.project.look.size;
     let kind = state.project.look.fit;
     state
         .project
@@ -1116,7 +1116,7 @@ fn relink(ui: &App, shared: &Shared, missing: &Path, file: &Path) {
         let found = known.and_then(|known| file::pick(&index, known));
         moves.extend(found.map(|found| (other, found)));
     }
-    let canvas = state.project.look.size.filter(|_| ui.get_prefs().projects);
+    let canvas = state.project.look.size;
     let kind = state.project.look.fit;
     let mut done = 0;
     for (old, new) in moves {

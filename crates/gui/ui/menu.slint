@@ -90,8 +90,8 @@ export component Menu inherits Rectangle {
                                 }
                             }
                             clicked => {
-                                file.close();
                                 root.new-project();
+                                file.close();
                             }
                         }
                         if root.projects: MenuItem {
@@ -104,8 +104,8 @@ export component Menu inherits Rectangle {
                                 }
                             }
                             clicked => {
-                                file.close();
                                 root.open-project();
+                                file.close();
                             }
                         }
                         if root.projects: MenuItem {
@@ -142,8 +142,8 @@ export component Menu inherits Rectangle {
                                 }
                             }
                             clicked => {
-                                file.close();
                                 root.save-project();
+                                file.close();
                             }
                         }
                         if root.projects: MenuItem {
@@ -155,12 +155,12 @@ export component Menu inherits Rectangle {
                                 }
                             }
                             clicked => {
-                                file.close();
                                 root.save-project-as();
+                                file.close();
                             }
                         }
                         if root.projects: MenuSeparator { }
-                        if root.projects: MenuItem {
+                        MenuItem {
                             text: "Project settings…";
                             hovered(inside) => {
                                 if inside {
@@ -168,11 +168,11 @@ export component Menu inherits Rectangle {
                                 }
                             }
                             clicked => {
-                                file.close();
                                 root.show-project();
+                                file.close();
                             }
                         }
-                        if root.projects: MenuSeparator { }
+                        MenuSeparator { }
                         MenuItem {
                             text: "Import…";
                             hovered(inside) => {
@@ -181,8 +181,8 @@ export component Menu inherits Rectangle {
                                 }
                             }
                             clicked => {
-                                file.close();
                                 root.add-clips();
+                                file.close();
                             }
                         }
                         MenuItem {
@@ -194,8 +194,8 @@ export component Menu inherits Rectangle {
                                 }
                             }
                             clicked => {
-                                file.close();
                                 root.close-clips();
+                                file.close();
                             }
                         }
                         MenuItem {
@@ -207,8 +207,8 @@ export component Menu inherits Rectangle {
                                 }
                             }
                             clicked => {
-                                file.close();
                                 root.locate();
+                                file.close();
                             }
                         }
                         MenuItem {
@@ -220,12 +220,12 @@ export component Menu inherits Rectangle {
                                 }
                             }
                             clicked => {
-                                file.close();
                                 if root.rendering {
                                     root.cancel();
                                 } else {
                                     root.render();
                                 }
+                                file.close();
                             }
                         }
                         MenuItem {
@@ -238,8 +238,8 @@ export component Menu inherits Rectangle {
                                 }
                             }
                             clicked => {
-                                file.close();
                                 root.save-frame();
+                                file.close();
                             }
                         }
                         MenuItem {
@@ -252,9 +252,9 @@ export component Menu inherits Rectangle {
                                 }
                             }
                             clicked => {
-                                file.close();
                                 root.separate = !root.separate;
                                 root.save-preferences();
+                                file.close();
                             }
                         }
                         MenuSeparator { }
@@ -266,8 +266,8 @@ export component Menu inherits Rectangle {
                                 }
                             }
                             clicked => {
-                                file.close();
                                 root.show-preferences();
+                                file.close();
                             }
                         }
                         MenuItem {
@@ -278,8 +278,8 @@ export component Menu inherits Rectangle {
                                 }
                             }
                             clicked => {
-                                file.close();
                                 root.quit();
+                                file.close();
                             }
                         }
                     }
@@ -297,16 +297,16 @@ export component Menu inherits Rectangle {
                                     text: item.name;
                                     hint: item.folder;
                                     clicked => {
-                                        file.close();
                                         root.open-recent(item.path);
+                                        file.close();
                                     }
                                 }
                                 MenuSeparator { }
                                 MenuItem {
                                     text: "Clear list";
                                     clicked => {
-                                        file.close();
                                         root.clear-recent();
+                                        file.close();
                                     }
                                 }
                             }
