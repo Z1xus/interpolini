@@ -8,7 +8,6 @@ use crate::state::{Entry, Shared, State, lock};
 use crate::view::{fit, lanes, layout, load, refresh, select, selected};
 use crate::{App, Clip};
 
-// a clip that lands on other clips of its track takes their place there
 // moved is how far the clip came, a clip that is not moved gives 0
 pub fn overwrite(ui: &App, state: &mut State, link: u64, moved: f64) {
     let rows = ui.get_clips();
@@ -67,7 +66,8 @@ pub fn overwrite(ui: &App, state: &mut State, link: u64, moved: f64) {
             let place = |time: f64| row.cut_in + ((time - start) / other.seconds) as f32;
             match (from <= start, to >= end) {
                 (true, true) => {
-                    state.entries.remove(index);
+                    let gone = state.entries.remove(index);
+                    crate::clips::forget(state, &gone);
                     model.remove(index);
                     continue;
                 }
@@ -184,7 +184,8 @@ pub fn discard(ui: &App, state: &mut State, gone: impl Fn(&Entry) -> bool) {
     };
     for index in (0..state.entries.len()).rev() {
         if gone(&state.entries[index]) {
-            state.entries.remove(index);
+            let gone = state.entries.remove(index);
+            crate::clips::forget(state, &gone);
             rows.remove(index);
         }
     }

@@ -3,18 +3,17 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use interpolini_core::config::{self, Backend};
+use interpolini_core::work::Cancel;
 use sevenz_rust2::{ArchiveReader, Password};
 use sha2::{Digest, Sha256};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
 #[cfg(target_os = "linux")]
 use crate::icon;
-use crate::{App, Components, Download, Theme, ffmpeg, themes};
+use crate::{App, Components, Download, Theme, ffmpeg, services, themes};
 
 const MODELS_URL: &str =
     "https://github.com/AmusementClub/vs-mlrt/releases/download/external-models/";
@@ -139,7 +138,7 @@ pub fn text(error: impl ToString) -> String {
     error.to_string()
 }
 
-pub fn download(url: &str, sha: &str, to: &Path, report: Report, stop: &AtomicBool) -> Outcome {
+pub fn download(url: &str, sha: &str, to: &Path, report: Report, stop: &Cancel) -> Outcome {
     let part = to.with_extension("part");
     let mut response = ureq::get(url).call().map_err(text)?;
     let length = response.headers().get("content-length");
@@ -155,7 +154,7 @@ pub fn download(url: &str, sha: &str, to: &Path, report: Report, stop: &AtomicBo
     let mut done = 0;
     loop {
         let count = reader.read(&mut buffer).map_err(text)?;
-        if count == 0 || stop.load(Ordering::Relaxed) {
+        if count == 0 || stop.stopped() {
             break;
         }
         file.write_all(&buffer[..count]).map_err(text)?;
@@ -177,9 +176,9 @@ pub fn download(url: &str, sha: &str, to: &Path, report: Report, stop: &AtomicBo
         }
     }
     let hash = hex(&hash.finalize());
-    if stop.load(Ordering::Relaxed) || hash != sha {
+    if stop.stopped() || hash != sha {
         let _ = fs::remove_file(&part);
-        return Err(match stop.load(Ordering::Relaxed) {
+        return Err(match stop.stopped() {
             true => String::new(),
             false => "The download is damaged. Try again.".into(),
         });
@@ -191,7 +190,7 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn install_model(name: &str, report: Report, stop: &AtomicBool) -> Outcome {
+fn install_model(name: &str, report: Report, stop: &Cancel) -> Outcome {
     let (_, archive, file, sha) = MODELS.into_iter().find(|model| model.0 == name).ok_or("")?;
     let folder = config::app_dir().join("rife").join(name);
     fs::create_dir_all(&folder).map_err(text)?;
@@ -210,7 +209,7 @@ fn install_model(name: &str, report: Report, stop: &AtomicBool) -> Outcome {
     fs::remove_file(packed).map_err(text)
 }
 
-fn install_vulkan(name: &str, report: Report, stop: &AtomicBool) -> Outcome {
+fn install_vulkan(name: &str, report: Report, stop: &Cancel) -> Outcome {
     let (_, weights, graph) = VULKAN.into_iter().find(|model| model.0 == name).ok_or("")?;
     let folder = config::app_dir().join("rife").join(name);
     fs::create_dir_all(&folder).map_err(text)?;
@@ -222,7 +221,7 @@ fn install_vulkan(name: &str, report: Report, stop: &AtomicBool) -> Outcome {
     Ok(())
 }
 
-fn unpack_tensorrt(folder: &Path, report: Report, stop: &AtomicBool) -> Outcome {
+fn unpack_tensorrt(folder: &Path, report: Report, stop: &Cancel) -> Outcome {
     for (url, sha, files) in WHEELS {
         let wheel = folder.join("wheel.zip");
         download(url, sha, &wheel, report, stop)?;
@@ -239,7 +238,7 @@ fn unpack_tensorrt(folder: &Path, report: Report, stop: &AtomicBool) -> Outcome 
     Ok(())
 }
 
-fn install_tensorrt(report: Report, stop: &AtomicBool) -> Outcome {
+fn install_tensorrt(report: Report, stop: &Cancel) -> Outcome {
     // the folder appears complete or not at all
     let folder = config::app_dir().join("tensorrt");
     let part = folder.with_extension("part");
@@ -340,7 +339,7 @@ pub fn wire(ui: &App) {
     ffmpeg::clean();
     ui.set_components(true);
     let weak = ui.as_weak();
-    std::thread::spawn(move || {
+    services::task("support", move |_| {
         interpolini_core::support();
         let _ = weak.upgrade_in_event_loop(|ui| show(&ui));
     });
@@ -387,26 +386,26 @@ pub fn restart(ui: &App) {
 
 // the things that the window can do
 fn attach(ui: &App, window: &Components) {
-    let stop = Arc::new(AtomicBool::new(false));
     let job = {
-        let (weak, shown, stop) = (ui.as_weak(), window.as_weak(), Arc::clone(&stop));
+        let (weak, shown) = (ui.as_weak(), window.as_weak());
         move |name: String| {
-            let (weak, shown, stop) = (weak.clone(), shown.clone(), Arc::clone(&stop));
-            stop.store(false, Ordering::Relaxed);
-            std::thread::spawn(move || {
-                let told = shown.clone();
-                let report = move |done: f32, progress: String| {
-                    let _ = told.upgrade_in_event_loop(move |window| {
-                        window.set_fraction(done);
-                        window.set_progress(progress.into());
-                    });
-                };
-                let outcome = match name.split_once('/') {
-                    Some(("vulkan", model)) => install_vulkan(model, &report, &stop),
-                    Some((_, model)) => install_model(model, &report, &stop),
-                    None => install_tensorrt(&report, &stop),
-                };
-                done(weak, shown, outcome);
+            let (weak, shown) = (weak.clone(), shown.clone());
+            services::with(|services| {
+                services.install.submit(move |stop| {
+                    let told = shown.clone();
+                    let report = move |done: f32, progress: String| {
+                        let _ = told.upgrade_in_event_loop(move |window| {
+                            window.set_fraction(done);
+                            window.set_progress(progress.into());
+                        });
+                    };
+                    let outcome = match name.split_once('/') {
+                        Some(("vulkan", model)) => install_vulkan(model, &report, stop),
+                        Some((_, model)) => install_model(model, &report, stop),
+                        None => install_tensorrt(&report, stop),
+                    };
+                    done(weak, shown, outcome);
+                })
             });
         }
     };
@@ -427,7 +426,9 @@ fn attach(ui: &App, window: &Components) {
         }
     });
 
-    window.on_cancel(move || stop.store(true, Ordering::Relaxed));
+    window.on_cancel(|| {
+        services::with(|services| services.install.cancel());
+    });
 
     ffmpeg::wire(ui, window);
 }

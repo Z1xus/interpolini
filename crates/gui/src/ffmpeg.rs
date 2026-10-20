@@ -8,7 +8,7 @@ use interpolini_core::config;
 use slint::ComponentHandle;
 
 use crate::components::{Outcome, finish, restart, text};
-use crate::{App, Components};
+use crate::{App, Components, services};
 
 const FFMPEG: [&str; 5] = ["avcodec", "avformat", "avutil", "swscale", "swresample"];
 static LOADED: OnceLock<&str> = OnceLock::new();
@@ -47,10 +47,10 @@ fn kept() -> PathBuf {
     config::app_dir().join("ffmpeg-bundled")
 }
 
-fn pick_folder(done: impl FnOnce(PathBuf) + Send + 'static) {
-    std::thread::spawn(move || {
-        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-            done(folder);
+fn pick_folder(done: impl FnOnce(PathBuf) + 'static) {
+    let _ = slint::spawn_local(async move {
+        if let Some(folder) = rfd::AsyncFileDialog::new().pick_folder().await {
+            done(folder.path().to_owned());
         }
     });
 }
@@ -141,23 +141,30 @@ pub fn wire(ui: &App, window: &Components) {
 
     let (weak, shown) = (ui.as_weak(), window.as_weak());
     window.on_use_ffmpeg(move |choice| {
-        if let (Some(ui), Some(window)) = (weak.upgrade(), shown.upgrade()) {
+        let (weak, shown, choice) = (weak.clone(), shown.clone(), choice.to_string());
+        services::task("ffmpeg", move |_| {
             let outcome = use_ffmpeg(&choice, None);
-            window.set_restart(outcome.is_ok() && LOADED.get() != Some(&ffmpeg()));
-            finish(&ui, &window, outcome);
-        }
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                if let Some(window) = shown.upgrade() {
+                    window.set_restart(outcome.is_ok() && LOADED.get() != Some(&ffmpeg()));
+                    finish(&ui, &window, outcome);
+                }
+            });
+        });
     });
 
     let (weak, shown) = (ui.as_weak(), window.as_weak());
     window.on_choose_ffmpeg(move || {
         let (weak, shown) = (weak.clone(), shown.clone());
         pick_folder(move |folder| {
-            let outcome = use_ffmpeg("custom", Some(&folder));
-            let _ = weak.upgrade_in_event_loop(move |ui| {
-                if let Some(window) = shown.upgrade() {
-                    window.set_restart(outcome.is_ok());
-                    finish(&ui, &window, outcome);
-                }
+            services::task("ffmpeg", move |_| {
+                let outcome = use_ffmpeg("custom", Some(&folder));
+                let _ = weak.upgrade_in_event_loop(move |ui| {
+                    if let Some(window) = shown.upgrade() {
+                        window.set_restart(outcome.is_ok());
+                        finish(&ui, &window, outcome);
+                    }
+                });
             });
         });
     });

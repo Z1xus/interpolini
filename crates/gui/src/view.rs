@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,22 +37,20 @@ pub fn layout(ui: &App, state: &mut State) {
             rows.set_row_data(index, row);
         }
     }
-    for index in 0..state.entries.len() {
+    let spans = state.spans();
+    let mut counts: HashMap<u64, usize> = HashMap::new();
+    for entry in &state.entries {
+        *counts.entry(entry.link).or_default() += 1;
+    }
+    for (index, span) in spans.iter().enumerate() {
         let Some(mut row) = rows.row_data(index) else {
             continue;
         };
-        let link = state.entries[index].link;
-        let span = state.span(index);
         let shown = (
             span.cross.0 as f32,
             span.cross.1 as f32,
             slint::SharedString::from(span.fade.curves.1.name()),
-            state
-                .entries
-                .iter()
-                .filter(|other| other.link == link)
-                .count()
-                > 1,
+            counts[&state.entries[index].link] > 1,
         );
         let now = (
             row.cross_in,
@@ -292,18 +291,17 @@ pub fn refresh(ui: &App, shared: &Shared) {
     ui.set_shot("".into());
     // a render gets all of the gpu, so the preview closes its clips until the render is done
     if ui.get_rendering() {
-        if let Some(preview) = &state.preview {
-            let _ = preview.send(preview::Request::Show(preview::Show {
-                parts: Vec::new(),
-                canvas: Default::default(),
-                play: false,
-                quiet: false,
-                original: false,
-                width: 0,
-                total: 0.0,
-                save: None,
-            }));
-        }
+        preview::show(preview::Show {
+            parts: Vec::new(),
+            canvas: Default::default(),
+            play: false,
+            quiet: false,
+            original: false,
+            width: 0,
+            size: (0, 0),
+            total: 0.0,
+            save: None,
+        });
         return;
     }
     let empty = || {
@@ -311,7 +309,12 @@ pub fn refresh(ui: &App, shared: &Shared) {
         ui.set_original(slint::Image::default());
         ui.set_preview_note("".into());
     };
-    let shown = state.part(ui.get_position());
+    let spans = state.spans();
+    let all = state.parts();
+    let seconds = state.seconds();
+    let time = (f64::from(ui.get_position()) * seconds).min(seconds - 0.001);
+    let inside = |part: &&Part| part.start <= time && time < part.end;
+    let shown = all.iter().find(inside).map(|part| (time, part.clone()));
     let shown = shown.filter(|shown| !shown.1.clips.is_empty());
     // without a video the lowest image gives the picture size
     let lowest = shown.as_ref().map(|shown| shown.1.clips[0]);
@@ -339,14 +342,13 @@ pub fn refresh(ui: &App, shared: &Shared) {
     };
     let stretch = |part: &Part, time: f64| {
         // a video that fills the picture hides the clips under it
-        let fills =
-            |index: &usize| covers(index) && (copying || state.span(*index).picture().none());
+        let fills = |index: &usize| covers(index) && (copying || spans[*index].picture().none());
         let shown = &part.clips[part.clips.iter().rposition(fills).unwrap_or(0)..];
         let shown = shown
             .iter()
             .filter(|index| !copying || !state.entries[**index].still);
         let layer = |index: &usize| {
-            let (entry, span) = (&state.entries[*index], state.span(*index));
+            let (entry, span) = (&state.entries[*index], &spans[*index]);
             preview::Layer {
                 clip: entry.clip.clone(),
                 config: match copying {
@@ -373,7 +375,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
     };
     // a playback goes on through the parts that follow, up to a part without a clip
     let after = |end: f64| {
-        let later = state.parts().into_iter();
+        let later = all.iter().cloned();
         let later = later.skip_while(move |other| other.start < end - 0.0005);
         later.take_while(|other| !other.clips.is_empty())
     };
@@ -382,19 +384,18 @@ pub fn refresh(ui: &App, shared: &Shared) {
                original: bool,
                width: i32,
                save: Option<bool>| {
-        let request = preview::Request::Show(preview::Show {
+        let request = preview::Show {
             parts,
             canvas: base.clip.clone(),
             play: ui.get_playing(),
             quiet,
             original,
             width: width as u32,
+            size: base.size,
             total: state.seconds(),
             save,
-        });
-        if let Some(preview) = &state.preview {
-            let _ = preview.send(request);
-        }
+        };
+        preview::show(request);
     };
     let Some((time, part)) = shown else {
         // no clip is here, so the picture is empty and playback walks on by the clock
@@ -402,7 +403,7 @@ pub fn refresh(ui: &App, shared: &Shared) {
         let walk = ui.get_playing();
         if walk {
             let time = f64::from(ui.get_position()) * state.seconds();
-            let gap = state.parts().into_iter().find(|part| part.end > time);
+            let gap = all.iter().find(|part| part.end > time).cloned();
             let next = gap.map(|gap| after(gap.end).map(|part| stretch(&part, part.start)));
             ask(
                 next.map(Iterator::collect).unwrap_or_default(),

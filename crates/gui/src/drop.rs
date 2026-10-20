@@ -144,7 +144,7 @@ impl Dispatch<WlDataDevice, ()> for State {
                     offer.receive(MIME.to_owned(), writer.as_fd());
                     let _ = state.connection.flush();
                     let hovered = Arc::clone(&state.hovered);
-                    std::thread::spawn(move || {
+                    crate::services::task("hover", move |_| {
                         let mut list = String::new();
                         let _ = reader.read_to_string(&mut list);
                         hovered(Hover::Files(paths(&list)));
@@ -175,7 +175,7 @@ impl Dispatch<WlDataDevice, ()> for State {
                 let (connection, dropped) = (state.connection.clone(), Arc::clone(&state.dropped));
                 let finish = state.copies && offer.version() >= 3;
                 let point = state.point;
-                std::thread::spawn(move || {
+                crate::services::task("drop", move |_| {
                     let mut list = String::new();
                     let _ = reader.read_to_string(&mut list);
                     // finish is valid only after an accepted action
@@ -229,8 +229,10 @@ impl Drops {
         })
     }
 
-    pub fn pump(&mut self) {
-        let _ = self.queue.dispatch_pending(&mut self.state);
+    // true when events came
+    pub fn pump(&mut self) -> bool {
+        let events = self.queue.dispatch_pending(&mut self.state);
         let _ = self.state.connection.flush();
+        events.is_ok_and(|events| events > 0)
     }
 }

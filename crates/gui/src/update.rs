@@ -4,16 +4,15 @@ use std::io::{self, Cursor};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use interpolini_core::config;
+use interpolini_core::work::Cancel;
 use sha2::{Digest, Sha256};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 use crate::components::{Outcome, Report, download, hex, present, restart, text};
-use crate::{App, Change, Theme, Update, themes};
+use crate::{App, Change, Theme, Update, services, themes};
 
 const RELEASES: &str = "https://github.com/Z1xus/interpolini/releases";
 const DAMAGED: &str = "The download is damaged. Try again.";
@@ -97,7 +96,7 @@ pub fn check(ui: &App) {
         return;
     }
     let weak = ui.as_weak();
-    std::thread::spawn(move || {
+    services::task("update", move |_| {
         if let Some(version) = newest() {
             let _ = weak.upgrade_in_event_loop(move |ui| ui.set_update(version.into()));
         }
@@ -241,7 +240,7 @@ fn elevate(zip: &Path, sha: &str) -> Outcome {
     }
 }
 
-fn install(version: &str, report: Report, stop: &AtomicBool) -> Outcome {
+fn install(version: &str, report: Report, stop: &Cancel) -> Outcome {
     let package = package().ok_or("This system can't update itself.")?;
     let base = format!("{RELEASES}/download/v{version}");
     let sums = ureq::get(format!("{base}/SHA256SUMS"))
@@ -271,11 +270,12 @@ fn install(version: &str, report: Report, stop: &AtomicBool) -> Outcome {
     outcome
 }
 
-fn attach(ui: &App, window: &Update, stop: &Arc<AtomicBool>) {
-    let cancel = Arc::clone(stop);
-    window.on_cancel(move || cancel.store(true, Ordering::Relaxed));
+fn attach(ui: &App, window: &Update) {
+    window.on_cancel(|| {
+        services::with(|services| services.update.cancel());
+    });
 
-    let (weak, shown, stop) = (ui.as_weak(), window.as_weak(), Arc::clone(stop));
+    let (weak, shown) = (ui.as_weak(), window.as_weak());
     window.on_install(move || {
         let (Some(ui), Some(window)) = (weak.upgrade(), shown.upgrade()) else {
             return;
@@ -285,33 +285,29 @@ fn attach(ui: &App, window: &Update, stop: &Arc<AtomicBool>) {
         window.set_note("".into());
         window.set_progress("".into());
         window.set_fraction(0.0);
-        stop.store(false, Ordering::Relaxed);
-        let (version, weak, shown, stop) = (
-            ui.get_update().to_string(),
-            weak.clone(),
-            shown.clone(),
-            Arc::clone(&stop),
-        );
-        std::thread::spawn(move || {
-            let told = shown.clone();
-            let report = move |done: f32, progress: String| {
-                let _ = told.upgrade_in_event_loop(move |window| {
-                    window.set_fraction(done);
-                    window.set_progress(progress.into());
-                });
-            };
-            let outcome = install(&version, &report, &stop);
-            let _ = weak.upgrade_in_event_loop(move |ui| {
-                let Some(window) = shown.upgrade() else {
-                    return;
+        let (version, weak, shown) = (ui.get_update().to_string(), weak.clone(), shown.clone());
+        services::with(|services| {
+            services.update.submit(move |stop| {
+                let told = shown.clone();
+                let report = move |done: f32, progress: String| {
+                    let _ = told.upgrade_in_event_loop(move |window| {
+                        window.set_fraction(done);
+                        window.set_progress(progress.into());
+                    });
                 };
-                window.set_busy(false);
-                window.set_done(outcome.is_ok());
-                window.set_note(outcome.err().unwrap_or_default().into());
-                if window.get_done() && !ui.get_rendering() && !ui.get_unsaved() {
-                    restart(&ui);
-                }
-            });
+                let outcome = install(&version, &report, stop);
+                let _ = weak.upgrade_in_event_loop(move |ui| {
+                    let Some(window) = shown.upgrade() else {
+                        return;
+                    };
+                    window.set_busy(false);
+                    window.set_done(outcome.is_ok());
+                    window.set_note(outcome.err().unwrap_or_default().into());
+                    if window.get_done() && !ui.get_rendering() && !ui.get_unsaved() {
+                        restart(&ui);
+                    }
+                });
+            })
         });
     });
 
@@ -327,7 +323,6 @@ pub fn wire(ui: &App) {
     clean();
     check(ui);
     let made: Rc<RefCell<Option<Update>>> = Rc::default();
-    let stop = Arc::new(AtomicBool::new(false));
     let weak = ui.as_weak();
     ui.on_show_update(move || {
         let Some(ui) = weak.upgrade() else {
@@ -335,9 +330,7 @@ pub fn wire(ui: &App) {
         };
         let mut made = made.borrow_mut();
         if made.is_none() {
-            *made = Update::new()
-                .ok()
-                .inspect(|window| attach(&ui, window, &stop));
+            *made = Update::new().ok().inspect(|window| attach(&ui, window));
         }
         let Some(window) = made.as_ref() else {
             return;
@@ -346,7 +339,7 @@ pub fn wire(ui: &App) {
         window.set_version(version.clone().into());
         window.set_current(CURRENT.into());
         let weak = window.as_weak();
-        std::thread::spawn(move || {
+        services::task("changelog", move |_| {
             let changes = changelog(&version).map(|text| changes(&text, &version));
             let changes = changes.unwrap_or_default();
             let _ = weak.upgrade_in_event_loop(move |window| {

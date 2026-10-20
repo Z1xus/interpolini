@@ -1,14 +1,12 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread::JoinHandle;
 
 use interpolini_core::config::{self, Config, Ease};
-use interpolini_core::work::Cancel;
 use interpolini_core::{Fade, Part, Place, Placed, Sound, parts};
 
+use crate::App;
 use crate::view::selected;
-use crate::{App, preview};
 
 // an image is secretly a 1 hour video :)
 pub const STILL: f64 = 3600.0;
@@ -37,6 +35,7 @@ pub struct Entry {
     // the cut that the differences were measured for
     pub measured: Option<(f32, f32)>,
     pub size: (u32, u32),
+    pub bytes: u64,
     pub place: Place,
     // decibels
     pub gain: f32,
@@ -92,7 +91,6 @@ pub struct State {
     // the settings that show without a clip, new clips start with them
     pub draft: Entry,
     pub tracks: Tracks,
-    pub preview: Option<Sender<preview::Request>>,
     pub ids: u64,
     // the clip that the pointer holds to move it, where on the clip it holds, and where the clip was
     pub held: Option<(u64, f64, f64)>,
@@ -100,8 +98,6 @@ pub struct State {
     pub touched: Option<u64>,
     // a drag past the last track makes a new track, of video or of audio, which goes away again without a clip
     pub spare: Option<bool>,
-    pub cancel: Cancel,
-    pub render: Option<JoinHandle<()>>,
     // the next picture also goes to a file
     pub snap: bool,
 }
@@ -128,18 +124,12 @@ impl State {
         ends.fold(0.0, f64::max)
     }
 
-    pub fn span(&self, index: usize) -> Span {
+    fn shape(&self, index: usize, (before, after): (Option<usize>, Option<usize>)) -> Span {
         let entry = &self.entries[index];
-        let (start, end) = (entry.at, entry.at + entry.kept());
-        let same = |other: &&Entry| {
-            let kind = other.audio.is_some() == entry.audio.is_some();
-            other.id != entry.id && kind && other.track == entry.track
-        };
-        let mut others = self.entries.iter().filter(same);
-        let before = others
-            .clone()
-            .find(|other| (other.at + other.kept() - start).abs() < 0.001);
-        let after = others.find(|other| (other.at - end).abs() < 0.001);
+        let (before, after) = (
+            before.map(|at| &self.entries[at]),
+            after.map(|at| &self.entries[at]),
+        );
         // a crossfade has the cut in its middle, so each of the two clips plays half of it more
         let half = |first: &Entry, second: &Entry| {
             (f64::from(second.cross) / 2.0)
@@ -150,7 +140,7 @@ impl State {
         let tail = after.map_or(0.0, |other| half(entry, other));
         let next = after.filter(|_| tail > 0.0);
         Span {
-            at: start - lead,
+            at: entry.at - lead,
             start: f64::from(entry.cut.0) * entry.seconds - lead,
             length: entry.kept() + lead + tail,
             // a crossfade takes the place of the fade at its end of the clip
@@ -174,6 +164,38 @@ impl State {
         }
     }
 
+    pub fn spans(&self) -> Vec<Span> {
+        type Times = Vec<(f64, usize)>;
+        let mut tracks: HashMap<(bool, usize), (Times, Times)> = HashMap::new();
+        for (index, entry) in self.entries.iter().enumerate() {
+            let track = tracks
+                .entry((entry.audio.is_some(), entry.track))
+                .or_default();
+            track.0.push((entry.at, index));
+            track.1.push((entry.at + entry.kept(), index));
+        }
+        for (starts, ends) in tracks.values_mut() {
+            starts.sort_by(|a, b| a.0.total_cmp(&b.0));
+            ends.sort_by(|a, b| a.0.total_cmp(&b.0));
+        }
+        let near = |list: &[(f64, usize)], time: f64, index: usize| {
+            let from = list.partition_point(|other| other.0 <= time - 0.001);
+            let inside = list[from..]
+                .iter()
+                .take_while(|other| other.0 < time + 0.001);
+            inside.map(|other| other.1).find(|other| *other != index)
+        };
+        let neighbours = |index: usize| {
+            let entry = &self.entries[index];
+            let (starts, ends) = &tracks[&(entry.audio.is_some(), entry.track)];
+            let (start, end) = (entry.at, entry.at + entry.kept());
+            (near(ends, start, index), near(starts, end, index))
+        };
+        (0..self.entries.len())
+            .map(|index| self.shape(index, neighbours(index)))
+            .collect()
+    }
+
     pub fn videos(&self) -> Vec<usize> {
         let video = |index: &usize| self.entries[*index].audio.is_none();
         (0..self.entries.len()).filter(video).collect()
@@ -182,9 +204,10 @@ impl State {
     // the stretches of the timeline and the clips that each one shows, the lowest one first
     pub fn parts(&self) -> Vec<Part> {
         let videos = self.videos();
+        let spans = self.spans();
         let placed = |index: &usize| Placed {
-            at: self.span(*index).at,
-            length: self.span(*index).length,
+            at: spans[*index].at,
+            length: spans[*index].length,
             track: self.entries[*index].track,
         };
         let parts = parts(&videos.iter().map(placed).collect::<Vec<_>>());
@@ -331,8 +354,9 @@ pub fn sounds(state: &State) -> Vec<Sound> {
             .is_some_and(|track| track.1)
     };
     let audio = |(_, entry): &(usize, &Entry)| entry.audio.is_some() && heard(entry);
+    let spans = state.spans();
     let sound = |(index, entry): (usize, &Entry)| {
-        let span = state.span(index);
+        let span = &spans[index];
         Sound {
             clip: entry.clip.clone(),
             stream: entry.audio.unwrap_or(0),

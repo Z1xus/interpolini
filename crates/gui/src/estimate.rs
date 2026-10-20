@@ -11,7 +11,7 @@ use slint::ComponentHandle;
 use crate::render::jobs;
 use crate::state::{Shared, lock};
 use crate::view::megabytes;
-use crate::{App, preview};
+use crate::{App, preview, services};
 
 struct Asked {
     jobs: Vec<Job>,
@@ -37,10 +37,8 @@ fn measure(ui: &App, shared: &Shared) {
     // a copy is as large as the part of each file that it keeps
     if ui.get_copying() {
         let video = |entry: &&crate::state::Entry| entry.audio.is_none() && !entry.still;
-        let size = |entry: &crate::state::Entry| {
-            let file = std::fs::metadata(&entry.clip).map_or(0, |file| file.len());
-            file as f64 * f64::from(entry.cut.1 - entry.cut.0)
-        };
+        let size =
+            |entry: &crate::state::Entry| entry.bytes as f64 * f64::from(entry.cut.1 - entry.cut.0);
         let bytes: f64 = state.entries.iter().filter(video).map(size).sum();
         ASKED.set(None);
         return ui.set_estimate(match bytes > 0.0 {
@@ -82,21 +80,18 @@ fn measure(ui: &App, shared: &Shared) {
             });
         });
     };
-    let measure = preview::Measure {
+    preview::measure(preview::Measure {
         jobs,
         sounds: (!separate).then_some(sounds),
-        stop,
         done: Box::new(done),
-    };
-    if let Some(preview) = &lock(shared).preview {
-        let _ = preview.send(preview::Request::Measure(measure));
-    }
+    });
 }
 
 pub fn ask(ui: &App, shared: &Shared) {
     ASKED.with_borrow_mut(|asked| {
         if let Some(asked) = asked.take_if(|asked| !asked.done) {
             asked.stop.stop();
+            services::with(|services| services.measure.cancel());
         }
     });
     let (weak, shared) = (ui.as_weak(), Arc::clone(shared));

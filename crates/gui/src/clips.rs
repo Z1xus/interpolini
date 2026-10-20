@@ -1,17 +1,16 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use interpolini_core::config;
-use interpolini_core::work::Cancel;
+use interpolini_core::config::{self, Config};
 use interpolini_core::{Place, Probe, keyframes, probe};
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
 use crate::edit::overwrite;
 use crate::history::record;
-use crate::state::{Entry, STILL, Shared, lock};
+use crate::state::{Entry, STILL, Shared, State, lock};
 use crate::view::{fit, lanes, refresh, update};
-use crate::{App, Clip, preview};
+use crate::{App, Clip, preview, services};
 #[cfg(target_os = "linux")]
 use crate::{Ghost, drop, icon};
 
@@ -62,22 +61,49 @@ pub fn hover(ui: &App, state: &Shared, point: Option<(f32, f32)>) {
     ui.set_ghosts(ModelRc::new(VecModel::from(ghosts)));
 }
 
-pub type Probed = (PathBuf, interpolini_core::Result<Probe>);
+pub struct Found {
+    probe: Probe,
+    bytes: u64,
+    local: Option<(Config, Option<config::Entry>)>,
+}
+
+pub type Probed = (PathBuf, interpolini_core::Result<Found>);
+
+fn inspect(clip: &Path) -> interpolini_core::Result<Found> {
+    let probe = probe(clip)?;
+    let bytes = std::fs::metadata(clip).map_or(0, |file| file.len());
+    // a config in the folder of the clip comes first, then the settings on screen
+    let local = config::entries(clip)
+        .into_iter()
+        .find(|entry| entry.local && entry.name == "default");
+    let local = local.map(|entry| {
+        let loaded = config::read(entry);
+        (loaded.config, loaded.entry)
+    });
+    Ok(Found {
+        probe,
+        bytes,
+        local,
+    })
+}
 
 // the files are opened on another thread, so the window stays live, and then go to the timeline
 pub fn import(ui: Weak<App>, state: Shared, clips: Vec<PathBuf>, point: Option<(f32, f32)>) {
-    std::thread::spawn(move || {
-        let open = |clip: PathBuf| {
-            let probed = probe(&clip);
-            (clip, probed)
-        };
-        let clips: Vec<Probed> = clips.into_iter().map(open).collect();
+    services::background(&services::key("import"), move |cancel| {
+        let mut probed: Vec<Probed> = Vec::new();
+        for clip in clips {
+            if cancel.stopped() {
+                return;
+            }
+            let found = inspect(&clip);
+            probed.push((clip, found));
+        }
         let _ = ui.upgrade_in_event_loop(move |ui| {
             let time = point.map_or(-1.0, |point| ui.invoke_drop_time(point.0, point.1));
             let place = point
                 .filter(|_| time >= 0.0)
                 .map(|point| (f64::from(time), ui.invoke_drop_depth(point.1)));
-            add(&ui, &state, clips, place);
+            add(&ui, &state, probed, place);
         });
     });
 }
@@ -89,27 +115,23 @@ pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32
     let Some(rows) = rows.as_any().downcast_ref::<VecModel<Clip>>() else {
         return;
     };
-    for (clip, probed) in clips {
-        let probed = match probed {
-            Ok(probed) => probed,
+    for (clip, found) in clips {
+        let Found {
+            probe: probed,
+            bytes,
+            local,
+        } = match found {
+            Ok(found) => found,
             Err(error) => {
                 ui.set_failed(true);
                 ui.set_status(format!("Couldn't open the file: {error}").into());
                 continue;
             }
         };
-        // a config in the folder of the clip comes first, then the settings on screen
-        let found = config::entries(&clip);
-        let local = found
-            .into_iter()
-            .find(|entry| entry.local && entry.name == "default");
         let mut guard = lock(state);
         record(ui, &mut guard, true);
         let (config, origin) = match local {
-            Some(entry) => {
-                let loaded = config::read(entry);
-                (loaded.config, loaded.entry)
-            }
+            Some(local) => local,
             None => (guard.draft.config.clone(), guard.draft.origin.clone()),
         };
         let name = clip.file_name().unwrap_or_default().to_string_lossy();
@@ -181,6 +203,7 @@ pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32
                 differences: Arc::default(),
                 measured: None,
                 size: (probed.width, probed.height),
+                bytes,
                 place: Place::default(),
                 gain: 0.0,
                 fade: (0.0, 0.0),
@@ -192,6 +215,30 @@ pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32
             overwrite(ui, &mut guard, link, 0.0);
         }
         drop(guard);
+    }
+    fill(ui, state);
+    fit(ui, state);
+    refresh(ui, state);
+}
+
+pub fn fill(ui: &App, state: &Shared) {
+    let rows = ui.get_clips();
+    let guard = lock(state);
+    let mut links: Vec<u64> = guard.entries.iter().map(|entry| entry.link).collect();
+    links.dedup();
+    for link in links {
+        let own = |entry: &&Entry| entry.link == link;
+        let mut entries = guard
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| own(entry));
+        let Some((first, any)) = entries.next() else {
+            continue;
+        };
+        let picture = std::iter::once((first, any))
+            .chain(entries)
+            .find(|(_, entry)| entry.audio.is_none());
         let shared = Arc::clone(state);
         let places = move || {
             let state = lock(&shared);
@@ -203,23 +250,42 @@ pub fn add(ui: &App, state: &Shared, clips: Vec<Probed>, place: Option<(f64, f32
             own.map(|(index, entry)| (entry.audio, index))
                 .collect::<Vec<_>>()
         };
-        if pictured {
-            preview::thumbs(ui.as_weak(), clip.clone(), config.clone(), places.clone());
+        let bare = |image: Option<slint::Image>| image.is_none_or(|image| image.size().width == 0);
+        if let Some((index, picture)) = picture {
+            if rows
+                .row_data(index)
+                .is_some_and(|row| bare(row.thumbs.row_data(0)))
+            {
+                let (clip, config) = (picture.clip.clone(), picture.config.clone());
+                preview::thumbs(
+                    ui.as_weak(),
+                    &format!("thumbs {link}"),
+                    clip,
+                    config,
+                    places.clone(),
+                );
+            }
+            if !picture.still && picture.keys.is_empty() {
+                keys(ui.as_weak(), Arc::clone(state), picture.clip.clone());
+            }
         }
-        if pictured && !probed.still {
-            keys(ui.as_weak(), Arc::clone(state), clip.clone());
-        }
-        if !probed.still {
-            preview::waves(ui.as_weak(), clip, probed.seconds, places);
+        let sounds = guard.entries.iter().enumerate();
+        let mut sounds = sounds.filter(|(_, entry)| own(entry) && entry.audio.is_some());
+        let silent = sounds.any(|(index, _)| {
+            rows.row_data(index)
+                .is_some_and(|row| row.wave.row_count() == 0)
+        });
+        if silent && !any.still {
+            let key = format!("waves {link}");
+            preview::waves(ui.as_weak(), &key, any.clip.clone(), any.seconds, places);
         }
     }
-    fit(ui, state);
-    refresh(ui, state);
 }
 
 fn keys(ui: Weak<App>, state: Shared, clip: PathBuf) {
-    std::thread::spawn(move || {
-        let Ok(keys) = keyframes(&clip, &Cancel::default()) else {
+    let key = format!("keys {}", clip.display());
+    services::background(&key, move |cancel| {
+        let Ok(keys) = keyframes(&clip, cancel) else {
             return;
         };
         let _ = ui.upgrade_in_event_loop(move |ui| {
@@ -239,6 +305,24 @@ fn keys(ui: Weak<App>, state: Shared, clip: PathBuf) {
     });
 }
 
+pub fn forget(state: &State, gone: &Entry) {
+    services::with(|services| {
+        let pool = &services.background;
+        pool.cancel(&format!("diff {}", gone.id));
+        if !state
+            .entries
+            .iter()
+            .any(|other| other.link == gone.link && other.clip == gone.clip)
+        {
+            pool.cancel(&format!("thumbs {}", gone.link));
+            pool.cancel(&format!("waves {}", gone.link));
+        }
+        if !state.entries.iter().any(|other| other.clip == gone.clip) {
+            pool.cancel(&format!("keys {}", gone.clip.display()));
+        }
+    });
+}
+
 // measures the repeats of each video whose cut changed, in the part that is kept
 pub fn measure(ui: &App, state: &Shared) {
     let mut guard = lock(state);
@@ -253,8 +337,11 @@ pub fn measure(ui: &App, state: &Shared) {
             f64::from(entry.cut.0) * entry.seconds,
             f64::from(entry.cut.1) * entry.seconds,
         );
+        let key = format!("diff {id}");
+        services::with(|services| services.background.cancel(&key));
         preview::differences(
             ui.as_weak(),
+            &key,
             entry.clip.clone(),
             part,
             move |ui, differences| {
@@ -273,13 +360,17 @@ pub fn pick(
     ui: &Weak<App>,
     name: &str,
     extensions: &'static [&'static str],
-    done: impl FnOnce(&App, Vec<PathBuf>) + Send + 'static,
+    done: impl FnOnce(&App, Vec<PathBuf>) + 'static,
 ) {
-    let dialog = rfd::FileDialog::new().add_filter(name, extensions);
+    let dialog = rfd::AsyncFileDialog::new().add_filter(name, extensions);
     let ui = ui.clone();
-    std::thread::spawn(move || {
-        if let Some(files) = dialog.pick_files() {
-            let _ = ui.upgrade_in_event_loop(move |ui| done(&ui, files));
+    let _ = slint::spawn_local(async move {
+        let files = dialog.pick_files().await;
+        if let (Some(files), Some(ui)) = (files, ui.upgrade()) {
+            done(
+                &ui,
+                files.iter().map(|file| file.path().to_owned()).collect(),
+            );
         }
     });
 }
@@ -314,10 +405,18 @@ pub fn wire(ui: &App, state: &Shared) {
     });
 }
 
-// the toplevel exists only after the event loop has shown the window, so a timer looks for it
 #[cfg(target_os = "linux")]
-pub fn drops(ui: &App, state: &Shared) -> slint::Timer {
-    let pump = slint::Timer::default();
+thread_local! {
+    static PUMP: slint::Timer = slint::Timer::default();
+}
+
+// the toplevel exists only after the event loop has shown the window, so a timer looks for it
+// the events of a drag come in through the connection of the window and nothing tells when, so
+// the timer is quick while events come and slow when they do not, and it ends when there is nothing to look for
+#[cfg(target_os = "linux")]
+pub fn drops(ui: &App, state: &Shared) {
+    const QUICK: std::time::Duration = std::time::Duration::from_millis(30);
+    const SLOW: std::time::Duration = std::time::Duration::from_millis(250);
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     let dropped: drop::Dropped = Arc::new(move |clips, point| {
         let point = Some((point.0 as f32, point.1 as f32));
@@ -325,22 +424,30 @@ pub fn drops(ui: &App, state: &Shared) -> slint::Timer {
     });
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     let hovered: drop::Hovered = Arc::new(move |event| {
-        // the files are probed here, off the window thread
-        let files = match &event {
-            drop::Hover::Files(clips) => Some(clips.iter().filter_map(|clip| probe(clip).ok())),
-            _ => None,
-        };
-        let files: Option<Vec<_>> = files.map(|files| {
-            let shape = |probed: Probe| match probed.still {
-                true => (5.0, true, 0),
-                false => (probed.seconds, probed.fps > 0.0, probed.tracks.len()),
-            };
-            files.map(shape).collect()
-        });
-        let shared = Arc::clone(&shared);
-        let _ = weak.upgrade_in_event_loop(move |ui| match (event, files) {
-            (_, Some(files)) => HOVER.set(files),
-            (drop::Hover::At(x, y), _) => hover(&ui, &shared, Some((x as f32, y as f32))),
+        let (weak, shared) = (weak.clone(), Arc::clone(&shared));
+        if let drop::Hover::Files(clips) = event {
+            // the files are probed here, off the window thread
+            services::background("hover", move |cancel| {
+                let files = clips.iter().filter_map(|clip| probe(clip).ok());
+                let shape = |probed: Probe| match probed.still {
+                    true => (5.0, true, 0),
+                    false => (probed.seconds, probed.fps > 0.0, probed.tracks.len()),
+                };
+                let files: Vec<_> = files.map(shape).collect();
+                let cancel = cancel.clone();
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    if !cancel.stopped() {
+                        HOVER.set(files);
+                    }
+                });
+            });
+            return;
+        }
+        if matches!(event, drop::Hover::Gone) {
+            services::with(|services| services.background.cancel("hover"));
+        }
+        let _ = weak.upgrade_in_event_loop(move |ui| match event {
+            drop::Hover::At(x, y) => hover(&ui, &shared, Some((x as f32, y as f32))),
             _ => {
                 HOVER.take();
                 hover(&ui, &shared, None);
@@ -350,12 +457,11 @@ pub fn drops(ui: &App, state: &Shared) -> slint::Timer {
     let weak = ui.as_weak();
     let mut drops = None;
     let mut iconed = false;
+    let mut quiet = 0;
     // a compositor without these protocols must not be asked forever (fuck you gnome)
     let mut tries = 30;
-    pump.start(
-        slint::TimerMode::Repeated,
-        std::time::Duration::from_millis(30),
-        move || {
+    PUMP.with(|pump| {
+        pump.start(slint::TimerMode::Repeated, QUICK, move || {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
@@ -364,14 +470,21 @@ pub fn drops(ui: &App, state: &Shared) -> slint::Timer {
                 iconed = icon::set(ui.window()).is_some();
             }
             match &mut drops {
-                Some(drops) => drop::Drops::pump(drops),
+                Some(drops) => {
+                    quiet = if drop::Drops::pump(drops) {
+                        0
+                    } else {
+                        quiet + 1
+                    };
+                    let wait = if quiet > 60 { SLOW } else { QUICK };
+                    PUMP.with(|pump| pump.set_interval(wait));
+                }
                 None if tries > 0 => {
                     let hovered = Arc::clone(&hovered);
                     drops = drop::Drops::listen(ui.window(), Arc::clone(&dropped), hovered)
                 }
-                None => {}
+                None => PUMP.with(slint::Timer::stop),
             }
-        },
-    );
-    pump
+        });
+    });
 }

@@ -1,13 +1,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use interpolini_core::work::Cancel;
 use interpolini_core::{Event, Fade, Job, Sound, run};
 use slint::{ComponentHandle, Model};
 
-use crate::App;
 use crate::state::{Shared, State, lock, sounds};
 use crate::view::{layout, megabytes, refresh, update};
+use crate::{App, services};
 
 // row is the clip that renders now, or none when all clips go into one file
 fn show(ui: &App, event: Event, row: Option<usize>, lead: f32, current: usize, count: usize) {
@@ -84,10 +83,11 @@ pub fn jobs(state: &State, separate: bool, copy: bool) -> (Vec<Job>, Vec<Sound>,
     // an image goes into the file of the timeline, and has no file of its own
     let mut rows = state.videos();
     rows.retain(|index| !separate || !state.entries[*index].still);
+    let spans = state.spans();
     let job = |index: &usize| {
         let entry = &state.entries[*index];
         // the fades are for the timeline, a clip in a file of its own has none
-        let span = state.span(*index);
+        let span = &spans[*index];
         let (start, end) = (span.start, span.start + span.length);
         let faded = !separate && span.length != entry.kept();
         // a clip on its own takes the audio tracks of its file that are still on the timeline
@@ -139,12 +139,11 @@ fn render(ui: &App, shared: &Shared) {
     // a copy makes one file for each clip
     let copy = ui.get_copying();
     let separate = ui.get_separate() || copy;
-    let (jobs, sounds, rows, lead, cancel) = {
+    let (jobs, sounds, rows, lead) = {
         let mut state = lock(shared);
         layout(ui, &mut state);
-        state.cancel = Cancel::default();
         let (jobs, sounds, rows, lead) = jobs(&state, separate, copy);
-        (jobs, sounds, rows, lead as f32, state.cancel.clone())
+        (jobs, sounds, rows, lead as f32)
     };
     if ui.get_videos() == 0 {
         ui.set_failed(true);
@@ -159,41 +158,44 @@ fn render(ui: &App, shared: &Shared) {
     ui.set_playing(false);
     refresh(ui, shared);
     let (ui, state) = (ui.as_weak(), Arc::clone(shared));
-    lock(shared).render = Some(std::thread::spawn(move || {
-        let current = AtomicUsize::new(0);
-        let count = jobs.len();
-        let sink = |event: Event| {
-            // the events count the video clips, and the rows count all clips
-            let event = match event {
-                Event::Start { clip } => {
-                    current.store(clip, Ordering::Relaxed);
-                    Event::Start { clip: rows[clip] }
-                }
-                Event::Done {
-                    clip,
-                    output,
-                    seconds,
-                } => Event::Done {
-                    clip: rows[clip],
-                    output,
-                    seconds,
-                },
-                Event::Failed { clip, error } => Event::Failed {
-                    clip: rows[clip],
-                    error,
-                },
-                other => other,
+    services::with(|services| {
+        services.render.submit(move |cancel| {
+            let current = AtomicUsize::new(0);
+            let count = jobs.len();
+            let sink = |event: Event| {
+                // the events count the video clips, and the rows count all clips
+                let event = match event {
+                    Event::Start { clip } => {
+                        current.store(clip, Ordering::Relaxed);
+                        Event::Start { clip: rows[clip] }
+                    }
+                    Event::Done {
+                        clip,
+                        output,
+                        seconds,
+                    } => Event::Done {
+                        clip: rows[clip],
+                        output,
+                        seconds,
+                    },
+                    Event::Failed { clip, error } => Event::Failed {
+                        clip: rows[clip],
+                        error,
+                    },
+                    other => other,
+                };
+                let current = current.load(Ordering::Relaxed);
+                let row = separate.then_some(rows[current]);
+                let _ =
+                    ui.upgrade_in_event_loop(move |ui| show(&ui, event, row, lead, current, count));
             };
-            let current = current.load(Ordering::Relaxed);
-            let row = separate.then_some(rows[current]);
-            let _ = ui.upgrade_in_event_loop(move |ui| show(&ui, event, row, lead, current, count));
-        };
-        run(&jobs, (!separate).then_some(&sounds[..]), &sink, &cancel);
-        let _ = ui.upgrade_in_event_loop(move |ui| {
-            ui.set_rendering(false);
-            refresh(&ui, &state);
-        });
-    }));
+            run(&jobs, (!separate).then_some(&sounds[..]), &sink, cancel);
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                ui.set_rendering(false);
+                refresh(&ui, &state);
+            });
+        })
+    });
 }
 
 pub fn wire(ui: &App, state: &Shared) {
@@ -204,6 +206,7 @@ pub fn wire(ui: &App, state: &Shared) {
         }
     });
 
-    let shared = Arc::clone(state);
-    ui.on_cancel(move || lock(&shared).cancel.stop());
+    ui.on_cancel(|| {
+        services::with(|services| services.render.cancel());
+    });
 }

@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::sync::Arc;
 
 use slint::ComponentHandle;
@@ -6,12 +5,7 @@ use slint::ComponentHandle;
 use crate::settings::save_preferences;
 use crate::state::{Shared, lock, sounds};
 use crate::view::{refresh, timecode, wanted};
-use crate::{App, sound};
-
-thread_local! {
-    // the sound card stream stays on the thread of the window
-    static PLAYER: RefCell<Option<sound::Player>> = const { RefCell::new(None) };
-}
+use crate::{App, services, sound};
 
 pub fn wire(ui: &App, state: &Shared) {
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
@@ -67,11 +61,12 @@ pub fn wire(ui: &App, state: &Shared) {
         };
         let state = lock(&shared);
         let time = f64::from(ui.get_position()) * state.seconds();
-        let player = ui
-            .get_playing()
-            .then(|| sound::Player::start(&sounds(&state), time))
-            .flatten();
-        PLAYER.set(player);
+        let heard = ui.get_playing().then(|| sounds(&state));
+        drop(state);
+        services::with(|services| match heard {
+            Some(sounds) => services.audio.start(sounds, time),
+            None => services.audio.stop(),
+        });
     });
 
     let weak = ui.as_weak();

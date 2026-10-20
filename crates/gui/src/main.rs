@@ -13,6 +13,7 @@ mod icon;
 mod playback;
 mod preview;
 mod render;
+mod services;
 mod settings;
 mod sound;
 mod state;
@@ -202,7 +203,7 @@ fn main() -> Result<(), slint::PlatformError> {
             });
         }
     });
-    let (preview, previewer) = preview::spawn(ui.as_weak());
+    services::start(ui.as_weak());
     let loaded = config::load(std::path::Path::new(""), true, "default");
     let state: Shared = Arc::new(Mutex::new(State {
         entries: Vec::new(),
@@ -224,6 +225,7 @@ fn main() -> Result<(), slint::PlatformError> {
             differences: std::sync::Arc::default(),
             measured: None,
             size: (0, 0),
+            bytes: 0,
             place: interpolini_core::Place::default(),
             gain: 0.0,
             fade: (0.0, 0.0),
@@ -234,14 +236,11 @@ fn main() -> Result<(), slint::PlatformError> {
             video: vec![64.0],
             audio: vec![(36.0, false)],
         },
-        preview: Some(preview),
         snap: false,
         ids: 0,
         held: None,
         touched: None,
         spare: None,
-        cancel: Default::default(),
-        render: None,
     }));
     fit(&ui, &state);
     select(&ui, &state, -1);
@@ -318,16 +317,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     ui.on_reveal(|path| reveal(PathBuf::from(path.as_str())));
 
-    ui.on_open(|url| {
-        let program = match std::env::consts::OS {
-            "windows" => "explorer",
-            "macos" => "open",
-            _ => "xdg-open",
-        };
-        let _ = std::process::Command::new(program)
-            .arg(url.as_str())
-            .spawn();
-    });
+    ui.on_open(|url| services::open(url.as_str()));
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(&state));
     ui.on_copy_details(move || {
@@ -335,7 +325,7 @@ fn main() -> Result<(), slint::PlatformError> {
             return;
         };
         let (details, weak) = (details(&ui, &shared), weak.clone());
-        std::thread::spawn(move || {
+        services::task("details", move |_| {
             let details = details();
             let _ = weak.upgrade_in_event_loop(move |ui| {
                 ui.invoke_copy(details.into());
@@ -353,19 +343,12 @@ fn main() -> Result<(), slint::PlatformError> {
     let clips = std::env::args().skip(1).map(PathBuf::from).collect();
     clips::import(ui.as_weak(), Arc::clone(&state), clips, None);
     #[cfg(target_os = "linux")]
-    let _pump = clips::drops(&ui, &state);
+    clips::drops(&ui, &state);
     ui.run()?;
 
     // the gpu libraries crash when the process exits under a running job
-    let render = {
-        let mut state = lock(&state);
-        state.cancel.stop();
-        state.preview = None;
-        state.render.take()
-    };
-    for thread in render.into_iter().chain([previewer]) {
-        let _ = thread.join();
-    }
+    let left = services::stop();
+    debug_assert_eq!(left, 0);
     Ok(())
 }
 
@@ -374,17 +357,12 @@ fn main() -> Result<(), slint::PlatformError> {
 fn reveal(path: PathBuf) {
     use std::os::windows::process::CommandExt;
     let select = format!("/select,\"{}\"", path.display());
-    let _ = std::process::Command::new("explorer")
-        .raw_arg(select)
-        .spawn();
+    services::child(std::process::Command::new("explorer").raw_arg(select), None);
 }
 
 #[cfg(target_os = "macos")]
 fn reveal(path: PathBuf) {
-    let _ = std::process::Command::new("open")
-        .arg("-R")
-        .arg(path)
-        .spawn();
+    services::child(std::process::Command::new("open").arg("-R").arg(path), None);
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -401,24 +379,20 @@ fn reveal(path: PathBuf) {
             false => format!("%{byte:02X}"),
         })
         .collect();
-    // the file managers of linux select a file through this call, it can wait for one to start
-    std::thread::spawn(move || {
-        let shown = Command::new("dbus-send")
-            .args([
-                "--session",
-                "--print-reply",
-                "--dest=org.freedesktop.FileManager1",
-                "/org/freedesktop/FileManager1",
-                "org.freedesktop.FileManager1.ShowItems",
-            ])
-            .arg(format!("array:string:file://{uri}"))
-            .arg("string:")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if !shown.is_ok_and(|status| status.success()) {
-            let folder = path.parent().unwrap_or(&path);
-            let _ = Command::new("xdg-open").arg(folder).spawn();
-        }
-    });
+    // the file managers of linux select a file through this call, a folder opens when it fails
+    let folder = path.parent().unwrap_or(&path).to_owned();
+    let mut command = Command::new("dbus-send");
+    command
+        .args([
+            "--session",
+            "--print-reply",
+            "--dest=org.freedesktop.FileManager1",
+            "/org/freedesktop/FileManager1",
+            "org.freedesktop.FileManager1.ShowItems",
+        ])
+        .arg(format!("array:string:file://{uri}"))
+        .arg("string:")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    services::child(&mut command, Some(folder));
 }

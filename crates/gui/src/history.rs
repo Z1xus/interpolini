@@ -79,11 +79,19 @@ pub fn revert(ui: &App, shared: &Shared) {
 fn restore(ui: &App, shared: &Shared, target: Moment) {
     let mut state = lock(shared);
     state.entries = target.entries;
+    for entry in state
+        .entries
+        .iter_mut()
+        .filter(|entry| entry.differences.is_empty())
+    {
+        entry.measured = None;
+    }
     state.tracks = target.tracks;
     ui.set_clips(ModelRc::new(VecModel::from(target.rows)));
     ui.set_playing(false);
     ui.set_selected(-1);
     drop(state);
+    crate::clips::fill(ui, shared);
     fit(ui, shared);
     ui.set_position(target.position);
     load(ui, &mut lock(shared));
