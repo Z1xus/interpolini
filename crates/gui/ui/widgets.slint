@@ -362,7 +362,9 @@ export component Dropdown inherits Rectangle {
     in-out property <string> value;
     in property <string> label;
     in property <bool> up;
+    in property <string> action;
     callback changed(string);
+    callback activated();
     accessible-role: combobox;
     accessible-label: root.label;
     accessible-value: root.value;
@@ -395,7 +397,7 @@ export component Dropdown inherits Rectangle {
         }
     }
     popup := PopupWindow {
-        y: root.up ? -root.options.length * 24px - 4px : root.height + 2px;
+        y: root.up ? -root.options.length * 24px - (root.action == "" ? 0px : 25px) - 4px : root.height + 2px;
         width: root.width;
         Rectangle {
             background: Theme.raised;
@@ -424,6 +426,32 @@ export component Dropdown inherits Rectangle {
                         clicked => {
                             root.value = option;
                             root.changed(option);
+                        }
+                    }
+                }
+                if root.action != "": Rectangle {
+                    height: 1px;
+                    background: Theme.seam;
+                }
+                if root.action != "": Rectangle {
+                    accessible-role: list-item;
+                    accessible-label: root.action;
+                    accessible-action-default => {
+                        root.activated();
+                    }
+                    height: 24px;
+                    background: more.has-hover ? Theme.ghost : transparent;
+                    Text {
+                        x: 8px;
+                        text: root.action;
+                        color: Theme.muted;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    more := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.activated();
                         }
                     }
                 }

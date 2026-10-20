@@ -336,9 +336,13 @@ export component Panel inherits Rectangle {
                         y: 3px;
                         label: "Model";
                         options: root.models;
+                        action: "Get more models…";
                         value <=> root.settings.model;
                         changed => {
                             root.changed();
+                        }
+                        activated => {
+                            root.show-components();
                         }
                     }
                 }
@@ -399,9 +403,13 @@ export component Panel inherits Rectangle {
                         y: 3px;
                         label: "Model";
                         options: root.models;
+                        action: "Get more models…";
                         value <=> root.settings.model;
                         changed => {
                             root.changed();
+                        }
+                        activated => {
+                            root.show-components();
                         }
                     }
                 }
