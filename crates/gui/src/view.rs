@@ -397,13 +397,13 @@ pub fn refresh(ui: &App, shared: &Shared) {
             let (entry, span) = (&state.entries[*index], &spans[*index]);
             preview::Layer {
                 clip: entry.clip.clone(),
-                config: Config {
+                config: preview::shown(Config {
                     shrink,
                     ..match copying {
                         true => preview::source(&entry.config),
                         false => entry.settled(),
                     }
-                },
+                }),
                 still: entry.still || entry.missing,
                 missing: entry.missing.then_some(entry.size),
                 place: place(entry),

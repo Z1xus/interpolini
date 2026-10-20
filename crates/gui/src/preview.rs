@@ -106,6 +106,13 @@ pub fn source(config: &Config) -> Config {
     config
 }
 
+// a decoded frame does not depend on the encode settings, so they stay out of the key
+pub fn shown(mut config: Config) -> Config {
+    let plain = Config::default();
+    (config.output, config.upscale) = (plain.output, plain.upscale);
+    config
+}
+
 // the copy is made here, so that the window thread only wraps the pixels
 fn pixels(image: &Image) -> Pixels {
     let mut pixels = Pixels::new(image.width, image.height);
