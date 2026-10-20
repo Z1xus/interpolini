@@ -138,7 +138,7 @@ pub fn wire(ui: &App, state: &Shared) {
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_play(move || {
-        if let Some(ui) = weak.upgrade() {
+        if let Some(ui) = weak.upgrade().filter(|ui| !ui.get_rendering()) {
             ui.set_playing(!ui.get_playing());
             if ui.get_playing() && ui.get_position() >= 1.0 {
                 ui.set_position(0.0);
