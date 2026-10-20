@@ -1,5 +1,5 @@
 import { Action, Art, Icon, IconButton, Icons, MenuItem, MenuPanel, Piece, Tabs, Theme } from "widgets.slint";
-import { Clip } from "types.slint";
+import { Clip, Note } from "types.slint";
 import { Frame } from "frame.slint";
 
 struct Tip {
@@ -53,6 +53,19 @@ export component Stage inherits Rectangle {
     in property <[Piece]> art;
     in property <bool> light;
     in property <bool> rendering;
+    in property <string> note;
+    in property <Note> kind;
+    in property <float> progress;
+    in property <string> shot;
+    callback reveal(string);
+    property <bool> closed;
+    property <string> last;
+    changed note => {
+        root.closed = false;
+        if root.note != "" {
+            root.last = root.note;
+        }
+    }
     property <[Tip]> tips: [
         { text: "Hold ` to compare with the original" },
         { text: "Right click between two clips for a crossfade" },
@@ -403,6 +416,90 @@ export component Stage inherits Rectangle {
                         }
                     }
                 }
+            }
+        }
+    }
+    card := Rectangle {
+        property <bool> shown: root.note != "" && !root.closed;
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - 16px + (self.shown ? 0px : 6px);
+        width: min(root.width * 0.6, pill.preferred-width);
+        height: pill.preferred-height;
+        background: Theme.raised;
+        border-width: 1px;
+        border-color: Theme.seam;
+        border-radius: 8px;
+        drop-shadow-blur: 12px;
+        drop-shadow-offset-y: 2px;
+        drop-shadow-color: black.with-alpha(0.4);
+        opacity: self.shown ? 1 : 0;
+        visible: self.shown || self.opacity > 0;
+        animate opacity, y {
+            duration: 200ms;
+            easing: ease-out;
+        }
+        if root.progress >= 0: Rectangle {
+            x: 10px;
+            y: parent.height - 4px;
+            width: parent.width - 20px;
+            height: 2px;
+            border-radius: 1px;
+            background: Theme.seam;
+            Rectangle {
+                x: 0;
+                width: parent.width * clamp(root.progress, 0, 1);
+                border-radius: 1px;
+                background: Theme.accent;
+            }
+        }
+        pill := HorizontalLayout {
+            padding-top: 8px;
+            padding-bottom: 8px;
+            padding-left: 14px;
+            padding-right: root.kind == Note.warning ? 8px : 14px;
+            spacing: 12px;
+            if root.kind == Note.warning: Rectangle {
+                width: 16px;
+                Icon {
+                    x: 0;
+                    y: 0;
+                    shape: Icons.warning;
+                    color: Theme.accent;
+                }
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: root.last;
+                color: Theme.ink;
+                font-size: 12px;
+                wrap: word-wrap;
+                overflow: elide;
+                max-height: 36px;
+                vertical-alignment: center;
+            }
+            if root.kind == Note.brief && root.shot != "": Action {
+                text: "Show in folder";
+                size: 12px;
+                clicked => {
+                    root.reveal(root.shot);
+                }
+            }
+            if root.kind == Note.warning: IconButton {
+                y: (parent.height - self.height) / 2;
+                width: 20px;
+                height: 20px;
+                shape: Icons.clear;
+                label: "Close";
+                clicked => {
+                    root.closed = true;
+                }
+            }
+        }
+        Timer {
+            interval: 3s;
+            running: root.kind == Note.brief && parent.shown;
+            triggered => {
+                root.closed = true;
             }
         }
     }

@@ -10,10 +10,8 @@ export component Transport inherits Rectangle {
     in-out property <float> volume;
     in-out property <bool> muted;
     in property <bool> rendering;
-    in property <string> preview-note;
-    in property <string> shot;
-    callback reveal(string);
     in property <string> details;
+    in property <string> speed;
     in property <string> timecode;
     callback step(int, float);
     callback play();
@@ -206,24 +204,6 @@ export component Transport inherits Rectangle {
         HorizontalLayout {
             horizontal-stretch: 1;
             spacing: 14px;
-            // a long note gets shorter, it must not make the window content wider
-            Text {
-                horizontal-stretch: 1;
-                min-width: 0;
-                text: root.preview-note;
-                color: Theme.accent;
-                font-size: 11px;
-                font-family: root.shot != "" ? "" : "monospace";
-                horizontal-alignment: right;
-                vertical-alignment: center;
-                overflow: elide;
-            }
-            if root.shot != "": Action {
-                text: "Show in folder";
-                clicked => {
-                    root.reveal(root.shot);
-                }
-            }
             VerticalLayout {
                 alignment: center;
                 Dropdown {
@@ -241,7 +221,7 @@ export component Transport inherits Rectangle {
             Text {
                 min-width: 0;
                 overflow: elide;
-                text: root.details;
+                text: root.details + (root.speed != "" ? "  |  " + root.speed : "");
                 color: Theme.faint;
                 font-size: 11px;
                 font-family: "monospace";

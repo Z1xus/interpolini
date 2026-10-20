@@ -1,5 +1,5 @@
 import { Button, Piece, Theme, Tip } from "widgets.slint";
-import { Clip, Fact, Family, Ghost, Lane, Sections, Settings } from "types.slint";
+import { Clip, Fact, Family, Ghost, Lane, Note, Sections, Settings } from "types.slint";
 import { Timeline } from "timeline.slint";
 import { Menu } from "menu.slint";
 import { Panel } from "panel.slint";
@@ -10,6 +10,7 @@ import { Stage } from "stage.slint";
 import { Transport } from "transport.slint";
 
 export { Change, Sheet, Components, Update }
+export { Note }
 export { Piece, System, Theme } from "widgets.slint";
 
 export component App inherits Window {
@@ -59,6 +60,7 @@ export component App inherits Window {
     in-out property <int> sharp;
     callback viewed();
     in property <string> details;
+    in property <string> speed;
     in property <string> timecode;
     in property <[float]> weights;
     in property <string> summary;
@@ -87,6 +89,9 @@ export component App inherits Window {
     in property <bool> copied;
     in property <string> done;
     in property <string> preview-note;
+    in property <Note> note-kind;
+    // a negative number has no bar
+    in property <float> note-progress: -1;
     in property <bool> lossless;
     // the clips are copied without a new encode, and the settings are not used
     in-out property <bool> copying;
@@ -389,6 +394,13 @@ export component App inherits Window {
                     root.save-frame();
                 }
                 flash <=> root.flash;
+                note: root.preview-note;
+                kind: root.note-kind;
+                progress: root.note-progress;
+                shot: root.shot;
+                reveal(path) => {
+                    root.reveal(path);
+                }
             }
 
             if root.clips.length > 0: Rectangle {
@@ -427,12 +439,8 @@ export component App inherits Window {
                     root.loudness();
                 }
                 rendering: root.rendering;
-                preview-note: root.preview-note;
-                shot: root.shot;
-                reveal(path) => {
-                    root.reveal(path);
-                }
                 details: root.details;
+                speed: root.speed;
                 timecode: root.timecode;
                 step(frames, seconds) => {
                     root.step(frames, seconds);

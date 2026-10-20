@@ -15,7 +15,7 @@ use interpolini_core::{
 use slint::{Model, Rgba8Pixel, SharedPixelBuffer, Weak};
 
 use crate::view::clock;
-use crate::{App, services};
+use crate::{App, Note, services};
 
 const WIDTH: u32 = 1280;
 const SHOWN_FPS: f64 = 60.0;
@@ -240,16 +240,22 @@ fn details(open: &Sources, layers: &[Layer], original: bool) -> (String, f64) {
     (details, fps)
 }
 
-fn note(ui: &Weak<App>, text: String) {
-    let _ = ui.upgrade_in_event_loop(move |ui| ui.set_preview_note(text.into()));
+fn say(ui: &App, text: String, kind: Note, progress: f32) {
+    ui.set_preview_note(text.into());
+    ui.set_note_kind(kind);
+    ui.set_note_progress(progress);
+}
+
+fn note(ui: &Weak<App>, text: String, kind: Note, progress: f32) {
+    let _ = ui.upgrade_in_event_loop(move |ui| say(&ui, text, kind, progress));
 }
 
 fn warn(ui: &Weak<App>) -> impl Fn(Event) + Sync + '_ {
     move |event| match event {
-        Event::Warning(text) => note(ui, text),
+        Event::Warning(text) => note(ui, text, Note::Warning, -1.0),
         Event::Preparing(done) => {
-            let done = done * 100.0;
-            note(ui, format!("Preparing TensorRT for first use, {done:.0}%"));
+            let text = "Preparing TensorRT for first use".into();
+            note(ui, text, Note::Sticky, done);
         }
         _ => {}
     }
@@ -260,7 +266,7 @@ fn fail(ui: &Weak<App>, error: interpolini_core::Error) {
         ui.set_failed(true);
         ui.set_status(error.to_string().into());
         ui.set_playing(false);
-        ui.set_preview_note("".into());
+        say(&ui, String::new(), Note::Sticky, -1.0);
     });
 }
 
@@ -296,7 +302,10 @@ fn post(
         };
         ui.set_details(details.into());
         ui.set_tick((1.0 / fps) as f32);
-        ui.set_preview_note(text.into());
+        ui.set_speed(text.into());
+        if ui.get_note_kind() == Note::Sticky {
+            say(&ui, String::new(), Note::Sticky, -1.0);
+        }
         if let Some(position) = position.filter(|_| ui.get_playing()) {
             ui.set_position(position);
             ui.invoke_moved();
@@ -371,11 +380,11 @@ impl Worker {
             // a render gets all of the gpu
             *open = Sources::default();
             recent.clear();
-            note(ui, String::new());
+            note(ui, String::new(), Note::Sticky, -1.0);
             return None;
         };
         if !quiet {
-            note(ui, "Rendering…".into());
+            note(ui, "Rendering…".into(), Note::Sticky, -1.0);
         }
         let view = match (view, save) {
             (View::Result, Some(true)) => View::Both,
@@ -428,11 +437,11 @@ impl Worker {
             let path = image.ok().and_then(|image| write(layers, &image));
             let _ = ui.upgrade_in_event_loop(move |ui| match path {
                 Some(path) => {
-                    ui.set_preview_note("Saved".into());
+                    say(&ui, "Saved".into(), Note::Brief, -1.0);
                     ui.set_shot(path.to_string_lossy().as_ref().into());
                     ui.set_flash(true);
                 }
-                None => ui.set_preview_note("Could not save the frame".into()),
+                None => say(&ui, "Could not save the frame".into(), Note::Warning, -1.0),
             });
             return None;
         }
@@ -725,7 +734,8 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
     budget::preview(false);
     if finished {
         let _ = ui.upgrade_in_event_loop(|ui| {
-            ui.set_preview_note("".into());
+            ui.set_speed("".into());
+            say(&ui, String::new(), Note::Sticky, -1.0);
             ui.invoke_ended();
         });
     }
