@@ -128,14 +128,6 @@ fn most(class: Class) -> usize {
     }
 }
 
-// one cap serves all clips of the open-svpflow host
-pub fn host() -> usize {
-    match RENDER.load(Ordering::Relaxed) {
-        true => threads(Class::Render),
-        false => threads(Class::Interactive),
-    }
-}
-
 pub fn limit(bytes: usize) {
     LIMIT.store(bytes, Ordering::Relaxed);
 }
