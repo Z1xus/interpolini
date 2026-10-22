@@ -361,10 +361,8 @@ fn encode(
     }
     for source in sources.values() {
         let lanes = source.graph().and_then(|graph| graph.lanes());
-        if let Some((cpu, gpu)) = lanes.filter(|lanes| lanes.0 > 1 || lanes.1 > 0) {
-            sink(Event::Info(format!(
-                "decoders: {cpu} on the cpu, {gpu} on the gpu"
-            )));
+        if let Some(lanes) = lanes.filter(|lanes| *lanes > 1) {
+            sink(Event::Info(format!("decoders: {lanes}")));
         }
     }
     if written < frames {

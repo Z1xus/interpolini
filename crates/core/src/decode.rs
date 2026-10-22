@@ -1,9 +1,6 @@
 use std::collections::VecDeque;
-use std::ffi::CStr;
 use std::path::Path;
-use std::sync::mpsc::{self, TryRecvError};
-use std::sync::{Mutex, OnceLock};
-use std::thread::JoinHandle;
+use std::sync::Mutex;
 
 use ffmpeg_next::codec::{self, threading};
 use ffmpeg_next::format::{self, Pixel};
@@ -11,11 +8,10 @@ use ffmpeg_next::log::Level;
 use ffmpeg_next::packet::Mut;
 use ffmpeg_next::software::scaling;
 use ffmpeg_next::{Packet, color, ffi, frame, media};
-use libloading::Library;
 
 use crate::compose::share;
 use crate::svp::Reader;
-use crate::work::{self, Follow};
+use crate::work::Follow;
 use crate::{Error, Result};
 
 #[derive(Clone, Copy)]
@@ -251,7 +247,6 @@ pub struct Decoder {
     full: (u32, u32),
     by: u32,
     stream: usize,
-    gpu: bool,
     drained: bool,
     start: i64,
     frames_per_tick: f64,
@@ -260,63 +255,6 @@ pub struct Decoder {
 
 // the scaler has no thread affinity and the host reads one frame at a time
 unsafe impl Send for Decoder {}
-
-pub type Gpu = ffi::AVHWDeviceType;
-
-pub fn gpus() -> Vec<Gpu> {
-    let mut gpus = Vec::new();
-    if nvidia() {
-        gpus.push(Gpu::AV_HWDEVICE_TYPE_CUDA);
-    }
-    gpus.push(if cfg!(windows) {
-        Gpu::AV_HWDEVICE_TYPE_D3D11VA
-    } else if cfg!(target_os = "macos") {
-        Gpu::AV_HWDEVICE_TYPE_VIDEOTOOLBOX
-    } else {
-        Gpu::AV_HWDEVICE_TYPE_VAAPI
-    });
-    gpus
-}
-
-pub fn decoders() -> Vec<String> {
-    ffmpeg_next::log::set_level(Level::Quiet);
-    let starts = |gpu: &Gpu| unsafe {
-        let mut device = std::ptr::null_mut();
-        let (name, options) = (std::ptr::null(), std::ptr::null_mut());
-        let made = ffi::av_hwdevice_ctx_create(&mut device, *gpu, name, options, 0) >= 0;
-        ffi::av_buffer_unref(&mut device);
-        made
-    };
-    let name = |gpu| unsafe { CStr::from_ptr(ffi::av_hwdevice_get_type_name(gpu)) };
-    let names = gpus().into_iter().filter(starts);
-    let names = names
-        .map(|gpu| name(gpu).to_string_lossy().into_owned())
-        .collect();
-    ffmpeg_next::log::set_level(Level::Error);
-    names
-}
-
-// asks the driver itself, because ffmpeg prints an error on a computer without the gpu
-fn nvidia() -> bool {
-    static FOUND: OnceLock<bool> = OnceLock::new();
-    *FOUND.get_or_init(|| unsafe {
-        let name = if cfg!(windows) {
-            "nvcuda.dll"
-        } else {
-            "libcuda.so.1"
-        };
-        let Ok(driver) = Library::new(name) else {
-            return false;
-        };
-        // ffmpeg loads the driver again, so it stays in the process
-        let driver = Box::leak(Box::new(driver));
-        let start = driver.get::<unsafe extern "C" fn(u32) -> i32>(b"cuInit\0");
-        let count = driver.get::<unsafe extern "C" fn(*mut i32) -> i32>(b"cuDeviceGetCount\0");
-        let mut gpus = 0;
-        matches!((start, count), (Ok(start), Ok(count)) if start(0) == 0 && count(&mut gpus) == 0)
-            && gpus > 0
-    })
-}
 
 // rgb counts too, it has a full color sample for each pixel
 fn whole(format: Pixel) -> bool {
@@ -344,19 +282,15 @@ fn rgb(format: Pixel) -> bool {
 
 impl Decoder {
     pub fn open(path: &Path) -> Result<Self> {
-        Self::start(path, |_| 1, None)
+        Self::start(path, |_| 1)
     }
 
     pub fn threaded(path: &Path, threads: usize) -> Result<Self> {
-        Self::start(path, |_| threads, None)
+        Self::start(path, |_| threads)
     }
 
     pub fn chosen(path: &Path, threads: impl FnOnce(f64) -> usize) -> Result<Self> {
-        Self::start(path, threads, None)
-    }
-
-    pub fn gpu(path: &Path, gpu: Gpu) -> Result<Self> {
-        Self::start(path, |_| 1, Some(gpu))
+        Self::start(path, threads)
     }
 
     pub fn following(mut self, follow: &Follow) -> Self {
@@ -383,11 +317,9 @@ impl Decoder {
         self.by
     }
 
-    fn start(path: &Path, threads: impl FnOnce(f64) -> usize, gpu: Option<Gpu>) -> Result<Self> {
+    fn start(path: &Path, threads: impl FnOnce(f64) -> usize) -> Result<Self> {
         ffmpeg_next::init()?;
-        // only once, so that it does not end the quiet time of a trial of the gpu
-        static LEVEL: OnceLock<()> = OnceLock::new();
-        LEVEL.get_or_init(|| ffmpeg_next::log::set_level(Level::Error));
+        ffmpeg_next::log::set_level(Level::Error);
         let input = format::input(path)?;
         let stream = video(&input).ok_or("the clip has no video")?;
         let mut rate = stream.avg_frame_rate();
@@ -430,24 +362,8 @@ impl Decoder {
             kind: threading::Type::Frame,
             count: threads(fps),
         });
-        if let Some(kind) = gpu {
-            let device = unsafe { &mut (*context.as_mut_ptr()).hw_device_ctx };
-            let (name, options) = (std::ptr::null(), std::ptr::null_mut());
-            let code = unsafe { ffi::av_hwdevice_ctx_create(device, kind, name, options, 0) };
-            if code < 0 {
-                return Err(ffmpeg_next::Error::from(code).into());
-            }
-        }
         let decoder = context.decoder().video()?;
         let format = decoder.format();
-        // only these give the same pictures on each decoder, and the gpu gives 8 bits as they are
-        let exact = matches!(
-            decoder.id(),
-            codec::Id::H264 | codec::Id::HEVC | codec::Id::AV1 | codec::Id::VP9
-        );
-        if gpu.is_some() && !(exact && matches!(format, Pixel::YUV420P | Pixel::YUVJ420P)) {
-            return Err("the gpu does not decode this clip".into());
-        }
         let jpeg = matches!(format, Pixel::YUVJ420P | Pixel::YUVJ444P);
         let limited = !jpeg && decoder.color_range() != color::Range::JPEG;
         let meta = Meta {
@@ -488,7 +404,6 @@ impl Decoder {
             by: 1,
             meta,
             stream: index,
-            gpu: gpu.is_some(),
             drained: false,
             start,
             frames_per_tick: time_base * fps,
@@ -512,24 +427,6 @@ impl Decoder {
         loop {
             self.cancel.check()?;
             if self.decoder.receive_frame(&mut self.ahead).is_ok() {
-                if self.gpu {
-                    // a clip that the gpu cannot decode comes from the cpu, with one thread
-                    if unsafe { (*self.ahead.as_ptr()).hw_frames_ctx.is_null() } {
-                        return Err("the gpu does not decode this clip".into());
-                    }
-                    let mut copy = frame::Video::empty();
-                    let code = unsafe {
-                        let (to, from) = (copy.as_mut_ptr(), self.ahead.as_ptr());
-                        match ffi::av_hwframe_transfer_data(to, from, 0) {
-                            0 => ffi::av_frame_copy_props(to, from),
-                            code => code,
-                        }
-                    };
-                    if code < 0 {
-                        return Err(ffmpeg_next::Error::from(code).into());
-                    }
-                    self.ahead = copy;
-                }
                 let ticks = self.ahead.timestamp().map(|time| time - self.start);
                 let timed = ticks.map(|ticks| (ticks as f64 * self.frames_per_tick).round() as i32);
                 return Ok(Some(timed.unwrap_or(self.at + 1)));
@@ -733,69 +630,6 @@ impl Decoder {
             decoder.store([raw.data[0], raw.data[1], raw.data[2]], strides)?;
             Ok(picture)
         })
-    }
-}
-
-const AHEAD: usize = 16;
-
-pub struct Ahead {
-    wanted: mpsc::Sender<(i32, i32)>,
-    pictures: mpsc::Receiver<Result<frame::Video>>,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl Ahead {
-    pub fn new(mut decoder: Decoder) -> Self {
-        let (wanted, asked) = mpsc::channel();
-        let (ready, pictures) = mpsc::channel();
-        let thread = work::spawn("gpu decoder", move || {
-            let mut made = VecDeque::new();
-            let (mut next, mut last) = (0, -1);
-            loop {
-                let asked = match made.len() >= AHEAD || next > last {
-                    true => asked.recv().map_err(|_| TryRecvError::Disconnected),
-                    false => asked.try_recv(),
-                };
-                match asked {
-                    Ok((n, end)) => {
-                        last = end;
-                        if next - made.len() as i32 > n || n >= next {
-                            made.clear();
-                            made.push_back(decoder.picture(n));
-                            next = n + 1;
-                        }
-                        made.drain(..made.len() - (next - n) as usize);
-                        let _ = ready.send(made.pop_front().unwrap_or(Err("no picture".into())));
-                    }
-                    Err(TryRecvError::Empty) => {
-                        made.push_back(decoder.picture(next));
-                        next += 1;
-                    }
-                    Err(TryRecvError::Disconnected) => break,
-                }
-            }
-        });
-        Self {
-            wanted,
-            pictures,
-            thread: Some(thread),
-        }
-    }
-
-    pub fn picture(&self, n: i32, last: i32) -> Result<frame::Video> {
-        let stopped = "the decoder stopped";
-        self.wanted.send((n, last)).map_err(|_| stopped)?;
-        self.pictures.recv().map_err(|_| stopped)?
-    }
-}
-
-impl Drop for Ahead {
-    // the thread must end before the process does, or the gpu context goes away under it
-    fn drop(&mut self) {
-        self.wanted = mpsc::channel().0;
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
     }
 }
 

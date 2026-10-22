@@ -178,7 +178,6 @@ pub fn about() -> String {
             ),
         ),
         ("live threads", work::live().to_string()),
-        ("gpu decoders", crate::decode::decoders().join(" ")),
         ("nvidia", nvidia.unwrap_or_default().replace('\n', ", ")),
         (
             "libavformat",

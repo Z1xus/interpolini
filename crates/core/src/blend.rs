@@ -59,15 +59,6 @@ impl Blend {
         self.weights.len()
     }
 
-    pub fn pace(&self) -> f32 {
-        self.step.0 as f32 / self.step.1 as f32
-    }
-
-    pub fn last(&self, n: i32) -> i32 {
-        let center = i64::from(n) * self.step.0 / self.step.1;
-        (center + self.radius()).clamp(0, self.last) as i32
-    }
-
     pub fn after(&self, picture: i32) -> i32 {
         let reach = (i64::from(picture) + self.radius()) * self.step.1;
         ((reach + self.step.0 - 1) / self.step.0) as i32
@@ -116,17 +107,10 @@ impl Blend {
                 .take(height)
                 .enumerate()
                 .with_min_len(budget::piece(height));
-            // a picture from the gpu has both color planes in one, a sample of each in turn
-            let lines: Vec<(&[u8], usize, u32, usize)> = held
+            let lines: Vec<(&[u8], usize, u32)> = held
                 .iter()
                 .zip(&self.weights)
-                .map(|((_, picture), &weight)| {
-                    let (from, side) = match picture.format() {
-                        Pixel::NV12 if plane > 0 => (1, plane),
-                        _ => (plane, 0),
-                    };
-                    (picture.data(from), picture.stride(from), weight, side)
-                })
+                .map(|((_, picture), &weight)| (picture.data(plane), picture.stride(plane), weight))
                 .collect();
             // luma only, as in open-svpflow
             if let Some(curve) = self.curve.filter(|_| plane == 0) {
@@ -135,7 +119,7 @@ impl Blend {
                         || vec![0f32; width],
                         |sums, (y, row)| {
                             sums.fill(0.0);
-                            for &(data, stride, weight, _) in &lines {
+                            for &(data, stride, weight) in &lines {
                                 let weight = weight as f32 / (1 << SHIFT) as f32;
                                 for (sum, &sample) in sums.iter_mut().zip(&data[y * stride..]) {
                                     *sum += weight * curve[usize::from(sample)];
@@ -156,27 +140,11 @@ impl Blend {
                     || (vec![0u16; width], vec![0u16; width]),
                     |(sums, wide), (y, row)| {
                         sums.fill(start);
-                        for &(data, stride, weight, side) in &lines {
+                        for &(data, stride, weight) in &lines {
                             // a separate pass, so that the compiler multiplies in 16 bits
                             let line = &data[y * stride..];
-                            match side {
-                                0 => {
-                                    for (wide, &sample) in wide.iter_mut().zip(line) {
-                                        *wide = u16::from(sample) << 8;
-                                    }
-                                }
-                                1 => {
-                                    for (wide, pair) in wide.iter_mut().zip(line.as_chunks::<2>().0)
-                                    {
-                                        *wide = u16::from_le_bytes(*pair) << 8;
-                                    }
-                                }
-                                _ => {
-                                    for (wide, pair) in wide.iter_mut().zip(line.as_chunks::<2>().0)
-                                    {
-                                        *wide = u16::from_le_bytes(*pair) & 0xff00;
-                                    }
-                                }
+                            for (wide, &sample) in wide.iter_mut().zip(line) {
+                                *wide = u16::from(sample) << 8;
                             }
                             let weight = weight as u16;
                             for (sum, &wide) in sums.iter_mut().zip(wide.iter()) {
