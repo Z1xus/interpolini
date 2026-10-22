@@ -103,6 +103,20 @@ fn idle() -> MutexGuard<'static, Vec<Engine>> {
     IDLE.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
+pub fn shutdown() {
+    idle().clear();
+    for api in [&VULKAN, &TENSORRT] {
+        if let Some(Ok(api)) = api.get()
+            && let Ok(call) = unsafe {
+                api._library
+                    .get::<unsafe extern "C" fn()>(b"rife_shutdown\0")
+            }
+        {
+            unsafe { call() };
+        }
+    }
+}
+
 pub struct Rife {
     engine: ManuallyDrop<Engine>,
     step: (i64, i64),

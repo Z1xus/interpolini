@@ -382,6 +382,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // the gpu libraries crash when the process exits under a running job
     let left = services::stop();
     debug_assert_eq!(left, 0);
+    interpolini_core::shutdown();
     Ok(())
 }
 

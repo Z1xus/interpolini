@@ -209,6 +209,12 @@ fn terminal() -> bool {
 }
 
 fn main() -> ExitCode {
+    let code = render();
+    interpolini_core::shutdown();
+    code
+}
+
+fn render() -> ExitCode {
     #[cfg(windows)]
     {
         colors();
