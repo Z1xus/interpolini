@@ -91,6 +91,7 @@ pub fn machine() -> Machine {
 
 pub fn preview(active: bool) {
     PREVIEW.store(active, Ordering::Relaxed);
+    crate::svp::retune();
 }
 
 pub fn render(active: bool) {

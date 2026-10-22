@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
 use libloading::Library;
 
+use crate::budget::{self, Class};
 use crate::config::{Algorithm, Blending, Interpolation, Mask, Masking, Speed, Tuning};
 use crate::{Error, Result};
 
@@ -55,6 +56,7 @@ api! {
     frame_data: b"osvp_frame_data\0" fn(Raw, i32) -> *const u8;
     frame_stride: b"osvp_frame_stride\0" fn(Raw, i32) -> isize;
     frame_free: b"osvp_frame_free\0" fn(Raw);
+    set_threads: b"osvp_set_threads\0" fn(i32);
 }
 
 pub struct Svp {
@@ -256,10 +258,16 @@ impl Shape {
     }
 }
 
+static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
+
+pub fn retune() {
+    if let Some(Ok(api)) = API.get() {
+        unsafe { (api.set_threads)(budget::threads(Class::Render) as i32) };
+    }
+}
+
 impl Svp {
     pub fn load(directory: &Path) -> Result<Arc<Self>> {
-        // stays loaded, the threads of a host outlive it
-        static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
         let api = API.get_or_init(|| {
             let path = directory.join(libloading::library_filename("open_svpflow"));
             let library = unsafe { Library::new(&path) }
@@ -267,6 +275,7 @@ impl Svp {
             Api::load(library).map_err(|error| error.to_string())
         });
         let api = api.as_ref().map_err(Clone::clone)?;
+        retune();
         let directory = CString::new(directory.to_string_lossy().as_bytes())
             .map_err(|error| error.to_string())?;
         let context = unsafe { (api.create)(directory.as_ptr()) };
