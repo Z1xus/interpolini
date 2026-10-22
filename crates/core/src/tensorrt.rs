@@ -42,12 +42,32 @@ pub fn plugin() -> bool {
     config::app_dir().join(name).exists()
 }
 
+#[cfg(windows)]
+const LIBRARIES: [&str; 4] = [
+    "cudart64_12.dll",
+    "nvinfer_10.dll",
+    "nvonnxparser_10.dll",
+    "nvinfer_builder_resource_10.dll",
+];
+#[cfg(not(windows))]
+const LIBRARIES: [&str; 4] = [
+    "libcudart.so.12",
+    "libnvinfer.so.10",
+    "libnvonnxparser.so.10",
+    "libnvinfer_builder_resource.so.10",
+];
+
 pub fn libraries() -> bool {
-    let name = match cfg!(windows) {
-        true => "nvinfer_10.dll",
-        false => "libnvinfer.so.10",
+    let Ok(files) = std::fs::read_dir(config::app_dir().join("tensorrt")) else {
+        return false;
     };
-    config::app_dir().join("tensorrt").join(name).exists()
+    let names: Vec<_> = files
+        .flatten()
+        .map(|file| file.file_name().to_string_lossy().into_owned())
+        .collect();
+    LIBRARIES
+        .iter()
+        .all(|prefix| names.iter().any(|name| name.starts_with(prefix)))
 }
 
 fn probe() -> Option<i32> {

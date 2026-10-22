@@ -49,8 +49,8 @@ unsafe extern "C" fn report(sink: Raw, done: f32) {
 }
 
 // the libraries keep gpu state, so they stay loaded
-static VULKAN: OnceLock<Option<Api>> = OnceLock::new();
-static TENSORRT: OnceLock<Option<Api>> = OnceLock::new();
+static VULKAN: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
+static TENSORRT: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
 
 // one tensorrt engine builds at a time, and the graphs that wait for it show how far it is
 static PREPARE: Mutex<()> = Mutex::new(());
@@ -74,6 +74,12 @@ fn wait(sink: Sink, cancel: &Cancel) -> Result<MutexGuard<'static, ()>> {
         tick += 1;
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+fn last_error(api: &Api) -> String {
+    unsafe { CStr::from_ptr((api.error)()) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 struct Engine {
@@ -150,9 +156,13 @@ impl Rife {
         }
         let api = api.get_or_init(|| {
             let path = directory.join(libloading::library_filename(name));
-            Api::load(unsafe { Library::new(path) }.ok()?).ok()
+            let library = unsafe { Library::new(&path) };
+            let library = library.map_err(|error| format!("{}: {error}", path.display()))?;
+            Api::load(library).map_err(|error| format!("{}: {error}", path.display()))
         });
-        let api = api.as_ref().ok_or("rife is not installed")?;
+        let api = api
+            .as_ref()
+            .map_err(|error| format!("cannot load rife, {error}"))?;
         let mut idle = idle();
         let kept = idle
             .iter()
@@ -170,11 +180,7 @@ impl Rife {
                     .map_err(|error| error.to_string())?;
                 let raw = unsafe { (api.create)(path.as_ptr()) };
                 if raw.is_null() {
-                    return Err(match tensorrt {
-                        true => "tensorrt could not start",
-                        false => "rife needs a vulkan gpu",
-                    }
-                    .into());
+                    return Err(last_error(api).into());
                 }
                 Engine { api, raw, models }
             }
@@ -193,11 +199,8 @@ impl Rife {
         }
         if ready != 0 {
             drop(engine);
-            let error = unsafe { CStr::from_ptr((api.error)()) }.to_string_lossy();
-            if !error.is_empty() {
-                sink(Event::Warning(format!("tensorrt: {error}")));
-            }
-            return Err("tensorrt could not prepare the model".into());
+            let error = last_error(api);
+            return Err(format!("tensorrt could not prepare the model, {error}").into());
         }
         let from = source.shape();
         let step = (from.fps.0, from.fps.1 * i64::from(fps));
