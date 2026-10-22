@@ -50,6 +50,7 @@ api! {
     unpeel: b"osvp_unpeel\0" fn(Raw, Raw, Raw, Raw) -> Raw;
     clip_info: b"osvp_clip_info\0" fn(Raw, *mut VideoInfo);
     clip_free: b"osvp_clip_free\0" fn(Raw);
+    clip_set_end: b"osvp_clip_set_end\0" fn(Raw, i32);
     get_frame: b"osvp_get_frame\0" fn(Raw, i32) -> Raw;
     frame_data: b"osvp_frame_data\0" fn(Raw, i32) -> *const u8;
     frame_stride: b"osvp_frame_stride\0" fn(Raw, i32) -> isize;
@@ -427,6 +428,10 @@ impl Clip {
             fps: (info.fps_num, info.fps_den),
             frames: info.num_frames,
         }
+    }
+
+    pub fn end(&self, last: i32) {
+        unsafe { (self.svp.api.clip_set_end)(self.raw, last) };
     }
 
     pub fn frame(&self, n: i32) -> Result<Frame> {

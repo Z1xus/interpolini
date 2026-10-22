@@ -179,7 +179,7 @@ fn encode(
         }],
         Some(_) => parts(&placed),
     };
-    let open = |clip: usize| {
+    let open = |clip: usize| -> Result<Source> {
         let (index, job) = jobs[clip];
         if timeline.is_some() {
             sink(Event::Start { clip: index });
@@ -190,7 +190,11 @@ fn encode(
             let share = config.dedup.repeats / 100.0;
             config.dedup.threshold = threshold(&differences(&job.clip, from, to, cancel)?, share);
         }
-        Source::open(&job.clip, &config, probes[clip].still, sink, cancel)
+        let source = Source::open(&job.clip, &config, probes[clip].still, sink, cancel)?;
+        if let (Some((_, end)), Some(graph)) = (job.cut, source.graph()) {
+            graph.stop(end);
+        }
+        Ok(source)
     };
     let base = base(jobs)?;
     let first = open(base)?;

@@ -353,6 +353,14 @@ impl Graph {
         Ok((Feed::Host { derived, input }, fused))
     }
 
+    pub fn stop(&self, seconds: f64) {
+        if let Feed::Host { derived, input } = &self.feed {
+            let clip = derived.as_ref().unwrap_or(input);
+            let (num, den) = clip.shape().fps;
+            clip.end((seconds * num as f64 / den as f64).ceil() as i32);
+        }
+    }
+
     pub(crate) fn frame(&self, n: i32, cancel: &Cancel) -> Result<frame::Video> {
         self.follow.set(cancel);
         let Info { width, height, .. } = self.info;
