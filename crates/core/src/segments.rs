@@ -552,7 +552,7 @@ impl Segments {
                         None => self.end(start),
                     };
                     self.next = Some(end);
-                    // a long part to the end has no part after it to run at the same time
+                    // the last part has no part to run beside it
                     let length = (end - start) as usize;
                     if end == self.frames && length > 2 * self.longest {
                         (end, 0)

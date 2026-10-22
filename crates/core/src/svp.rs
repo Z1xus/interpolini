@@ -464,7 +464,12 @@ impl Options {
         let quick = coarse || speed == Speed::Faster;
 
         let pel = if speed == Speed::Medium { "" } else { "pel:1," };
-        let supers = format!("{{{pel}gpu:{}}}", u8::from(gpu));
+        let lean = if gpu && speed == Speed::Medium && !half {
+            "lean:true,"
+        } else {
+            ""
+        };
+        let supers = format!("{{{pel}{lean}gpu:{}}}", u8::from(gpu));
 
         let block = match speed {
             _ if coarse => 32,
