@@ -276,7 +276,7 @@ impl Map for Rife {
         let Engine { api, raw, .. } = *self.engine;
         let code = unsafe { (api.process)(raw, &first, &second, time, &output) };
         if code != 0 {
-            return Err("rife could not render the frame".into());
+            return Err(last_error(api).into());
         }
         Ok(())
     }

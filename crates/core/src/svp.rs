@@ -1,7 +1,7 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::mem::ManuallyDrop;
 use std::path::Path;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
 use libloading::Library;
 
@@ -87,14 +87,28 @@ pub trait Map: Send + Sync + 'static {
     ) -> Result<()>;
 }
 
-type Cell<T> = RwLock<Option<(&'static Api, T)>>;
+type Reason = Arc<Mutex<Option<String>>>;
+
+struct Cell<T> {
+    value: RwLock<Option<(&'static Api, T)>>,
+    reason: Reason,
+}
 
 fn run<T>(user: Raw, call: impl FnOnce(&'static Api, &T) -> Result<()>) -> i32 {
     let cell = unsafe { &*user.cast::<Cell<T>>() };
-    let value = cell.read().unwrap_or_else(|poison| poison.into_inner());
+    let value = cell
+        .value
+        .read()
+        .unwrap_or_else(|poison| poison.into_inner());
     let done = value
         .as_ref()
-        .is_some_and(|(api, value)| call(api, value).is_ok());
+        .is_some_and(|(api, value)| match call(api, value) {
+            Ok(()) => true,
+            Err(error) => {
+                *cell.reason.lock().unwrap_or_else(PoisonError::into_inner) = Some(error.0);
+                false
+            }
+        });
     i32::from(!done)
 }
 
@@ -110,7 +124,10 @@ unsafe extern "C" fn read<R: Reader>(
 
 unsafe extern "C" fn need<M: Map>(user: Raw, n: i32, frames: *mut i32) -> i32 {
     let cell = unsafe { &*user.cast::<Cell<M>>() };
-    let value = cell.read().unwrap_or_else(|poison| poison.into_inner());
+    let value = cell
+        .value
+        .read()
+        .unwrap_or_else(|poison| poison.into_inner());
     let needed = value
         .as_ref()
         .map(|(_, map)| map.need(n))
@@ -149,6 +166,7 @@ pub struct Clip {
     svp: Arc<Svp>,
     raw: Raw,
     close: Option<Box<dyn Fn() + Send + Sync>>,
+    reason: Option<Reason>,
     parents: Vec<Arc<Clip>>,
 }
 
@@ -253,19 +271,20 @@ impl Svp {
             .map_err(|error| error.to_string())?;
         let context = unsafe { (api.create)(directory.as_ptr()) };
         if context.is_null() {
-            return Err(unsafe { error(api) });
+            return Err(unsafe { error(api, None) });
         }
         Ok(Arc::new(Self { api, context }))
     }
 
     fn clip(self: &Arc<Self>, raw: Raw) -> Result<Clip> {
         if raw.is_null() {
-            return Err(unsafe { error(self.api) });
+            return Err(unsafe { error(self.api, None) });
         }
         Ok(Clip {
             svp: Arc::clone(self),
             raw,
             close: None,
+            reason: None,
             parents: Vec::new(),
         })
     }
@@ -276,15 +295,20 @@ impl Svp {
         value: T,
         make: impl FnOnce(Raw) -> Raw,
     ) -> Result<Clip> {
-        let cell = Box::into_raw(Box::new(RwLock::new(Some((self.api, value))))) as usize;
+        let reason = Reason::default();
+        let cell = Box::into_raw(Box::new(Cell {
+            value: RwLock::new(Some((self.api, value))),
+            reason: Arc::clone(&reason),
+        })) as usize;
         let raw = make(cell as Raw);
         let mut clip = self
             .clip(raw)
             .inspect_err(|_| unsafe { release::<T>(cell as Raw) })?;
         clip.close = Some(Box::new(move || {
             let cell = unsafe { &*(cell as *const Cell<T>) };
-            drop(cell.write().map(|mut value| value.take()));
+            drop(cell.value.write().map(|mut value| value.take()));
         }));
+        clip.reason = Some(reason);
         Ok(clip)
     }
 
@@ -403,15 +427,23 @@ impl Svp {
     }
 }
 
-unsafe fn error(api: &Api) -> Error {
-    Error(
-        unsafe { CStr::from_ptr((api.error)()) }
-            .to_string_lossy()
-            .into_owned(),
-    )
+unsafe fn error(api: &Api, clip: Option<&Clip>) -> Error {
+    let host = unsafe { CStr::from_ptr((api.error)()) }.to_string_lossy();
+    let reason = clip
+        .filter(|_| host.ends_with("callback failed"))
+        .and_then(Clip::reason);
+    Error(reason.unwrap_or_else(|| host.into_owned()))
 }
 
 impl Clip {
+    fn reason(&self) -> Option<String> {
+        let own = self
+            .reason
+            .as_ref()
+            .and_then(|reason| reason.lock().unwrap_or_else(PoisonError::into_inner).take());
+        own.or_else(|| self.parents.iter().find_map(|parent| parent.reason()))
+    }
+
     pub fn keep(mut self, parent: impl Into<Arc<Clip>>) -> Self {
         self.parents.push(parent.into());
         self
@@ -437,7 +469,7 @@ impl Clip {
     pub fn frame(&self, n: i32) -> Result<Frame> {
         let raw = unsafe { (self.svp.api.get_frame)(self.raw, n) };
         if raw.is_null() {
-            return Err(unsafe { error(self.svp.api) });
+            return Err(unsafe { error(self.svp.api, Some(self)) });
         }
         Ok(Frame {
             api: self.svp.api,
