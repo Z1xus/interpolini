@@ -26,7 +26,8 @@ impl Support {
             Self::Ready => "",
             Self::Platform => "TensorRT isn't available on this system.",
             Self::Gpu => "TensorRT needs an NVIDIA GPU.",
-            Self::Driver => "TensorRT needs a newer NVIDIA driver.",
+            Self::Driver if cfg!(windows) => "TensorRT needs NVIDIA driver 527.41 or newer.",
+            Self::Driver => "TensorRT needs NVIDIA driver 525.60 or newer.",
             Self::Libraries => "TensorRT isn't installed.",
             Self::Models => "TensorRT has no model installed.",
         }
