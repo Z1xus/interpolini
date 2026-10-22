@@ -10,7 +10,9 @@ use crate::edit::overwrite;
 use crate::history::record;
 use crate::project::{even, placement};
 use crate::state::{Entry, STILL, Saved, Shared, State, lock};
-use crate::view::{fit, lanes, refresh, update};
+#[cfg(target_os = "linux")]
+use crate::view::lanes;
+use crate::view::{fit, refresh, update};
 use crate::{App, Clip, preview, services};
 #[cfg(target_os = "linux")]
 use crate::{Ghost, drop, icon};
