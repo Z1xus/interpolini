@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use rayon::prelude::*;
+
 use crate::Result;
 use crate::budget;
 use crate::decode::{Decoder, Meta};
@@ -7,6 +9,7 @@ use crate::work::{Cancel, Follow};
 
 // every fourth sample of every fourth row is enough to find a repeated frame
 const STEP: usize = 4;
+const SPOTS: i32 = 3;
 
 fn distance(first: &[u8], second: &[u8]) -> u64 {
     let pairs = first.iter().zip(second).step_by(STEP);
@@ -19,10 +22,9 @@ fn samples(width: usize, height: usize) -> f32 {
 
 // how much each sampled frame differs from the frame before it, in rows of frames from three places
 pub fn differences(clip: &Path, from: f64, to: f64, cancel: &Cancel) -> Result<Vec<Vec<f32>>> {
-    const SPOTS: i32 = 3;
     const SAMPLE: i32 = 100;
-    let mut decoder = Decoder::threaded(clip, budget::decode())?.following(&Follow::new(cancel));
-    let meta = decoder.meta();
+    let threads = (budget::decode() / SPOTS as usize).max(1);
+    let meta = Decoder::threaded(clip, 1)?.meta();
     let Meta {
         width,
         height,
@@ -33,11 +35,11 @@ pub fn differences(clip: &Path, from: f64, to: f64, cancel: &Cancel) -> Result<V
     let (width, height) = (width as usize, height as usize);
     let luma = width * height;
     let chroma = luma >> (meta.shift() * 2);
-    let mut pictures = [vec![0u8; luma + chroma * 2], vec![0u8; luma + chroma * 2]];
     let rate = fps.0 as f64 / fps.1 as f64;
     let (start, end) = ((from * rate) as i32, ((to * rate) as i32).min(frames));
-    let mut spots = Vec::new();
-    for spot in 1..=SPOTS {
+    let spot = |spot: i32| -> Result<Vec<f32>> {
+        let mut decoder = Decoder::threaded(clip, threads)?.following(&Follow::new(cancel));
+        let mut pictures = [vec![0u8; luma + chroma * 2], vec![0u8; luma + chroma * 2]];
         let first = (start + (end - start) * spot / (SPOTS + 1) - SAMPLE / 2).max(start);
         let mut row = Vec::new();
         for step in 0..SAMPLE.min(end - first) {
@@ -57,9 +59,9 @@ pub fn differences(clip: &Path, from: f64, to: f64, cancel: &Cancel) -> Result<V
                 row.push(total as f32 / samples(width, height));
             }
         }
-        spots.push(row);
-    }
-    Ok(spots)
+        Ok(row)
+    };
+    budget::install(|| (1..=SPOTS).into_par_iter().map(spot).collect())
 }
 
 fn gap(differences: &[Vec<f32>]) -> f32 {
