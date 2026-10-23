@@ -441,6 +441,10 @@ unsafe fn error(api: &Api, clip: Option<&Clip>) -> Error {
     let host = unsafe { CStr::from_ptr((api.error)()) }.to_string_lossy();
     let ours = unsafe { (api.error_callback)() } == 1;
     let reason = clip.filter(|_| ours).and_then(Clip::reason);
+    let small = ["non-valid number of levels", "wrong super clip"];
+    if small.iter().any(|text| host.contains(text)) {
+        return Error("the picture is too small to interpolate".into());
+    }
     Error(reason.unwrap_or_else(|| host.into_owned()))
 }
 

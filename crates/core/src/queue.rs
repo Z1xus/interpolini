@@ -58,11 +58,16 @@ fn target(job: &Job, extension: &str) -> PathBuf {
         .unwrap_or_default()
 }
 
+fn named(job: &Job) -> Result<Probe> {
+    let name = job.clip.file_name().unwrap_or_default().to_string_lossy();
+    probe(&job.clip).map_err(|error| format!("{name}: {error}").into())
+}
+
 pub fn sequence(jobs: &mut [Job]) -> Result<()> {
     let mut at = 0.0;
     for job in jobs {
         (job.at, job.track) = (at, 0);
-        at += kept(job, &probe(&job.clip)?);
+        at += kept(job, &named(job)?);
     }
     Ok(())
 }
@@ -80,7 +85,7 @@ pub(crate) fn kept(job: &Job, probe: &Probe) -> f64 {
 pub fn sounds(jobs: &[Job]) -> Result<Vec<Sound>> {
     let mut sounds = Vec::new();
     for job in jobs {
-        let probe = probe(&job.clip)?;
+        let probe = named(job)?;
         for stream in (0..probe.tracks.len()).filter(|track| !job.muted.contains(track)) {
             sounds.push(Sound {
                 clip: job.clip.clone(),
