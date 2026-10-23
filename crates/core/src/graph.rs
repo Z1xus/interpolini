@@ -407,13 +407,14 @@ impl Graph {
         Ok(picture)
     }
 
+    pub(crate) fn packs(&self) -> bool {
+        matches!(self.feed, Feed::File(_)) && self.grade.is_none()
+    }
+
     pub(crate) fn encode(&self, spare: Spare, from: i32, end: i32) -> bool {
         let Feed::File(segments) = &self.feed else {
             return false;
         };
-        if self.grade.is_some() {
-            return false;
-        }
         let mut segments = segments.lock().unwrap_or_else(|poison| poison.into_inner());
         segments.encode(spare, from, end);
         true

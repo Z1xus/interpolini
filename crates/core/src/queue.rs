@@ -269,8 +269,10 @@ fn encode(
     let from = ((start - job.at) * rate).round().max(0.0) as i32;
     let alone = timeline.is_none() && upscaler.is_none() && job.fade.none();
     let alone = alone && job.place == Place::default();
-    let fused = match (encoder.spare(), first.graph()) {
-        (Some(spare), Some(graph)) if alone => graph.encode(spare, from, from + frames),
+    let fused = match first.graph() {
+        Some(graph) if alone && graph.packs() => encoder
+            .spare()
+            .is_some_and(|spare| graph.encode(spare, from, from + frames)),
         _ => false,
     };
     let frames = match (fused, first.graph()) {

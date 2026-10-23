@@ -542,21 +542,19 @@ impl Encoder {
         };
         // nvenc starts again after a flush, and a size target needs one encoder for the whole file
         // the lanes give their pictures to it as they are, so it must take them without a change
-        let spare =
-            (name.ends_with("_nvenc") && rate.is_none() && engines() > 1 && convert.is_none())
-                .then(|| {
-                    let (name, meta, config, first) =
-                        (name.to_owned(), *meta, config.clone(), head(&encoder));
-                    let spare: Spare = Arc::new(move || {
-                        let video = context(&name, &meta, base, &config, None, header);
-                        let video = video.ok_or("no encoder")??;
-                        match head(&video) == first {
-                            true => Ok(video),
-                            false => Err("the encoders do not match".into()),
-                        }
-                    });
-                    spare
-                });
+        let spare: Option<Spare> =
+            (name.ends_with("_nvenc") && rate.is_none() && convert.is_none()).then(|| {
+                let (name, meta, config, first) =
+                    (name.to_owned(), *meta, config.clone(), head(&encoder));
+                Arc::new(move || {
+                    let video = context(&name, &meta, base, &config, None, header);
+                    let video = video.ok_or("no encoder")??;
+                    match head(&video) == first {
+                        true => Ok(video),
+                        false => Err("the encoders do not match".into()),
+                    }
+                }) as Spare
+            });
         Ok(Self {
             output,
             encoder,
@@ -601,7 +599,7 @@ impl Encoder {
     }
 
     pub fn spare(&self) -> Option<Spare> {
-        self.spare.clone()
+        self.spare.clone().filter(|_| engines() > 1)
     }
 
     pub fn pass(&mut self, packets: Vec<Packet>, n: i32) -> Result<()> {
