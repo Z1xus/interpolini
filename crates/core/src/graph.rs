@@ -132,6 +132,14 @@ fn wrap(source: Frame, width: u32, height: u32, format: Pixel) -> frame::Video {
     picture
 }
 
+pub fn covering(frames: i32, from: (i64, i64), to: (i64, i64)) -> i32 {
+    let (num, den) = (
+        i128::from(frames) * i128::from(from.1) * i128::from(to.0),
+        i128::from(from.0) * i128::from(to.1),
+    );
+    ((num + den - 1) / den) as i32
+}
+
 impl Graph {
     pub fn open(clip: &Path, config: &Config, sink: Sink, cancel: &Cancel) -> Result<Self> {
         // a blend reads the clip in its own decoders, this one only seeks
@@ -178,7 +186,8 @@ impl Graph {
         let blend = match &feed {
             Feed::Host { derived, input } if *blended && !fused => {
                 let shape = derived.as_ref().unwrap_or(input).shape();
-                Some(Blend::new(weights, shape.fps, blending, shape.frames))
+                let frames = covering(frames, fps, shape.fps);
+                Some(Blend::new(weights, shape.fps, blending, frames))
             }
             _ => None,
         };
@@ -198,7 +207,7 @@ impl Graph {
             (_, Some(blend)) => ((i64::from(blending.fps), 1), blend.frames),
             (Feed::Host { derived, input }, None) => {
                 let shape = derived.as_ref().unwrap_or(input).shape();
-                (shape.fps, shape.frames)
+                (shape.fps, covering(frames, fps, shape.fps))
             }
             (Feed::Plain(_), None) => (fps, frames),
         };
@@ -375,7 +384,15 @@ impl Graph {
             }
             Feed::Host { derived, input } => {
                 let clip = derived.as_ref().unwrap_or(input);
-                let source = |n| Ok(wrap(clip.frame(n)?, width, height, self.meta.pixel()));
+                let last = clip.shape().frames - 1;
+                let source = |n: i32| {
+                    Ok(wrap(
+                        clip.frame(n.min(last))?,
+                        width,
+                        height,
+                        self.meta.pixel(),
+                    ))
+                };
                 match &self.blend {
                     Some(blend) => blend.frame(source, n, width, height)?,
                     None => source(n)?,

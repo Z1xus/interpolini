@@ -209,10 +209,24 @@ pub fn next(
     packet.read(input)
 }
 
+pub fn video(input: &format::context::Input) -> Option<format::stream::Stream<'_>> {
+    let cover = |stream: &format::stream::Stream| {
+        stream
+            .disposition()
+            .contains(format::stream::Disposition::ATTACHED_PIC)
+    };
+    let best = input.streams().best(media::Type::Video);
+    best.filter(|stream| !cover(stream)).or_else(|| {
+        input
+            .streams()
+            .find(|stream| stream.parameters().medium() == media::Type::Video && !cover(stream))
+    })
+}
+
 // the time in a file where its picture starts, in the time base of ffmpeg
 // the sound is cut from the same time, so the two stay together
 pub fn origin(input: &format::context::Input) -> i64 {
-    let video = input.streams().best(media::Type::Video);
+    let video = video(input);
     let start = video.and_then(|stream| match stream.start_time() {
         ffi::AV_NOPTS_VALUE => None,
         start => Some((start as f64 * f64::from(stream.time_base()) * 1e6) as i64),
@@ -375,10 +389,7 @@ impl Decoder {
         static LEVEL: OnceLock<()> = OnceLock::new();
         LEVEL.get_or_init(|| ffmpeg_next::log::set_level(Level::Error));
         let input = format::input(path)?;
-        let stream = input
-            .streams()
-            .best(media::Type::Video)
-            .ok_or("the clip has no video")?;
+        let stream = video(&input).ok_or("the clip has no video")?;
         let mut rate = stream.avg_frame_rate();
         if rate.numerator() <= 0 {
             rate = stream.rate();

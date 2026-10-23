@@ -50,7 +50,7 @@ fn encode(
         };
         encoder.write(picture, n)?;
     }
-    encoder.finish(0.0)?;
+    encoder.finish(FRAMES)?;
     // the part starts with a key frame, which is much larger than the frames of a long file
     let mean = |(count, bytes): (u32, u64)| bytes as f64 / f64::from(count.max(1));
     let [rest, keys] = encoder.packets;

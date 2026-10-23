@@ -8,7 +8,7 @@ use ffmpeg_next::software::scaling;
 use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, ffi, frame, media, picture};
 
 use crate::Result;
-use crate::audio::{Lane, Mixer, Source};
+use crate::audio::{Lane, Mixer, RATE, Source};
 use crate::budget;
 use crate::config::{self, Codec, Output};
 use crate::decode::Meta;
@@ -188,7 +188,9 @@ impl Audio {
             }
             let offset =
                 crate::decode::origin(&input) + (start * f64::from(ffi::AV_TIME_BASE)) as i64;
-            ffi::av_seek_frame(context, -1, offset, ffi::AVSEEK_FLAG_BACKWARD);
+            if start > 0.0 {
+                ffi::av_seek_frame(context, -1, offset, ffi::AVSEEK_FLAG_BACKWARD);
+            }
             offset as f64 / f64::from(ffi::AV_TIME_BASE)
         };
         Ok(Some(Self {
@@ -217,11 +219,13 @@ impl Audio {
                 .stream(self.packet.stream())
                 .map(|stream| stream.time_base());
             let base = base.unwrap_or(Rational(1, 1));
-            let time = self.packet.dts().unwrap_or(0) as f64 * f64::from(base);
-            if time < self.offset {
+            let time =
+                self.packet.pts().or(self.packet.dts()).unwrap_or(0) as f64 * f64::from(base);
+            let length = self.packet.duration() as f64 * f64::from(base);
+            if time + length <= self.offset {
                 continue;
             }
-            self.held = time > seconds + self.offset;
+            self.held = time >= seconds + self.offset;
             if self.held {
                 return Ok(());
             }
@@ -582,6 +586,7 @@ impl Encoder {
         }
         let kind = &mut self.packets[usize::from(self.packet.is_key())];
         *kind = (kind.0 + 1, kind.1 + self.packet.size() as u64);
+        self.packet.set_duration(1);
         self.packet.rescale_ts(self.base, target);
         self.packet.set_stream(0);
         self.packet.write_interleaved(&mut self.output)?;
@@ -620,18 +625,26 @@ impl Encoder {
         Ok(())
     }
 
-    fn pump(&mut self, seconds: f64) -> Result<()> {
+    fn feed(&mut self, samples: i64) -> Result<()> {
         let mix = self.lanes.len() == 1;
-        while self.lanes.iter().any(|lane| lane.seconds() <= seconds) {
-            for (index, lane) in self.lanes.iter_mut().enumerate() {
-                let track = (!mix).then_some(index);
-                let samples = match (&mut self.mixer, &mut self.source) {
-                    (Some(mixer), _) => mixer.take(index, lane.position(), lane.size())?,
-                    (None, Some(source)) => source.take(track, lane.size())?,
-                    (None, None) => [vec![0.0; lane.size()], vec![0.0; lane.size()]],
-                };
+        for (index, lane) in self.lanes.iter_mut().enumerate() {
+            let track = (!mix).then_some(index);
+            let count = lane.size().min((samples - lane.position()).max(0) as usize);
+            let samples = match (&mut self.mixer, &mut self.source) {
+                (Some(mixer), _) => mixer.take(index, lane.position(), count)?,
+                (None, Some(source)) => source.take(track, count)?,
+                (None, None) => [vec![0.0; count], vec![0.0; count]],
+            };
+            if count > 0 {
                 lane.write(&mut self.output, samples)?;
             }
+        }
+        Ok(())
+    }
+
+    fn pump(&mut self, seconds: f64) -> Result<()> {
+        while self.lanes.iter().any(|lane| lane.seconds() <= seconds) {
+            self.feed(i64::MAX)?;
         }
         Ok(())
     }
@@ -666,11 +679,16 @@ impl Encoder {
         self.pump(f64::from(n + 1) * f64::from(self.base))
     }
 
-    pub fn finish(&mut self, seconds: f64) -> Result<()> {
+    pub fn finish(&mut self, frames: i32) -> Result<()> {
+        let seconds = f64::from(frames) * f64::from(self.base);
         self.encoder.send_eof()?;
         self.drain()?;
         if let Some(audio) = &mut self.audio {
             audio.copy(&mut self.output, seconds)?;
+        }
+        let samples = (seconds * f64::from(RATE)).round() as i64;
+        while self.lanes.iter().any(|lane| lane.position() < samples) {
+            self.feed(samples)?;
         }
         for lane in &mut self.lanes {
             lane.finish(&mut self.output)?;

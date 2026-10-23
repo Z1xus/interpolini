@@ -42,7 +42,7 @@ impl Blend {
             step,
             last: i64::from(frames - 1),
             held: Mutex::new(Vec::new()),
-            frames: (i64::from(frames) * step.1 / step.0).max(1) as i32,
+            frames: ((i64::from(frames) * step.1 + step.0 - 1) / step.0).max(1) as i32,
         }
     }
 

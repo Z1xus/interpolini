@@ -68,8 +68,11 @@ impl Track {
             )?;
             self.resampler = Some(resampler);
         }
-        let time = decoded.timestamp().unwrap_or(0) as f64 * f64::from(base);
+        let mut time = decoded.timestamp().unwrap_or(0) as f64 * f64::from(base);
         if self.skip.is_none() {
+            let ticks = unsafe { (*decoded.as_ptr()).duration };
+            let whole = ticks as f64 * f64::from(base) * f64::from(decoded.rate());
+            time += (whole - decoded.samples() as f64).max(0.0) / f64::from(decoded.rate());
             // sound that starts after the picture gets silence before it
             let late = ((time - start).max(0.0) * f64::from(RATE)) as usize;
             for samples in &mut self.samples {
@@ -138,7 +141,12 @@ impl Source {
             let context = input.as_mut_ptr();
             let offset =
                 crate::decode::origin(&input) + (start * f64::from(ffi::AV_TIME_BASE)) as i64;
-            ffi::av_seek_frame(context, -1, offset, ffi::AVSEEK_FLAG_BACKWARD);
+            if start > 0.0 {
+                ffi::av_seek_frame(context, -1, offset, ffi::AVSEEK_FLAG_BACKWARD);
+                for track in &mut tracks {
+                    track.decoder.flush();
+                }
+            }
             offset as f64 / f64::from(ffi::AV_TIME_BASE)
         };
         Ok(Self {
@@ -462,12 +470,12 @@ impl Lane {
         output: &mut format::context::Output,
         samples: [Vec<f32>; 2],
     ) -> Result<()> {
-        let count = self.encoder.frame_size() as usize;
+        let count = samples[0].len();
         let mut sound = frame::Audio::new(FORMAT, count, ChannelLayout::STEREO);
         sound.set_rate(RATE);
         sound.set_pts(Some(self.samples));
         for (channel, samples) in samples.iter().enumerate() {
-            sound.plane_mut::<f32>(channel)[..count].copy_from_slice(&samples[..count]);
+            sound.plane_mut::<f32>(channel)[..count].copy_from_slice(samples);
         }
         self.samples += count as i64;
         self.encoder.send_frame(&sound)?;

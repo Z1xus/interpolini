@@ -100,7 +100,7 @@ pub fn sounds(jobs: &[Job]) -> Result<Vec<Sound>> {
 fn base(jobs: &[(usize, &Job)]) -> Result<usize> {
     let mut videos = Vec::new();
     for (index, (_, job)) in jobs.iter().enumerate() {
-        if !probe(&job.clip)?.still {
+        if probe(&job.clip)?.fps > 0.0 {
             videos.push(index);
         }
     }
@@ -118,6 +118,15 @@ fn budget(megabytes: f64, seconds: f64, lanes: usize) -> Result<usize> {
     match rate >= 50_000.0 {
         true => Ok(rate as usize),
         false => Err("the size is too small for this clip".into()),
+    }
+}
+
+fn cover(seconds: f64, rate: f64) -> i32 {
+    let frames = seconds * rate;
+    let near = frames.round();
+    match (frames - near).abs() < 1e-6 {
+        true => near as i32,
+        false => frames.ceil() as i32,
     }
 }
 
@@ -210,12 +219,7 @@ fn encode(
     meta.yuv444 = probes.iter().any(|probe| probe.yuv444 && !probe.still);
     let rate = fps.0 as f64 / fps.1 as f64;
     let end = parts.last().map_or(0.0, |part| part.end);
-    // a whole clip on its own gives each of its frames one time
-    let whole = timeline.is_none() && jobs[0].1.cut.is_none();
-    let frames = match whole {
-        true => graph.info.frames,
-        false => (end * rate).round() as i32,
-    };
+    let frames = cover(end, rate);
 
     let job = jobs[base].1;
     let config = &job.config.output;
@@ -283,7 +287,7 @@ fn encode(
     let started = Instant::now();
     let mut reported = started;
     let mut written = 0;
-    for part in &parts {
+    for (index, part) in parts.iter().enumerate() {
         if cancel.stopped() {
             break;
         }
@@ -301,7 +305,7 @@ fn encode(
                 sources.insert(*clip, open(*clip)?);
             }
         }
-        let last = match whole {
+        let last = match index + 1 == parts.len() {
             true => frames,
             false => ((part.end * rate).round() as i32).min(frames),
         };
@@ -369,7 +373,7 @@ fn encode(
     // the file is closed in the normal way, so a stopped render still plays
     match written {
         0 => Err("stopped".into()),
-        _ => encoder.finish(f64::from(written) / rate),
+        _ => encoder.finish(written),
     }
 }
 
