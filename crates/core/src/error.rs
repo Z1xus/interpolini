@@ -27,7 +27,12 @@ impl From<&str> for Error {
 
 impl From<ffmpeg_next::Error> for Error {
     fn from(error: ffmpeg_next::Error) -> Self {
-        Self(error.to_string())
+        match error {
+            ffmpeg_next::Error::Other {
+                errno: ffmpeg_next::error::ENOMEM,
+            } => Self("not enough memory".into()),
+            _ => Self(error.to_string()),
+        }
     }
 }
 
