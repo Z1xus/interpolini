@@ -546,8 +546,13 @@ impl Options {
             Tuning::Weak => ",refine:[{thsad:250,search:{distance:-1,satd:true}}]",
             _ => ",refine:[{thsad:250}]",
         };
+        let exact = if speed == Speed::Medium {
+            "exact:false,"
+        } else {
+            ""
+        };
         let analyse = format!(
-            "{{block:{{w:{block},overlap:{overlap}}},main:{{search:{{{distance}coarse:{{{search}bad:{{sad:2000}}}}}}}}{refine}}}"
+            "{{{exact}block:{{w:{block},overlap:{overlap}}},main:{{search:{{{distance}coarse:{{{search}bad:{{sad:2000}}}}}}}}{refine}}}"
         );
 
         let algorithm = match interpolation.algorithm {
