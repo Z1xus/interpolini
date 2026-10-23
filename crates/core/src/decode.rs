@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use ffmpeg_next::codec::{self, threading};
@@ -249,7 +249,17 @@ pub fn origin(input: &format::context::Input) -> i64 {
 
 const PAST: usize = 16;
 
+static DAMAGE: Mutex<BTreeMap<PathBuf, (f64, BTreeSet<i32>)>> = Mutex::new(BTreeMap::new());
+
+pub fn damage(path: &Path) -> Option<(f64, f64)> {
+    let mut all = DAMAGE.lock().unwrap_or_else(|poison| poison.into_inner());
+    let (rate, frames) = all.remove(path)?;
+    let (first, last) = (*frames.first()?, *frames.last()?);
+    Some((f64::from(first) / rate, f64::from(last + 1) / rate))
+}
+
 pub struct Decoder {
+    path: PathBuf,
     input: format::context::Input,
     decoder: codec::decoder::Video,
     scaler: Option<scaling::Context>,
@@ -409,6 +419,7 @@ impl Decoder {
             return Err("the clip has no picture size".into());
         }
         Ok(Self {
+            path: path.to_owned(),
             input,
             decoder,
             scaler: None,
@@ -440,6 +451,14 @@ impl Decoder {
         }
     }
 
+    fn damaged(&self, n: i32) {
+        let mut all = DAMAGE.lock().unwrap_or_else(|poison| poison.into_inner());
+        let fps = self.meta.fps;
+        let damage = all.entry(self.path.clone());
+        let damage = damage.or_insert((fps.0 as f64 / fps.1 as f64, BTreeSet::new()));
+        damage.1.insert(n);
+    }
+
     // decodes the next picture, and gives the number that its time puts it at
     fn advance(&mut self) -> Result<Option<i32>> {
         loop {
@@ -447,7 +466,11 @@ impl Decoder {
             if self.decoder.receive_frame(&mut self.ahead).is_ok() {
                 let ticks = self.ahead.timestamp().map(|time| time - self.start);
                 let timed = ticks.map(|ticks| (ticks as f64 * self.frames_per_tick).round() as i32);
-                return Ok(Some(timed.unwrap_or(self.at + 1)));
+                let timed = timed.unwrap_or(self.at + 1);
+                if unsafe { (*self.ahead.as_ptr()).decode_error_flags } != 0 {
+                    self.damaged(timed);
+                }
+                return Ok(Some(timed));
             }
             if self.drained {
                 return Ok(None);
@@ -455,7 +478,11 @@ impl Decoder {
             match next(&mut self.packet, &mut self.input) {
                 Ok(()) if self.packet.stream() == self.stream => {
                     // a broken packet must not stop the clip
-                    let _ = self.decoder.send_packet(&self.packet);
+                    if self.decoder.send_packet(&self.packet).is_err() {
+                        let time = self.packet.pts().or(self.packet.dts());
+                        let ticks = time.map_or(0, |time| time - self.start);
+                        self.damaged((ticks as f64 * self.frames_per_tick).round() as i32);
+                    }
                 }
                 Ok(()) => {}
                 Err(ffmpeg_next::Error::Eof) => {

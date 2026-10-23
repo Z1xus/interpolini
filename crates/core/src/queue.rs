@@ -8,7 +8,7 @@ use crate::audio::{BITRATE, Mixer, Sound, keep};
 use crate::compose::{Canvas, Place, Setup, Source};
 use crate::config::{self, Audio, Config, Target};
 use crate::copy::copy;
-use crate::decode::{Meta, Probe, probe};
+use crate::decode::{Meta, Probe, damage, probe};
 use crate::dedup::{differences, threshold};
 use crate::encode::{Encoder, Plan};
 use crate::graph::lossless;
@@ -374,6 +374,15 @@ fn encode(
             sink(Event::Info(format!("decoders: {lanes}")));
         }
     }
+    for (_, job) in jobs {
+        if let Some((from, to)) = damage(&job.clip) {
+            sink(Event::Warning(format!(
+                "damaged video from {} to {}",
+                clock(from),
+                clock(to)
+            )));
+        }
+    }
     if written < frames {
         sink(Event::Warning(format!(
             "stopped at frame {written} of {frames}"
@@ -426,6 +435,11 @@ fn fit(
         )));
     }
     Ok(())
+}
+
+fn clock(seconds: f64) -> String {
+    let seconds = seconds as u64;
+    format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
 fn render(job: &Job, clip: usize, output: &Path, sink: Sink, cancel: &Cancel) -> Result<()> {
