@@ -167,12 +167,16 @@ pub fn own() -> usize {
     }
 }
 
-// a decoder shares the cores with the encoder, and ffmpeg gains little over 16
-pub fn decode() -> usize {
+pub fn useful(height: u32) -> usize {
+    (height as usize / 64).max(1)
+}
+
+// a decoder shares the cores with the encoder
+pub fn decode(height: u32) -> usize {
     match current() {
         Class::Interactive => own().min(2),
         Class::Background => 1,
-        Class::Render => own().div_ceil(2).min(16),
+        Class::Render => own().div_ceil(2).min(useful(height)),
     }
 }
 

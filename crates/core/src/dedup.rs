@@ -23,8 +23,8 @@ fn samples(width: usize, height: usize) -> f32 {
 // how much each sampled frame differs from the frame before it, in rows of frames from three places
 pub fn differences(clip: &Path, from: f64, to: f64, cancel: &Cancel) -> Result<Vec<Vec<f32>>> {
     const SAMPLE: i32 = 100;
-    let threads = (budget::decode() / SPOTS as usize).max(1);
     let meta = Decoder::threaded(clip, 1)?.meta();
+    let threads = (budget::decode(meta.height) / SPOTS as usize).max(1);
     let Meta {
         width,
         height,

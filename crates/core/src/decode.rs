@@ -249,7 +249,8 @@ pub fn origin(input: &format::context::Input) -> i64 {
     start.unwrap_or(unsafe { (*input.as_ptr()).start_time }.max(0))
 }
 
-const PAST: usize = 16;
+pub(crate) const PAST: usize = 16;
+pub(crate) const REFERENCES: usize = 16;
 
 static DAMAGE: Mutex<BTreeMap<PathBuf, (f64, BTreeSet<i32>)>> = Mutex::new(BTreeMap::new());
 
@@ -311,14 +312,14 @@ fn rgb(format: Pixel) -> bool {
 
 impl Decoder {
     pub fn open(path: &Path) -> Result<Self> {
-        Self::start(path, |_| 1)
+        Self::start(path, |_, _| 1)
     }
 
     pub fn threaded(path: &Path, threads: usize) -> Result<Self> {
-        Self::start(path, |_| threads)
+        Self::start(path, |_, _| threads)
     }
 
-    pub fn chosen(path: &Path, threads: impl FnOnce(f64) -> usize) -> Result<Self> {
+    pub fn chosen(path: &Path, threads: impl FnOnce(f64, u32) -> usize) -> Result<Self> {
         Self::start(path, threads)
     }
 
@@ -346,7 +347,7 @@ impl Decoder {
         self.by
     }
 
-    fn start(path: &Path, threads: impl FnOnce(f64) -> usize) -> Result<Self> {
+    fn start(path: &Path, threads: impl FnOnce(f64, u32) -> usize) -> Result<Self> {
         ffmpeg_next::init()?;
         ffmpeg_next::log::set_level(Level::Error);
         let input = format::input(path)?;
@@ -389,7 +390,8 @@ impl Decoder {
         let mut context = codec::Context::from_parameters(stream.parameters())?;
         context.set_threading(threading::Config {
             kind: threading::Type::Frame,
-            count: threads(fps),
+            count: threads(fps, unsafe { (*stream.parameters().as_ptr()).height }
+                as u32),
         });
         let decoder = context.decoder().video()?;
         let format = decoder.format();

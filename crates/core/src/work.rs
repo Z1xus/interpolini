@@ -243,8 +243,7 @@ pub struct Pool {
 impl Pool {
     pub fn new(class: Class) -> Self {
         let tasks = Arc::<(Mutex<Tasks>, Condvar)>::default();
-        // the jobs are short, so a few workers are enough
-        let count = budget::threads(class).min(4);
+        let count = budget::threads(class);
         let threads: Vec<_> = (0..count)
             .map(|_| {
                 let tasks = Arc::clone(&tasks);
@@ -373,6 +372,11 @@ impl<T> Drop for Sender<T> {
 }
 
 impl<T: Send + 'static> Receiver<T> {
+    pub fn narrow(&self, room: usize) {
+        let mut line = locked(&self.0.line);
+        line.room = line.room.min(room);
+    }
+
     pub fn try_recv(&self) -> Option<T> {
         let item = locked(&self.0.line).items.pop_front();
         self.0.writable.notify_one();

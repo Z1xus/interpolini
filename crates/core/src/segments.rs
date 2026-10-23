@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
 
 use ffmpeg_next::{Packet, encoder, ffi, frame, picture};
 
@@ -12,20 +11,9 @@ use crate::Result;
 use crate::blend::Blend;
 use crate::budget;
 use crate::config::Blending;
-use crate::decode::{Decoder, Meta};
+use crate::decode::{Decoder, Meta, PAST, REFERENCES};
 use crate::encode::{GOP, Spare};
 use crate::work::{self, Cancel, Receiver, Sender};
-
-// the pictures that one decoder holds, next to the ones that its blend takes for a frame
-const HELD: usize = 32;
-// the frames that a part has at least, so that the pictures it decodes again stay few
-const LEAST: i32 = 16;
-// the reader's waits are counted over this time, a shorter read starts no lanes
-const PATIENCE: Duration = Duration::from_secs(1);
-// the wait that the lanes must save, their start costs time
-const START: Duration = Duration::from_secs(2);
-// a lane with fewer threads is too slow for the reader
-const THREADS: usize = 12;
 
 pub enum Made {
     Picture(frame::Video),
@@ -42,6 +30,7 @@ struct Job {
 struct Part {
     frames: Range<i32>,
     made: Receiver<Result<Made>>,
+    read: bool,
 }
 
 struct Packer(encoder::video::Encoder);
@@ -82,7 +71,6 @@ impl Packer {
 struct Jobs {
     queue: Mutex<(VecDeque<Job>, bool)>,
     ready: Condvar,
-    packing: AtomicUsize,
     alive: AtomicUsize,
 }
 
@@ -104,20 +92,13 @@ pub struct Segments {
     planned: i32,
     next: Option<i32>,
     longest: usize,
-    waiting: (Instant, Duration, u32),
-    warm: bool,
-    hurry: bool,
     spare: Option<Spare>,
-    packers: Arc<Mutex<Vec<Packer>>>,
-    packed: usize,
     from: i32,
     meta: Meta,
 }
 
-// 0 threads is a decoder that has the whole cpu
-fn feed(clip: &Path, threads: usize, cores: usize, by: u32) -> Result<(usize, Decoder)> {
-    let count = if threads == 0 { cores } else { threads };
-    Ok((threads, Decoder::threaded(clip, count)?.shrink(by)))
+fn feed(clip: &Path, threads: usize, by: u32) -> Result<(usize, Decoder)> {
+    Ok((threads, Decoder::threaded(clip, threads)?.shrink(by)))
 }
 
 struct Lane {
@@ -125,22 +106,17 @@ struct Lane {
     blend: Blend,
     size: (u32, u32),
     jobs: Arc<Jobs>,
-    packers: Arc<Mutex<Vec<Packer>>>,
+    spare: Option<Spare>,
     from: i32,
     meta: Meta,
     by: u32,
-    cores: usize,
     workers: usize,
 }
 
 fn work(lane: Lane) -> JoinHandle<()> {
     work::spawn("decoder", move || {
         let jobs = Arc::clone(&lane.jobs);
-        let mut packer = None;
-        budget::divided(lane.workers, || run(lane, &mut packer));
-        if packer.is_some() {
-            jobs.packing.fetch_sub(1, Ordering::Relaxed);
-        }
+        budget::divided(lane.workers, || run(lane));
         // end the parts that no lane is left to make
         if jobs.alive.fetch_sub(1, Ordering::AcqRel) == 1 {
             let queue = jobs.queue.lock();
@@ -149,17 +125,16 @@ fn work(lane: Lane) -> JoinHandle<()> {
     })
 }
 
-fn run(lane: Lane, packer: &mut Option<Packer>) {
+fn run(lane: Lane) {
     let Lane {
         clip,
         blend,
         size,
         jobs,
-        packers,
+        spare,
         from,
         meta,
         by,
-        cores,
         workers: _,
     } = lane;
     let mut decoder: Option<(usize, Decoder)> = None;
@@ -185,30 +160,21 @@ fn run(lane: Lane, packer: &mut Option<Packer>) {
                 }
             }
         };
-        if packets && packer.is_none() {
-            let packers = packers.lock();
-            *packer = packers.unwrap_or_else(|poison| poison.into_inner()).pop();
-            if packer.is_some() {
-                jobs.packing.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        let packets = packets && (packer.is_some() || jobs.packing.load(Ordering::Relaxed) > 0);
-        if packets && packer.is_none() {
-            queue.0.push_front(Job {
-                frames,
-                threads,
-                packets,
-                made,
-            });
-            jobs.ready.notify_all();
-            return;
-        }
         drop(queue);
+        let encoder = spare.as_ref().filter(|_| packets).map(|spare| spare());
+        let mut packer = match encoder {
+            Some(Ok(encoder)) => Some(Packer(encoder)),
+            Some(Err(error)) => {
+                let _ = made.send(Err(error));
+                continue;
+            }
+            None => None,
+        };
         let (first, end) = (frames.start, frames.end);
         for n in frames {
             let picture = |decoder: &mut Option<(usize, Decoder)>| {
                 if decoder.as_ref().is_none_or(|decoder| decoder.0 != threads) {
-                    *decoder = Some(feed(&clip, threads, cores, by)?);
+                    *decoder = Some(feed(&clip, threads, by)?);
                 }
                 let source = |index| match decoder {
                     Some((_, decoder)) => decoder.picture(index),
@@ -217,7 +183,7 @@ fn run(lane: Lane, packer: &mut Option<Packer>) {
                 blend.frame(source, n, size.0, size.1)
             };
             let made_now = picture(&mut decoder);
-            let made_now = match packer.as_mut().filter(|_| packets) {
+            let made_now = match packer.as_mut() {
                 Some(packer) => made_now.and_then(|mut picture| {
                     meta.tag(&mut picture);
                     packer.pack(picture, n - from, n == first, n + 1 == end)
@@ -225,10 +191,6 @@ fn run(lane: Lane, packer: &mut Option<Packer>) {
                 None => made_now.map(Made::Picture),
             };
             if made.send(made_now).is_err() {
-                // the reader left this part, and the encoder still holds pictures of it
-                if let Some(packer) = packer.as_mut().filter(|_| packets && n + 1 < end) {
-                    let _ = packer.end(&mut Vec::new());
-                }
                 break;
             }
         }
@@ -254,9 +216,11 @@ impl Segments {
         let picture = luma + 2 * (luma >> (meta.shift() * 2));
         // a quarter of the memory: half for the pictures of the lanes, half for the frames that wait
         let budget = budget::bytes(class);
+        let useful = budget::useful(height).min(cores);
+        let held = math.window() + PAST + REFERENCES + useful;
         // a clip that does not fit still runs with one lane and few frames in flight
-        let lanes = (budget / 2 / ((math.window() + HELD) * picture)).max(1);
-        let most = (cores / THREADS).clamp(1, lanes);
+        let lanes = (budget / 2 / (held * picture)).max(1);
+        let most = (cores / useful).clamp(1, lanes);
         Ok(Self {
             clip: clip.to_owned(),
             size: (width, height),
@@ -275,12 +239,7 @@ impl Segments {
             planned: 0,
             next: None,
             longest: 0,
-            waiting: (Instant::now(), Duration::ZERO, 0),
-            warm: false,
-            hurry: false,
             spare: None,
-            packers: Arc::default(),
-            packed: 0,
             from: 0,
             meta,
         })
@@ -292,11 +251,18 @@ impl Segments {
         self.frames = self.frames.min(end);
     }
 
+    fn packing(&self) -> bool {
+        self.spare.is_some()
+    }
+
     fn end(&mut self, start: i32) -> i32 {
+        if self.most == 1 && !self.packing() {
+            return start.saturating_add(PAST as i32).min(self.frames);
+        }
         // each part starts with a key frame, so short parts make the file large
-        let mut step = match self.spare {
-            Some(_) => GOP as i32 / 2,
-            None => LEAST,
+        let mut step = match self.packing() {
+            true => GOP as i32 / 2,
+            false => PAST as i32,
         };
         let mut end = start;
         loop {
@@ -319,30 +285,15 @@ impl Segments {
     fn lane(&mut self) {
         self.started += 1;
         self.jobs.alive.fetch_add(1, Ordering::AcqRel);
-        while self.hurry && self.packed < self.started {
-            let Some(Ok(encoder)) = self
-                .spare
-                .as_ref()
-                .map(|spare| budget::divided(self.most, || spare()))
-            else {
-                self.spare = None;
-                break;
-            };
-            let packers = self.packers.lock();
-            let mut packers = packers.unwrap_or_else(|poison| poison.into_inner());
-            packers.push(Packer(encoder));
-            self.packed += 1;
-        }
         self.lanes.push(work(Lane {
             clip: self.clip.clone(),
             blend: (self.blend)(),
             size: self.size,
             jobs: Arc::clone(&self.jobs),
-            packers: Arc::clone(&self.packers),
+            spare: self.spare.clone(),
             from: self.from,
             meta: self.meta,
             by: self.probe.by(),
-            cores: self.cores,
             workers: self.most,
         }));
     }
@@ -350,32 +301,27 @@ impl Segments {
     fn plan(&mut self) {
         while self.planned < self.frames {
             let start = self.planned;
-            let (end, lanes) = match self.hurry {
-                true => {
-                    let end = match self.next {
-                        Some(end) => end,
-                        None => self.end(start),
-                    };
-                    self.next = Some(end);
-                    // the last part has no part to run beside it
-                    let length = (end - start) as usize;
-                    if end == self.frames && length > 2 * self.longest {
-                        (end, 0)
-                    } else {
-                        self.longest = self.longest.max(length);
-                        let fit = match self.spare {
-                            Some(_) => self.most,
-                            None => self.room / self.longest,
-                        };
-                        (end, fit.clamp(1, self.most))
-                    }
-                }
-                false => (start.saturating_add(LEAST).min(self.frames), 0),
+            let end = match self.next {
+                Some(end) => end,
+                None => self.end(start),
             };
-            // parts get done out of order, so some more than the lanes keep all lanes at work
-            let open = match self.spare {
-                Some(_) => lanes * 2,
-                None => (self.room / self.longest.max(1)).min(lanes * 2).max(1),
+            self.next = Some(end);
+            // the last part has no part to run beside it
+            let length = (end - start) as usize;
+            let lanes = if end == self.frames && length > 2 * self.longest {
+                0
+            } else {
+                self.longest = self.longest.max(length);
+                let fit = match self.packing() {
+                    true => self.most,
+                    false => self.room / self.longest,
+                };
+                fit.clamp(1, self.most)
+            };
+            // a part per lane and one more for a lane that is done
+            let open = match self.packing() {
+                true => lanes + 1,
+                false => (self.room / self.longest.max(1)).min(lanes + 1).max(1),
             };
             if self.parts.len() >= if lanes == 0 { 1 } else { open } {
                 break;
@@ -383,14 +329,17 @@ impl Segments {
             self.next = None;
             // 0 lanes: one decoder makes the part with all threads
             let (threads, room) = match lanes {
-                0 => (0, 2),
-                lanes => (self.cores.div_ceil(lanes), (end - start) as usize),
+                0 => (self.cores, 2),
+                lanes => (
+                    self.cores.div_ceil(lanes),
+                    (end - start) as usize * (lanes - 1) / lanes,
+                ),
             };
-            let (made, pictures) = work::channel(room.min(self.room));
+            let (made, pictures) = work::channel(room.clamp(2, self.room));
             if self.started < lanes.max(1) {
                 self.lane();
             }
-            let packets = lanes > 0 && self.spare.is_some();
+            let packets = lanes > 0 && self.packing();
             let queue = self.jobs.queue.lock();
             let mut queue = queue.unwrap_or_else(|poison| poison.into_inner());
             queue.0.push_back(Job {
@@ -404,6 +353,7 @@ impl Segments {
             self.parts.push_back(Part {
                 frames: start..end,
                 made: pictures,
+                read: false,
             });
             self.planned = end;
         }
@@ -449,8 +399,6 @@ impl Segments {
             }
             self.parts.clear();
             (self.planned, self.next, self.longest) = (n, None, 0);
-            self.waiting = (Instant::now(), Duration::ZERO, 0);
-            (self.warm, self.hurry) = (false, false);
         }
         loop {
             self.plan();
@@ -459,32 +407,15 @@ impl Segments {
                 self.parts.pop_front();
                 continue;
             }
+            if !part.read {
+                // the reader takes this part as it comes, only later parts need room
+                part.made.narrow(2);
+                part.read = true;
+            }
             let picture = match part.made.try_recv() {
                 Some(picture) => picture,
-                None => {
-                    let since = Instant::now();
-                    let picture = part.made.recv(cancel)?.ok_or("the decoder stopped")?;
-                    self.waiting.1 += since.elapsed();
-                    picture
-                }
+                None => part.made.recv(cancel)?.ok_or("the decoder stopped")?,
             };
-            let (since, waited, seen) = &mut self.waiting;
-            *seen += 1;
-            if since.elapsed() >= PATIENCE {
-                let left = (self.frames - n) as f32 / *seen as f32;
-                // lanes with their own encoders can halve the time that is left
-                let least = match self.spare {
-                    Some(_) => PATIENCE / 2,
-                    None => Duration::ZERO,
-                };
-                let saved = (*waited).max(least).mul_f32(left);
-                // a decoder is slow in its first second on any computer
-                if self.warm && !self.hurry && saved >= START {
-                    self.hurry = true;
-                }
-                self.waiting = (Instant::now(), Duration::ZERO, 0);
-                self.warm = true;
-            }
             part.frames.start += 1;
             if part.frames.start > n {
                 return picture;

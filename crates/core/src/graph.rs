@@ -143,11 +143,11 @@ pub fn covering(frames: i32, from: (i64, i64), to: (i64, i64)) -> i32 {
 impl Graph {
     pub fn open(clip: &Path, config: &Config, sink: Sink, cancel: &Cancel) -> Result<Self> {
         // a blend reads the clip in its own decoders, this one only seeks
-        let threads = |fps| {
+        let threads = |fps, height| {
             let plan = Plan::new(fps, config);
             match plan.plain(config) && plan.blended {
                 true => 1,
-                false => budget::decode(),
+                false => budget::decode(height),
             }
         };
         let follow = Follow::new(cancel);
