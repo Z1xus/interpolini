@@ -38,6 +38,7 @@ const NEEDED: usize = 8;
 
 api! {
     error: b"osvp_error\0" fn() -> Text;
+    error_callback: b"osvp_error_callback\0" fn() -> i32;
     create: b"osvp_create\0" fn(Text) -> Raw;
     destroy: b"osvp_destroy\0" fn(Raw);
     source: b"osvp_source\0" fn(Raw, *const VideoInfo, ReadFn, ReleaseFn, Raw) -> Raw;
@@ -438,9 +439,8 @@ impl Svp {
 
 unsafe fn error(api: &Api, clip: Option<&Clip>) -> Error {
     let host = unsafe { CStr::from_ptr((api.error)()) }.to_string_lossy();
-    let reason = clip
-        .filter(|_| host.ends_with("callback failed"))
-        .and_then(Clip::reason);
+    let ours = unsafe { (api.error_callback)() } == 1;
+    let reason = clip.filter(|_| ours).and_then(Clip::reason);
     Error(reason.unwrap_or_else(|| host.into_owned()))
 }
 
