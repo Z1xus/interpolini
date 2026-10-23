@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -13,16 +14,46 @@ pub fn live() -> usize {
     LIVE.load(Ordering::Relaxed)
 }
 
+type Waker = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Default)]
+struct Stop {
+    stopped: AtomicBool,
+    wakers: Mutex<Vec<(usize, Waker)>>,
+    next: AtomicUsize,
+}
+
 #[derive(Clone, Default)]
-pub struct Cancel(Arc<AtomicBool>);
+pub struct Cancel(Arc<Stop>);
+
+// wakes a waiter on its own condition when the work stops
+pub struct Wake {
+    cancel: Cancel,
+    id: usize,
+}
+
+impl Drop for Wake {
+    fn drop(&mut self) {
+        locked(&self.cancel.0.wakers).retain(|(id, _)| *id != self.id);
+    }
+}
 
 impl Cancel {
     pub fn stop(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        if self.0.stopped.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let wakers: Vec<Waker> = locked(&self.0.wakers)
+            .iter()
+            .map(|(_, wake)| Arc::clone(wake))
+            .collect();
+        for wake in wakers {
+            wake();
+        }
     }
 
     pub fn stopped(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.0.stopped.load(Ordering::SeqCst)
     }
 
     pub fn same(&self, other: &Cancel) -> bool {
@@ -33,6 +64,16 @@ impl Cancel {
         match self.stopped() {
             true => Err("stopped".into()),
             false => Ok(()),
+        }
+    }
+
+    // the waker locks before it notifies, so no stop is missed
+    pub fn wake(&self, waker: impl Fn() + Send + Sync + 'static) -> Wake {
+        let id = self.0.next.fetch_add(1, Ordering::Relaxed);
+        locked(&self.0.wakers).push((id, Arc::new(waker)));
+        Wake {
+            cancel: self.clone(),
+            id,
         }
     }
 }
@@ -193,9 +234,7 @@ impl Pool {
                         drop(held);
                         let _ = catch_unwind(AssertUnwindSafe(|| (task.run)(&task.cancel)));
                         held = locked(&tasks.0);
-                        let same =
-                            |running: &(String, Cancel)| Arc::ptr_eq(&running.1.0, &task.cancel.0);
-                        held.running.retain(|running| !same(running));
+                        held.running.retain(|running| !running.1.same(&task.cancel));
                     }
                 })
             })
@@ -243,5 +282,153 @@ impl Drop for Pool {
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
+    }
+}
+
+struct Line<T> {
+    items: VecDeque<T>,
+    room: usize,
+    closed: bool,
+    reader: bool,
+}
+
+struct Lane<T> {
+    line: Mutex<Line<T>>,
+    readable: Condvar,
+    writable: Condvar,
+}
+
+pub struct Sender<T>(Arc<Lane<T>>);
+pub struct Receiver<T>(Arc<Lane<T>>);
+
+// a bounded queue that ends when the work stops or the senders are gone
+pub fn channel<T>(room: usize) -> (Sender<T>, Receiver<T>) {
+    let line = Mutex::new(Line {
+        items: VecDeque::new(),
+        room,
+        closed: false,
+        reader: true,
+    });
+    let lane = Arc::new(Lane {
+        line,
+        readable: Condvar::new(),
+        writable: Condvar::new(),
+    });
+    (Sender(Arc::clone(&lane)), Receiver(lane))
+}
+
+impl<T> Sender<T> {
+    // gives the item back when the reader has left
+    pub fn send(&self, item: T) -> std::result::Result<(), T> {
+        let mut line = locked(&self.0.line);
+        loop {
+            if !line.reader {
+                return Err(item);
+            }
+            if line.items.len() < line.room {
+                line.items.push_back(item);
+                self.0.readable.notify_one();
+                return Ok(());
+            }
+            line = self
+                .0
+                .writable
+                .wait(line)
+                .unwrap_or_else(|p| p.into_inner());
+        }
+    }
+}
+
+impl<T> Drop for Sender<T> {
+    fn drop(&mut self) {
+        locked(&self.0.line).closed = true;
+        self.0.readable.notify_all();
+    }
+}
+
+impl<T: Send + 'static> Receiver<T> {
+    pub fn try_recv(&self) -> Option<T> {
+        let item = locked(&self.0.line).items.pop_front();
+        self.0.writable.notify_one();
+        item
+    }
+
+    // none when drained and the senders are gone
+    pub fn recv(&self, cancel: &Cancel) -> Result<Option<T>> {
+        let lane = Arc::clone(&self.0);
+        let _wake = cancel.wake(move || {
+            let _line = locked(&lane.line);
+            lane.readable.notify_all();
+        });
+        let mut line = locked(&self.0.line);
+        loop {
+            if let Some(item) = line.items.pop_front() {
+                self.0.writable.notify_one();
+                return Ok(Some(item));
+            }
+            if line.closed {
+                return Ok(None);
+            }
+            cancel.check()?;
+            line = self
+                .0
+                .readable
+                .wait(line)
+                .unwrap_or_else(|p| p.into_inner());
+        }
+    }
+}
+
+impl<T> Drop for Receiver<T> {
+    fn drop(&mut self) {
+        let items = {
+            let mut line = locked(&self.0.line);
+            line.reader = false;
+            std::mem::take(&mut line.items)
+        };
+        self.0.writable.notify_all();
+        drop(items);
+    }
+}
+
+static PARTIAL: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+// a file that is not finished, quit removes it
+pub struct Partial(PathBuf);
+
+pub fn partial(path: &Path) -> Partial {
+    locked(&PARTIAL).push(path.to_owned());
+    Partial(path.to_owned())
+}
+
+impl Drop for Partial {
+    fn drop(&mut self) {
+        let mut files = locked(&PARTIAL);
+        if let Some(index) = files.iter().position(|file| *file == self.0) {
+            files.swap_remove(index);
+        }
+    }
+}
+
+// skips the exit handlers, they tear down gpu libraries under running threads
+pub fn quit(code: i32) -> ! {
+    for file in locked(&PARTIAL).iter() {
+        let _ = std::fs::remove_file(file);
+    }
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn _exit(code: i32) -> !;
+        }
+        unsafe { _exit(code) }
+    }
+    #[cfg(windows)]
+    {
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> isize;
+            fn TerminateProcess(process: isize, code: u32) -> i32;
+        }
+        unsafe { TerminateProcess(GetCurrentProcess(), code as u32) };
+        unreachable!()
     }
 }

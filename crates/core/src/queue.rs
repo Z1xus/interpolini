@@ -15,7 +15,7 @@ use crate::graph::lossless;
 use crate::segments::Made;
 use crate::timeline::{Fade, Part, Placed, parts};
 use crate::upscale::Upscaler;
-use crate::work::Cancel;
+use crate::work::{self, Cancel};
 use crate::{Event, Result, Sink};
 
 const MEGABYTE: f64 = 1e6;
@@ -446,6 +446,7 @@ pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, setup: &Setup, sink: Sink, 
         let all: Vec<(usize, &Job)> = jobs.iter().enumerate().collect();
         let named = &jobs[base(&all).unwrap_or(0)];
         let output = target(named, named.config.output.container.name());
+        let _partial = work::partial(&output);
         match fit(&all, Some(sounds), setup, &output, sink, cancel) {
             Ok(()) => {
                 let seconds = started.elapsed().as_secs_f32();
@@ -460,8 +461,13 @@ pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, setup: &Setup, sink: Sink, 
             }
             Err(error) => {
                 let _ = std::fs::remove_file(&output);
-                let error = error.to_string();
-                sink(Event::Failed { clip: 0, error });
+                match cancel.stopped() {
+                    true => sink(Event::Warning("stopped".into())),
+                    false => sink(Event::Failed {
+                        clip: 0,
+                        error: error.to_string(),
+                    }),
+                }
             }
         }
         return;
@@ -478,6 +484,7 @@ pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, setup: &Setup, sink: Sink, 
             true => target(job, &source),
             false => target(job, job.config.output.container.name()),
         };
+        let _partial = work::partial(&output);
         match render(job, clip, &output, sink, cancel) {
             Ok(()) => {
                 let seconds = started.elapsed().as_secs_f32();
@@ -489,10 +496,13 @@ pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, setup: &Setup, sink: Sink, 
             }
             Err(error) => {
                 let _ = std::fs::remove_file(&output);
-                sink(Event::Failed {
-                    clip,
-                    error: error.to_string(),
-                });
+                match cancel.stopped() {
+                    true => sink(Event::Warning("stopped".into())),
+                    false => sink(Event::Failed {
+                        clip,
+                        error: error.to_string(),
+                    }),
+                }
             }
         }
     }

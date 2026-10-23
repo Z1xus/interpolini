@@ -1,9 +1,7 @@
 use std::ffi::{CStr, CString, c_char};
 use std::mem::ManuallyDrop;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 
 use libloading::Library;
 
@@ -43,7 +41,11 @@ type Report = unsafe extern "C" fn(Raw, f32);
 
 // the plugin tells how far the build of a tensorrt engine is, and the sink shows it
 unsafe extern "C" fn report(sink: Raw, done: f32) {
-    DONE.store(done.to_bits(), Ordering::Relaxed);
+    {
+        let mut build = locked(&PREPARE.0);
+        build.done = done;
+    }
+    PREPARE.1.notify_all();
     let sink = unsafe { *sink.cast::<Sink>() };
     sink(Event::Preparing(done));
 }
@@ -52,27 +54,61 @@ unsafe extern "C" fn report(sink: Raw, done: f32) {
 static VULKAN: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
 static TENSORRT: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
 
-// one tensorrt engine builds at a time, and the graphs that wait for it show how far it is
-static PREPARE: Mutex<()> = Mutex::new(());
-// below 0 when no engine builds
-static DONE: AtomicU32 = AtomicU32::new((-1.0f32).to_bits());
+struct Build {
+    busy: bool,
+    // below 0 when no engine builds
+    done: f32,
+}
 
-fn wait(sink: Sink, cancel: &Cancel) -> Result<MutexGuard<'static, ()>> {
-    let mut tick = 0;
+// one tensorrt engine builds at a time, and the graphs that wait for it show how far it is
+static PREPARE: (Mutex<Build>, Condvar) = (
+    Mutex::new(Build {
+        busy: false,
+        done: -1.0,
+    }),
+    Condvar::new(),
+);
+
+fn locked(build: &Mutex<Build>) -> MutexGuard<'_, Build> {
+    build.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+struct Building;
+
+impl Drop for Building {
+    fn drop(&mut self) {
+        *locked(&PREPARE.0) = Build {
+            busy: false,
+            done: -1.0,
+        };
+        PREPARE.1.notify_all();
+    }
+}
+
+fn wait(sink: Sink, cancel: &Cancel) -> Result<Building> {
+    let _wake = cancel.wake(|| {
+        let _build = locked(&PREPARE.0);
+        PREPARE.1.notify_all();
+    });
+    let mut build = locked(&PREPARE.0);
     loop {
-        match PREPARE.try_lock() {
-            Ok(guard) => return Ok(guard),
-            Err(TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
-            Err(TryLockError::WouldBlock) => {}
-        }
         cancel.check()?;
-        let done = f32::from_bits(DONE.load(Ordering::Relaxed));
-        // the report is shown every 250 ms, a stop is seen sooner
-        if done >= 0.0 && tick % 10 == 0 {
+        if !build.busy {
+            build.busy = true;
+            return Ok(Building);
+        }
+        let done = build.done;
+        drop(build);
+        if done >= 0.0 {
             sink(Event::Preparing(done));
         }
-        tick += 1;
-        std::thread::sleep(Duration::from_millis(25));
+        build = locked(&PREPARE.0);
+        if build.busy && build.done == done {
+            build = PREPARE
+                .1
+                .wait(build)
+                .unwrap_or_else(|poison| poison.into_inner());
+        }
     }
 }
 
@@ -208,9 +244,7 @@ impl Rife {
         let guard = tensorrt.then(|| wait(sink, cancel)).transpose()?;
         let raw = engine.raw;
         let ready = unsafe { (api.prepare)(raw, width, height, bt601, full, yuv444, report, user) };
-        if let Some(_guard) = guard {
-            DONE.store((-1.0f32).to_bits(), Ordering::Relaxed);
-        }
+        drop(guard);
         if ready != 0 {
             drop(engine);
             let error = last_error(api);

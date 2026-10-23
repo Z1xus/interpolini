@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -15,7 +14,7 @@ use crate::budget;
 use crate::config::Blending;
 use crate::decode::{Decoder, Meta};
 use crate::encode::{GOP, Spare};
-use crate::work::{self, Cancel};
+use crate::work::{self, Cancel, Receiver, Sender};
 
 // the pictures that one decoder holds, next to the ones that its blend takes for a frame
 const HELD: usize = 32;
@@ -27,7 +26,6 @@ const PATIENCE: Duration = Duration::from_secs(1);
 const START: Duration = Duration::from_secs(2);
 // a lane with fewer threads is too slow for the reader
 const THREADS: usize = 12;
-const POLL: Duration = Duration::from_millis(20);
 
 pub enum Made {
     Picture(frame::Video),
@@ -38,7 +36,7 @@ struct Job {
     frames: Range<i32>,
     threads: usize,
     packets: bool,
-    made: SyncSender<Result<Made>>,
+    made: Sender<Result<Made>>,
 }
 
 struct Part {
@@ -85,6 +83,7 @@ struct Jobs {
     queue: Mutex<(VecDeque<Job>, bool)>,
     ready: Condvar,
     packing: AtomicUsize,
+    alive: AtomicUsize,
 }
 
 pub struct Segments {
@@ -141,6 +140,11 @@ fn work(lane: Lane) -> JoinHandle<()> {
         budget::divided(lane.workers, || run(lane, &mut packer));
         if packer.is_some() {
             jobs.packing.fetch_sub(1, Ordering::Relaxed);
+        }
+        // end the parts that no lane is left to make
+        if jobs.alive.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let queue = jobs.queue.lock();
+            queue.unwrap_or_else(|poison| poison.into_inner()).0.clear();
         }
     })
 }
@@ -314,6 +318,7 @@ impl Segments {
 
     fn lane(&mut self) {
         self.started += 1;
+        self.jobs.alive.fetch_add(1, Ordering::AcqRel);
         while self.hurry && self.packed < self.started {
             let Some(Ok(encoder)) = self
                 .spare
@@ -381,7 +386,7 @@ impl Segments {
                 0 => (0, 2),
                 lanes => (self.cores.div_ceil(lanes), (end - start) as usize),
             };
-            let (made, pictures) = mpsc::sync_channel(room.min(self.room));
+            let (made, pictures) = work::channel(room.min(self.room));
             if self.started < lanes.max(1) {
                 self.lane();
             }
@@ -455,23 +460,10 @@ impl Segments {
                 continue;
             }
             let picture = match part.made.try_recv() {
-                Ok(picture) => picture,
-                Err(_) => {
+                Some(picture) => picture,
+                None => {
                     let since = Instant::now();
-                    let stopped = "the decoder stopped";
-                    let picture = loop {
-                        match part.made.recv_timeout(POLL) {
-                            Ok(picture) => break picture,
-                            Err(RecvTimeoutError::Timeout) => {
-                                cancel.check()?;
-                                // a part that no lane takes would be waited for forever
-                                if self.lanes.iter().all(JoinHandle::is_finished) {
-                                    return Err(stopped.into());
-                                }
-                            }
-                            Err(RecvTimeoutError::Disconnected) => return Err(stopped.into()),
-                        }
-                    };
+                    let picture = part.made.recv(cancel)?.ok_or("the decoder stopped")?;
                     self.waiting.1 += since.elapsed();
                     picture
                 }

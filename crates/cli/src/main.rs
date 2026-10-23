@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use interpolini_core::work::Cancel;
+use interpolini_core::work::{self, Cancel};
 use interpolini_core::{Event, Fade, Job, Place, Setup, config, run, sequence, sounds};
 
 const USAGE: &str = "usage: interpolini-cli [options] <clip>...
@@ -215,6 +215,16 @@ fn main() -> ExitCode {
 }
 
 fn render() -> ExitCode {
+    let cancel = Cancel::default();
+    let handler = cancel.clone();
+    // the first ctrl-c stops at the next frame, the second quits at once and removes the open file
+    let _ = ctrlc::set_handler(move || {
+        if handler.stopped() {
+            work::quit(130);
+        }
+        handler.stop();
+    });
+
     #[cfg(windows)]
     {
         colors();
@@ -322,16 +332,9 @@ fn render() -> ExitCode {
     if let Err(error) = sequence(&mut jobs) {
         return fail(error);
     }
-    let cancel = Cancel::default();
-    let handler = cancel.clone();
-    // the first ctrl-c closes the file after the current frame, the second one quits
-    let _ = ctrlc::set_handler(move || {
-        if handler.stopped() {
-            std::process::exit(130);
-        }
-        handler.stop();
-    });
-
+    if cancel.stopped() {
+        return ExitCode::from(130);
+    }
     let live = std::io::stderr().is_terminal();
     let failed = AtomicBool::new(false);
     let sink = |event: Event| {
@@ -361,5 +364,8 @@ fn render() -> ExitCode {
         eprintln!("{}", line('*', "press enter to close"));
         let _ = std::io::stdin().read_line(&mut String::new());
     }
-    ExitCode::from(u8::from(failed.load(Ordering::Relaxed)))
+    match cancel.stopped() {
+        true => ExitCode::from(130),
+        false => ExitCode::from(u8::from(failed.load(Ordering::Relaxed))),
+    }
 }

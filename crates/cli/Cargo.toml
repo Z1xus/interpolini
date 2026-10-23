@@ -7,6 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-ctrlc = "3.5.2"
+ctrlc = { version = "3.5.2", features = ["termination"] }
 interpolini-core = { path = "../core" }
 rfd = "0.17.2"
