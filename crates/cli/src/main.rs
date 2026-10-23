@@ -259,7 +259,8 @@ fn render() -> ExitCode {
                 match argument.as_str() {
                     "--from" => from = number.max(0.0),
                     "--to" => to = number,
-                    _ => muted.push((number as usize).saturating_sub(1)),
+                    _ if number >= 1.0 => muted.push(number as usize - 1),
+                    _ => return fail("--mute counts tracks from 1"),
                 }
             }
             "-h" | "--help" => {
@@ -329,6 +330,23 @@ fn render() -> ExitCode {
         });
     }
 
+    for job in &jobs {
+        let Ok(probed) = probe(&job.clip) else {
+            continue;
+        };
+        if let Some(track) = job
+            .muted
+            .iter()
+            .find(|track| **track >= probed.tracks.len())
+        {
+            let clip = job.clip.display();
+            let count = probed.tracks.len();
+            return fail(format!(
+                "{clip} has no audio track {}, it has {count}",
+                track + 1
+            ));
+        }
+    }
     if let Err(error) = sequence(&mut jobs) {
         return fail(error);
     }
