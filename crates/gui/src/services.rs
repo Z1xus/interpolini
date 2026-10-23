@@ -1,8 +1,7 @@
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
 
 use interpolini_core::budget::Class;
 use interpolini_core::work::{self, Cancel, Pool, Slot};
@@ -26,15 +25,10 @@ pub struct Services {
     pub worker: Arc<Mutex<Worker>>,
     pub closer: Pool,
     pub audio: Audio,
-    children: Vec<(Child, Option<PathBuf>)>,
 }
 
 static SERVICES: Mutex<Option<Services>> = Mutex::new(None);
 static KEYS: AtomicU64 = AtomicU64::new(0);
-
-thread_local! {
-    static REAP: slint::Timer = slint::Timer::default();
-}
 
 fn held() -> MutexGuard<'static, Option<Services>> {
     SERVICES.lock().unwrap_or_else(|poison| poison.into_inner())
@@ -54,7 +48,6 @@ pub fn start(ui: Weak<App>) {
         worker: Arc::new(Mutex::new(Worker::new(ui))),
         closer: Pool::new(Class::Interactive),
         audio: Audio::new(),
-        children: Vec::new(),
     });
 }
 
@@ -84,15 +77,17 @@ pub fn close<T: Send + 'static>(value: T) {
     with(|services| services.closer.submit(&key("close"), move |_| drop(value)));
 }
 
-// the program is reaped when it ends, a timer looks for that while one runs
+// a thread waits for the program, a failed one falls back
 pub fn child(command: &mut Command, fallback: Option<PathBuf>) {
-    let Ok(child) = command.spawn() else {
+    let Ok(mut child) = command.spawn() else {
         fallback.into_iter().for_each(open);
         return;
     };
-    with(|services| services.children.push((child, fallback)));
-    REAP.with(|reap| {
-        reap.start(slint::TimerMode::Repeated, Duration::from_secs(1), look);
+    std::thread::spawn(move || {
+        let failed = child.wait().is_ok_and(|status| !status.success());
+        if let Some(fallback) = fallback.filter(|_| failed) {
+            let _ = slint::invoke_from_event_loop(move || open(fallback));
+        }
     });
 }
 
@@ -103,23 +98,4 @@ pub fn open(target: impl AsRef<std::ffi::OsStr>) {
         _ => "xdg-open",
     };
     child(Command::new(program).arg(target), None);
-}
-
-fn look() {
-    let mut again = Vec::new();
-    let waiting = with(|services| {
-        services.children.retain_mut(|(child, fallback)| {
-            match child.try_wait() {
-                Ok(None) => return true,
-                Ok(Some(status)) if !status.success() => again.extend(fallback.take()),
-                _ => {}
-            }
-            false
-        });
-        !services.children.is_empty()
-    });
-    again.iter().for_each(open);
-    if waiting != Some(true) && again.is_empty() {
-        REAP.with(slint::Timer::stop);
-    }
 }

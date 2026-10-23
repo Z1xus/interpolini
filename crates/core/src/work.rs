@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use crate::Result;
 use crate::budget::{self, Class};
@@ -64,6 +65,31 @@ impl Cancel {
         match self.stopped() {
             true => Err("stopped".into()),
             false => Ok(()),
+        }
+    }
+
+    // true when the time came before the work stopped
+    pub fn pause(&self, until: Instant) -> bool {
+        let gate = Arc::new((Mutex::new(()), Condvar::new()));
+        let waker = Arc::clone(&gate);
+        let _wake = self.wake(move || {
+            let _held = locked(&waker.0);
+            waker.1.notify_all();
+        });
+        let mut held = locked(&gate.0);
+        loop {
+            let left = until.saturating_duration_since(Instant::now());
+            if self.stopped() {
+                return false;
+            }
+            if left.is_zero() {
+                return true;
+            }
+            held = gate
+                .1
+                .wait_timeout(held, left)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
         }
     }
 

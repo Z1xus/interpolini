@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -24,8 +24,6 @@ const SHOWN_FPS: f64 = 60.0;
 const AHEAD: usize = 8;
 const LEAD: Duration = Duration::from_millis(50);
 const LATE: Duration = Duration::from_millis(100);
-// the longest wait before a stop is seen
-const POLL: Duration = Duration::from_millis(25);
 // the seconds before the end of a stretch when the clips of the next one open
 const EARLY: f64 = 2.0;
 pub const THUMBS: usize = 8;
@@ -649,7 +647,7 @@ fn compose_all(
     reach: &Reach,
     stop: &Cancel,
     ready: &Receiver<interpolini_core::Result<(Key, Source)>>,
-    pictures: &SyncSender<Frame>,
+    pictures: &work::Sender<Frame>,
 ) {
     let (ui, parts, view, width, setup) = play;
     let mut worker = locked(worker);
@@ -716,22 +714,9 @@ fn compose_all(
     }
 }
 
-fn pause(cancel: &Cancel, until: Instant) -> bool {
-    loop {
-        if cancel.stopped() {
-            return false;
-        }
-        let left = until.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return true;
-        }
-        std::thread::sleep(left.min(POLL));
-    }
-}
-
 fn show_frames(
     ui: &Weak<App>,
-    queue: &Receiver<Frame>,
+    queue: &work::Receiver<Frame>,
     cancel: &Cancel,
     (time, total): (f64, f64),
 ) -> bool {
@@ -739,11 +724,10 @@ fn show_frames(
     let mut started = None;
     let mut shown = 0;
     loop {
-        let frame = match queue.recv_timeout(POLL) {
-            Ok(frame) => frame,
-            Err(RecvTimeoutError::Timeout) if !cancel.stopped() => continue,
-            Err(RecvTimeoutError::Timeout) => return false,
-            Err(RecvTimeoutError::Disconnected) => return !cancel.stopped(),
+        let frame = match queue.recv(cancel) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => return !cancel.stopped(),
+            Err(_) => return false,
         };
         let due = clock.map(|(at, from)| at + Duration::from_secs_f64(frame.moved - from));
         // the sound starts with the first picture, and again after pictures that are too late
@@ -755,7 +739,7 @@ fn show_frames(
         if first {
             clock = Some((due, frame.moved));
         }
-        if !pause(cancel, due) {
+        if !cancel.pause(due) {
             return false;
         }
         let started: Instant = *started.get_or_insert_with(Instant::now);
@@ -784,7 +768,7 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
     } = play;
     let time = parts[0].time;
     let parts = Arc::new(parts);
-    let (pictures, queue) = sync_channel(ahead);
+    let (pictures, queue) = work::channel(ahead);
     let (opened, ready) = channel();
     let (reach, stop) = (Arc::new(Reach::default()), Cancel::default());
     budget::preview(true);
