@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use interpolini_core::work::{self, Cancel};
-use interpolini_core::{Event, Fade, Job, Place, Setup, config, run, sequence, sounds};
+use interpolini_core::{Event, Fade, Job, Place, Setup, config, probe, run, sequence, sounds};
 
 const USAGE: &str = "usage: interpolini-cli [options] <clip>...
 
@@ -257,7 +257,7 @@ fn render() -> ExitCode {
                     return fail(format!("{argument} needs a number"));
                 };
                 match argument.as_str() {
-                    "--from" => from = number,
+                    "--from" => from = number.max(0.0),
                     "--to" => to = number,
                     _ => muted.push((number as usize).saturating_sub(1)),
                 }
@@ -335,6 +335,14 @@ fn render() -> ExitCode {
     if cancel.stopped() {
         return ExitCode::from(130);
     }
+    let timeline = match join.then(|| sounds(&jobs)) {
+        Some(Err(error)) => return fail(error),
+        Some(Ok(sounds)) => Some(sounds),
+        None => None,
+    };
+    if timeline.is_some() {
+        jobs.retain(|job| probe(&job.clip).is_ok_and(|probe| probe.fps > 0.0));
+    }
     let live = std::io::stderr().is_terminal();
     let failed = AtomicBool::new(false);
     let sink = |event: Event| {
@@ -346,11 +354,6 @@ fn render() -> ExitCode {
         } else {
             print(&event, &jobs, live);
         }
-    };
-    let timeline = match join.then(|| sounds(&jobs)) {
-        Some(Err(error)) => return fail(error),
-        Some(Ok(sounds)) => Some(sounds),
-        None => None,
     };
     run(
         &jobs,

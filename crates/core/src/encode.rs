@@ -500,6 +500,24 @@ impl Encoder {
         output
             .add_stream(encoder::find_by_name(name))?
             .set_parameters(&encoder);
+        if let Some(matrix) = meta.matrix {
+            let stream = output.stream_mut(0).ok_or("no stream")?;
+            let parameters = unsafe { &mut *stream.parameters().as_mut_ptr() };
+            let side = unsafe {
+                ffi::av_packet_side_data_new(
+                    &raw mut parameters.coded_side_data,
+                    &raw mut parameters.nb_coded_side_data,
+                    ffi::AVPacketSideDataType::AV_PKT_DATA_DISPLAYMATRIX,
+                    matrix.len(),
+                    0,
+                )
+            };
+            if !side.is_null() {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(matrix.as_ptr(), (*side).data, matrix.len())
+                };
+            }
+        }
         let mut lanes = Vec::new();
         let mut mixer = None;
         let audio = match plan {

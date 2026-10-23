@@ -216,10 +216,14 @@ fn encode(
         fps = rational(rate);
     }
     // one video in 4:4:4 makes the whole file 4:4:4, an image follows the videos
+    meta.matrix = meta.matrix.filter(|_| timeline.is_none());
     meta.yuv444 = probes.iter().any(|probe| probe.yuv444 && !probe.still);
     let rate = fps.0 as f64 / fps.1 as f64;
     let end = parts.last().map_or(0.0, |part| part.end);
     let frames = cover(end, rate);
+    if frames <= 0 {
+        return Err("the cut has no picture".into());
+    }
 
     let job = jobs[base].1;
     let config = &job.config.output;

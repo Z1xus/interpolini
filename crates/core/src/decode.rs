@@ -28,6 +28,22 @@ pub struct Meta {
     pub codec: &'static str,
     // the color planes are as large as the picture
     pub yuv444: bool,
+    // the display matrix turns or flips the picture
+    pub matrix: Option<[u8; 36]>,
+}
+
+fn matrix(stream: &format::stream::Stream) -> Option<[u8; 36]> {
+    let parameters = unsafe { &*stream.parameters().as_ptr() };
+    let data = unsafe {
+        ffi::av_packet_side_data_get(
+            parameters.coded_side_data,
+            parameters.nb_coded_side_data,
+            ffi::AVPacketSideDataType::AV_PKT_DATA_DISPLAYMATRIX,
+        )
+        .as_ref()?
+    };
+    let bytes = unsafe { std::slice::from_raw_parts(data.data, data.size) };
+    bytes.try_into().ok()
 }
 
 impl Meta {
@@ -44,6 +60,7 @@ impl Meta {
             still: false,
             codec: "",
             yuv444: false,
+            matrix: None,
         }
     }
 
@@ -386,6 +403,7 @@ impl Decoder {
             still,
             codec: decoder.id().name(),
             yuv444: whole(format),
+            matrix: matrix(&stream),
         };
         if meta.width == 0 || meta.height == 0 {
             return Err("the clip has no picture size".into());
