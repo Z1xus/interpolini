@@ -30,6 +30,7 @@ pub struct Meta {
     pub yuv444: bool,
     // the display matrix turns or flips the picture
     pub matrix: Option<[u8; 36]>,
+    pub cropped: bool,
 }
 
 fn matrix(stream: &format::stream::Stream) -> Option<[u8; 36]> {
@@ -61,6 +62,7 @@ impl Meta {
             codec: "",
             yuv444: false,
             matrix: None,
+            cropped: false,
         }
     }
 
@@ -414,6 +416,7 @@ impl Decoder {
             codec: decoder.id().name(),
             yuv444: whole(format),
             matrix: matrix(&stream),
+            cropped: decoder.width() % 2 + decoder.height() % 2 > 0,
         };
         if meta.width == 0 || meta.height == 0 {
             return Err("the clip has no picture size".into());

@@ -162,8 +162,14 @@ impl Graph {
             fps,
             frames,
             codec,
+            cropped,
             ..
         } = meta;
+        if cropped {
+            sink(Event::Warning(format!(
+                "the picture has an odd size, it is cropped to {width}x{height}"
+            )));
+        }
         let source_fps = fps.0 as f64 / fps.1 as f64;
         sink(Event::Info(format!(
             "{codec}  |  {width}x{height}  |  {source_fps:.2} fps  |  {frames} frames"
