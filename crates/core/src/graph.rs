@@ -10,7 +10,7 @@ use crate::budget;
 use crate::color::Grade;
 use crate::compose::Scaler;
 use crate::config::{self, Config, Engine, Masking};
-use crate::decode::{Decoder, Meta};
+use crate::decode::{Ahead, Decoder, Meta};
 use crate::encode::Spare;
 use crate::rife::Rife;
 use crate::segments::{Made, Segments};
@@ -28,7 +28,7 @@ pub struct Info {
 
 enum Feed {
     File(Box<Mutex<Segments>>),
-    Plain(Box<Mutex<Decoder>>),
+    Plain(Box<Ahead>),
     Host {
         derived: Option<Clip>,
         input: Arc<Clip>,
@@ -186,8 +186,17 @@ impl Graph {
                 let segments = Segments::new(clip, decoder, weights, blending)?;
                 (Feed::File(Box::new(Mutex::new(segments))), false)
             }
-            (true, false) => (Feed::Plain(Box::new(Mutex::new(decoder))), false),
-            (false, _) => Self::host(decoder, config, &plan, sink, cancel)?,
+            (true, false) => (Feed::Plain(Box::new(Ahead::new(decoder))), false),
+            (false, _) => {
+                let decoder = match Decoder::gpu(clip) {
+                    Some(gpu) => {
+                        sink(Event::Info("decoding on the gpu".into()));
+                        gpu.following(&follow).shrink(config.shrink)
+                    }
+                    None => decoder,
+                };
+                Self::host(decoder, config, &plan, sink, cancel)?
+            }
         };
         let blend = match &feed {
             Feed::Host { derived, input } if *blended && !fused => {
@@ -270,7 +279,7 @@ impl Graph {
             fps,
             frames,
         };
-        let mut input = Arc::new(svp.source(&shape, Mutex::new(decoder))?);
+        let mut input = Arc::new(svp.source(&shape, Ahead::new(decoder))?);
 
         let Plan {
             pre,
@@ -384,10 +393,7 @@ impl Graph {
                 let mut segments = segments.lock().unwrap_or_else(|poison| poison.into_inner());
                 segments.frame(n, cancel)?
             }
-            Feed::Plain(decoder) => {
-                let mut decoder = decoder.lock().unwrap_or_else(|poison| poison.into_inner());
-                decoder.picture(n)?
-            }
+            Feed::Plain(decoder) => decoder.picture(n)?,
             Feed::Host { derived, input } => {
                 let clip = derived.as_ref().unwrap_or(input);
                 let last = clip.shape().frames - 1;

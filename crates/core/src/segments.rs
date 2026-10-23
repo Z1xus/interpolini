@@ -11,7 +11,7 @@ use crate::Result;
 use crate::blend::Blend;
 use crate::budget;
 use crate::config::Blending;
-use crate::decode::{Decoder, Meta, PAST, REFERENCES};
+use crate::decode::{AHEAD, Ahead, Decoder, Meta, PAST, REFERENCES};
 use crate::encode::{GOP, Spare};
 use crate::work::{self, Cancel, Receiver, Sender};
 
@@ -97,8 +97,9 @@ pub struct Segments {
     meta: Meta,
 }
 
-fn feed(clip: &Path, threads: usize, by: u32) -> Result<(usize, Decoder)> {
-    Ok((threads, Decoder::threaded(clip, threads)?.shrink(by)))
+fn feed(clip: &Path, threads: usize, by: u32) -> Result<(usize, Ahead)> {
+    let decoder = Decoder::threaded(clip, threads)?.shrink(by);
+    Ok((threads, Ahead::new(decoder)))
 }
 
 struct Lane {
@@ -137,7 +138,7 @@ fn run(lane: Lane) {
         by,
         workers: _,
     } = lane;
-    let mut decoder: Option<(usize, Decoder)> = None;
+    let mut decoder: Option<(usize, Ahead)> = None;
     loop {
         let mut queue = jobs
             .queue
@@ -172,7 +173,7 @@ fn run(lane: Lane) {
         };
         let (first, end) = (frames.start, frames.end);
         for n in frames {
-            let picture = |decoder: &mut Option<(usize, Decoder)>| {
+            let picture = |decoder: &mut Option<(usize, Ahead)>| {
                 if decoder.as_ref().is_none_or(|decoder| decoder.0 != threads) {
                     *decoder = Some(feed(&clip, threads, by)?);
                 }
@@ -217,7 +218,7 @@ impl Segments {
         // a quarter of the memory: half for the pictures of the lanes, half for the frames that wait
         let budget = budget::bytes(class);
         let useful = budget::useful(height).min(cores);
-        let held = math.window() + PAST + REFERENCES + useful;
+        let held = math.window() + PAST + REFERENCES + AHEAD + useful;
         // a clip that does not fit still runs with one lane and few frames in flight
         let lanes = (budget / 2 / (held * picture)).max(1);
         let most = (cores / useful).clamp(1, lanes);

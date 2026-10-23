@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::mpsc::{self, TryRecvError};
+use std::thread::JoinHandle;
 
 use ffmpeg_next::codec::{self, threading};
 use ffmpeg_next::format::{self, Pixel};
@@ -9,9 +11,10 @@ use ffmpeg_next::packet::Mut;
 use ffmpeg_next::software::scaling;
 use ffmpeg_next::{Packet, color, ffi, frame, media};
 
+use crate::budget;
 use crate::compose::share;
 use crate::svp::Reader;
-use crate::work::Follow;
+use crate::work::{self, Follow};
 use crate::{Error, Result};
 
 #[derive(Clone, Copy)]
@@ -251,6 +254,8 @@ pub fn origin(input: &format::context::Input) -> i64 {
 
 pub(crate) const PAST: usize = 16;
 pub(crate) const REFERENCES: usize = 16;
+// a shorter step forward is decoded through, a longer one seeks
+const NEAR: i32 = 64;
 
 static DAMAGE: Mutex<BTreeMap<PathBuf, (f64, BTreeSet<i32>)>> = Mutex::new(BTreeMap::new());
 
@@ -277,6 +282,7 @@ pub struct Decoder {
     full: (u32, u32),
     by: u32,
     stream: usize,
+    gpu: bool,
     drained: bool,
     start: i64,
     frames_per_tick: f64,
@@ -305,6 +311,40 @@ fn native(format: Pixel, full: bool) -> bool {
     }
 }
 
+pub type Gpu = ffi::AVHWDeviceType;
+
+fn gpus() -> [Gpu; 2] {
+    let own = if cfg!(windows) {
+        Gpu::AV_HWDEVICE_TYPE_D3D11VA
+    } else if cfg!(target_os = "macos") {
+        Gpu::AV_HWDEVICE_TYPE_VIDEOTOOLBOX
+    } else {
+        Gpu::AV_HWDEVICE_TYPE_VAAPI
+    };
+    [Gpu::AV_HWDEVICE_TYPE_CUDA, own]
+}
+
+fn row(picture: &frame::Video, plane: usize, y: usize) -> &[u8] {
+    &picture.data(plane)[y * picture.stride(plane)..]
+}
+
+fn same(gpu: &frame::Video, cpu: &frame::Video) -> bool {
+    let (width, height) = (cpu.width() as usize, cpu.height() as usize);
+    let plane = |p: usize| (0..height).all(|y| row(gpu, p, y)[..width] == row(cpu, p, y)[..width]);
+    match (gpu.format(), yuv444(cpu.format())) {
+        (Pixel::NV12, false) => {
+            plane(0)
+                && (0..height / 2).all(|y| {
+                    let both = &row(gpu, 1, y)[..width];
+                    let (u, v) = (&row(cpu, 1, y)[..width / 2], &row(cpu, 2, y)[..width / 2]);
+                    both.iter().step_by(2).eq(u) && both.iter().skip(1).step_by(2).eq(v)
+                })
+        }
+        (Pixel::YUV444P, true) => (0..3).all(plane),
+        _ => false,
+    }
+}
+
 fn rgb(format: Pixel) -> bool {
     let descriptor = unsafe { ffi::av_pix_fmt_desc_get(format.into()).as_ref() };
     descriptor.is_some_and(|descriptor| descriptor.flags & ffi::AV_PIX_FMT_FLAG_RGB as u64 != 0)
@@ -312,15 +352,54 @@ fn rgb(format: Pixel) -> bool {
 
 impl Decoder {
     pub fn open(path: &Path) -> Result<Self> {
-        Self::start(path, |_, _| 1)
+        Self::start(path, |_, _| 1, None)
     }
 
     pub fn threaded(path: &Path, threads: usize) -> Result<Self> {
-        Self::start(path, |_, _| threads)
+        Self::start(path, |_, _| threads, None)
     }
 
     pub fn chosen(path: &Path, threads: impl FnOnce(f64, u32) -> usize) -> Result<Self> {
-        Self::start(path, threads)
+        Self::start(path, threads, None)
+    }
+
+    // the gpu takes the clip only when its first picture equals the one of the cpu
+    pub fn gpu(path: &Path) -> Option<Self> {
+        let mut cpu = Self::open(path).ok()?;
+        // these codecs decode bit exact by their spec, and the gpu gives 8 bit 4:2:0 and 4:4:4 as they are
+        let exact = matches!(
+            cpu.decoder.id(),
+            codec::Id::H264 | codec::Id::HEVC | codec::Id::AV1 | codec::Id::VP9
+        );
+        let format = cpu.decoder.format();
+        if !exact || !(native(format, false) || yuv444(format)) {
+            return None;
+        }
+        let reference = cpu.picture(0).ok()?;
+        ffmpeg_next::log::set_level(Level::Quiet);
+        let found = gpus().into_iter().find_map(|kind| {
+            let mut decoder = Self::start(path, |_, _| 1, Some(kind)).ok()?;
+            let picture = decoder.picture(0).ok()?;
+            same(&picture, &reference).then_some(decoder)
+        });
+        ffmpeg_next::log::set_level(Level::Error);
+        found
+    }
+
+    fn cpu(&self) -> Result<Self> {
+        let decoder = Self::threaded(&self.path, budget::decode(self.full.1))?;
+        Ok(decoder.following(&self.cancel).shrink(self.by))
+    }
+
+    // a gpu that fails in the clip hands the rest of it to the cpu
+    fn fetch(&mut self, n: i32) -> Result<frame::Video> {
+        match self.picture(n) {
+            Err(_) if self.gpu && self.cancel.check().is_ok() => {
+                *self = self.cpu()?;
+                self.picture(n)
+            }
+            picture => picture,
+        }
     }
 
     pub fn following(mut self, follow: &Follow) -> Self {
@@ -347,9 +426,15 @@ impl Decoder {
         self.by
     }
 
-    fn start(path: &Path, threads: impl FnOnce(f64, u32) -> usize) -> Result<Self> {
+    fn start(
+        path: &Path,
+        threads: impl FnOnce(f64, u32) -> usize,
+        gpu: Option<Gpu>,
+    ) -> Result<Self> {
         ffmpeg_next::init()?;
-        ffmpeg_next::log::set_level(Level::Error);
+        if gpu.is_none() {
+            ffmpeg_next::log::set_level(Level::Error);
+        }
         let input = format::input(path)?;
         let stream = video(&input).ok_or("the clip has no video")?;
         let mut rate = stream.avg_frame_rate();
@@ -393,6 +478,14 @@ impl Decoder {
             count: threads(fps, unsafe { (*stream.parameters().as_ptr()).height }
                 as u32),
         });
+        if let Some(kind) = gpu {
+            let device = unsafe { &mut (*context.as_mut_ptr()).hw_device_ctx };
+            let (name, options) = (std::ptr::null(), std::ptr::null_mut());
+            let code = unsafe { ffi::av_hwdevice_ctx_create(device, kind, name, options, 0) };
+            if code < 0 {
+                return Err(ffmpeg_next::Error::from(code).into());
+            }
+        }
         let decoder = context.decoder().video()?;
         let format = decoder.format();
         let jpeg = matches!(format, Pixel::YUVJ420P | Pixel::YUVJ444P);
@@ -438,6 +531,7 @@ impl Decoder {
             by: 1,
             meta,
             stream: index,
+            gpu: gpu.is_some(),
             drained: false,
             start,
             frames_per_tick: time_base * fps,
@@ -469,6 +563,9 @@ impl Decoder {
         loop {
             self.cancel.check()?;
             if self.decoder.receive_frame(&mut self.ahead).is_ok() {
+                if self.gpu {
+                    self.download()?;
+                }
                 let ticks = self.ahead.timestamp().map(|time| time - self.start);
                 let timed = ticks.map(|ticks| (ticks as f64 * self.frames_per_tick).round() as i32);
                 let timed = timed.unwrap_or(self.at + 1);
@@ -497,6 +594,25 @@ impl Decoder {
                 Err(error) => return Err(error.into()),
             }
         }
+    }
+
+    fn download(&mut self) -> Result<()> {
+        if unsafe { (*self.ahead.as_ptr()).hw_frames_ctx.is_null() } {
+            return Err("the gpu does not decode this clip".into());
+        }
+        let mut copy = frame::Video::empty();
+        let code = unsafe {
+            let (to, from) = (copy.as_mut_ptr(), self.ahead.as_ptr());
+            match ffi::av_hwframe_transfer_data(to, from, 0) {
+                0 => ffi::av_frame_copy_props(to, from),
+                code => code,
+            }
+        };
+        if code < 0 {
+            return Err(ffmpeg_next::Error::from(code).into());
+        }
+        self.ahead = copy;
+        Ok(())
     }
 
     fn seek(&mut self, n: i32) -> Result<()> {
@@ -594,7 +710,6 @@ impl Decoder {
 
 impl Decoder {
     fn find(&mut self, n: i32) -> Result<Option<usize>> {
-        // the host reads short gaps in order, so a longer jump is a seek
         // a file can end before its frame count says so, and then the last picture stays
         let mut aim = None;
         if n < self.at {
@@ -603,7 +718,7 @@ impl Decoder {
                 return Ok(Some(index));
             }
             aim = Some(n);
-        } else if n > self.at + 64 && !self.drained {
+        } else if n > self.at + NEAR && !self.drained {
             aim = Some(n);
         }
         if let Some(aim) = aim {
@@ -683,9 +798,118 @@ impl Decoder {
     }
 }
 
-impl Reader for Mutex<Decoder> {
+pub(crate) const AHEAD: usize = 8;
+
+type Link = (mpsc::Sender<i32>, mpsc::Receiver<Result<frame::Video>>);
+
+// decodes the next pictures while the host works on the last ones
+pub struct Ahead {
+    link: Mutex<Link>,
+    thread: Option<JoinHandle<()>>,
+    meta: Meta,
+}
+
+impl Ahead {
+    pub fn new(mut decoder: Decoder) -> Self {
+        let meta = decoder.meta();
+        let (wanted, asked) = mpsc::channel::<i32>();
+        let (ready, pictures) = mpsc::channel();
+        let thread = work::spawn("decoder", move || {
+            let mut made = VecDeque::new();
+            let (mut next, mut last, mut order) = (0, -1, false);
+            loop {
+                let asked = match order && made.len() < AHEAD && next < meta.frames {
+                    true => asked.try_recv(),
+                    false => asked.recv().map_err(|_| TryRecvError::Disconnected),
+                };
+                let n = match asked {
+                    Ok(n) => n,
+                    Err(TryRecvError::Empty) => {
+                        made.push_back((next, decoder.fetch(next)));
+                        next += 1;
+                        continue;
+                    }
+                    Err(TryRecvError::Disconnected) => break,
+                };
+                (order, last) = (n > last && n <= last + NEAR, n);
+                while made.front().is_some_and(|(index, _)| *index < n) {
+                    made.pop_front();
+                }
+                let picture = match made.pop_front() {
+                    Some((index, picture)) if index == n => picture,
+                    _ => {
+                        made.clear();
+                        next = n + 1;
+                        decoder.fetch(n)
+                    }
+                };
+                if ready.send(picture).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            link: Mutex::new((wanted, pictures)),
+            thread: Some(thread),
+            meta,
+        }
+    }
+
+    pub fn picture(&self, n: i32) -> Result<frame::Video> {
+        let link = self
+            .link
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let stopped = "the decoder stopped";
+        link.0.send(n).map_err(|_| stopped)?;
+        link.1.recv().map_err(|_| stopped)?
+    }
+}
+
+impl Reader for Ahead {
     fn read(&self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
-        let mut decoder = self.lock().unwrap_or_else(|poison| poison.into_inner());
-        decoder.read(n, planes, strides)
+        let picture = self.picture(n)?;
+        let (width, height) = (self.meta.width as usize, self.meta.height as usize);
+        let target = |plane: usize, y: usize, length: usize| unsafe {
+            std::slice::from_raw_parts_mut(
+                planes[plane].offset(y as isize * strides[plane]),
+                length,
+            )
+        };
+        for y in 0..height {
+            target(0, y, width).copy_from_slice(&row(&picture, 0, y)[..width]);
+        }
+        if picture.format() == Pixel::NV12 {
+            for y in 0..height / 2 {
+                let (u, v) = (target(1, y, width / 2), target(2, y, width / 2));
+                let both = row(&picture, 1, y)[..width].as_chunks::<2>().0;
+                for ((u, v), &[first, second]) in u.iter_mut().zip(v).zip(both) {
+                    (*u, *v) = (first, second);
+                }
+            }
+            return Ok(());
+        }
+        let shift = self.meta.shift();
+        let (width, height) = (width >> shift, height >> shift);
+        for plane in 1..3 {
+            for y in 0..height {
+                target(plane, y, width).copy_from_slice(&row(&picture, plane, y)[..width]);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Ahead {
+    // the thread must end before the process does, or the gpu context goes away under it
+    fn drop(&mut self) {
+        let link = self
+            .link
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner());
+        link.0 = mpsc::channel().0;
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
