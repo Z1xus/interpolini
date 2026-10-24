@@ -101,6 +101,8 @@ export component Panel inherits Rectangle {
     property <string> code;
     property <bool> copied-code;
     callback changed();
+    pure callback effort-tip(Settings, string, bool) -> string;
+    in property <bool> encoders-found;
     callback choose-lut();
     callback choose-config(string);
     callback save-config();
@@ -927,6 +929,12 @@ export component Panel inherits Rectangle {
                     label: "Effort";
                     Segment {
                         options: ["fastest", "fast", "balanced", "best"];
+                        tips: [
+                            root.effort-tip(root.settings, "fastest", root.encoders-found),
+                            root.effort-tip(root.settings, "fast", root.encoders-found),
+                            root.effort-tip(root.settings, "balanced", root.encoders-found),
+                            root.effort-tip(root.settings, "best", root.encoders-found),
+                        ];
                         value <=> root.settings.effort;
                         changed => {
                             root.changed();

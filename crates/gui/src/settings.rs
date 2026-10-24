@@ -5,7 +5,7 @@ use interpolini_core::config::{
     self, Algorithm, Backend, Codec, Config, Container, Effort, Encoder, Engine, Masking, Method,
     Rate, Resolution, Speed, Target, Tuning, Weighting,
 };
-use interpolini_core::{budget, words};
+use interpolini_core::{budget, effort, words};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::clips::pick;
@@ -325,6 +325,12 @@ pub fn wire(ui: &App, state: &Shared) {
         }
     });
 
+    ui.on_effort_tip(|settings, choice, _| {
+        let mut config = Config::default();
+        apply(&settings, &mut config);
+        let choice = Effort::parse(&choice).unwrap_or_default();
+        effort(&config.output, choice).into()
+    });
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_changed(move || {
         let Some(ui) = weak.upgrade() else {

@@ -10,7 +10,7 @@ use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, ffi, frame, medi
 use crate::Result;
 use crate::audio::{Lane, Mixer, RATE, Source};
 use crate::budget;
-use crate::config::{self, Codec, Output};
+use crate::config::{self, Codec, Effort, Output};
 use crate::decode::Meta;
 
 // the frames from one key frame to the next, each encoder has another default
@@ -59,6 +59,93 @@ fn pairs(text: &str) -> impl Iterator<Item = (&str, &str)> {
     std::iter::from_fn(move || Some((words.next()?.trim_start_matches('-'), words.next()?)))
 }
 
+// the setting of each encoder for the four efforts, fastest first
+fn presets(name: &str) -> Option<(&'static str, [&'static str; 4])> {
+    match name.rsplit('_').next() {
+        Some("nvenc") => Some(("preset", ["p1", "p4", "p6", "p7"])),
+        Some("amf") => Some(("quality", ["speed", "speed", "balanced", "quality"])),
+        Some("qsv") => Some(("preset", ["veryfast", "medium", "slow", "veryslow"])),
+        // 1 is the best, ffmpeg caps a level above the range of the driver
+        Some("vaapi") => Some(("compression_level", ["7", "4", "2", "1"])),
+        _ if name == "libsvtav1" => Some(("preset", ["12", "10", "8", "6"])),
+        _ if name.starts_with("lib") => {
+            Some(("preset", ["superfast", "veryfast", "medium", "slow"]))
+        }
+        _ => None,
+    }
+}
+
+// the hardware encoders that open on this system, found once
+static OPENS: OnceLock<Vec<&'static str>> = OnceLock::new();
+
+pub fn find_encoders() {
+    OPENS.get_or_init(|| {
+        let meta = Meta {
+            width: 1280,
+            height: 720,
+            ..Meta::standard()
+        };
+        let codecs = [Codec::H264, Codec::Hevc, Codec::Av1];
+        let names = codecs.into_iter().flat_map(|codec| {
+            let output = Output {
+                codec,
+                encoder: config::Encoder::Hardware,
+                ..Output::default()
+            };
+            candidates(&output).collect::<Vec<_>>()
+        });
+        ffmpeg_next::log::set_level(Level::Quiet);
+        let base = Rational(1, 60);
+        let found = names
+            .filter(|name| {
+                context(name, &meta, base, &Output::default(), None, false)
+                    .is_some_and(|c| c.is_ok())
+            })
+            .collect();
+        ffmpeg_next::log::set_level(Level::Error);
+        found
+    });
+}
+
+// what the effort sets on the encoder that a render picks, or what the options set in its place
+pub fn effort(output: &Output, effort: Effort) -> String {
+    let keys = ["preset", "quality", "compression_level"];
+    if let Some((key, value)) = pairs(&output.options).find(|pair| keys.contains(&pair.0)) {
+        return format!("Options set {key} {value}");
+    }
+    let Some(opens) = OPENS.get() else {
+        return String::new();
+    };
+    let chosen = pairs(&output.options)
+        .find(|pair| pair.0 == "c:v")
+        .map(|pair| pair.1);
+    let picked = chosen.or_else(|| {
+        candidates(output).find(|name| name.starts_with("lib") || opens.contains(name))
+    });
+    let Some(name) = picked else {
+        return "No hardware encoder for this codec".into();
+    };
+    let short = match name.rsplit('_').next() {
+        Some("nvenc") => "NVENC",
+        Some("amf") => "AMF",
+        Some("qsv") => "QSV",
+        Some("vaapi") => "VAAPI",
+        Some("vulkan") => "Vulkan",
+        Some("videotoolbox") => "VideoToolbox",
+        _ if name == "libsvtav1" => "SVT-AV1",
+        _ => name.trim_start_matches("lib"),
+    };
+    let Some((key, values)) = presets(name) else {
+        return format!("{short} has no effort levels");
+    };
+    let value = values[effort as usize];
+    match value.parse::<u32>() {
+        Ok(_) if key == "preset" => format!("{short} preset {value}"),
+        Ok(_) => format!("{short} level {value}"),
+        Err(_) => format!("{short} {value}"),
+    }
+}
+
 fn options(name: &str, output: &Output, sized: bool) -> Dictionary<'static> {
     // these av1 encoders count the quantizer to 255, the others to 51 or 63
     let wide = name.starts_with("av1_") && !name.ends_with("_nvenc");
@@ -80,19 +167,7 @@ fn options(name: &str, output: &Output, sized: bool) -> Dictionary<'static> {
         Some("videotoolbox") => &[("flags", "+qscale"), ("global_quality", &quality)],
         _ => &[("crf", &quality)],
     };
-    let presets = match family {
-        Some("nvenc") => Some(("preset", ["p1", "p4", "p6", "p7"])),
-        Some("amf") => Some(("quality", ["speed", "speed", "balanced", "quality"])),
-        Some("qsv") => Some(("preset", ["veryfast", "medium", "slow", "veryslow"])),
-        // 1 is the best, ffmpeg caps a level above the range of the driver
-        Some("vaapi") => Some(("compression_level", ["7", "4", "2", "1"])),
-        _ if name == "libsvtav1" => Some(("preset", ["12", "10", "8", "6"])),
-        _ if name.starts_with("lib") => {
-            Some(("preset", ["superfast", "veryfast", "medium", "slow"]))
-        }
-        _ => None,
-    };
-    let preset = presets.map(|(key, presets)| (key, presets[output.effort as usize]));
+    let preset = presets(name).map(|(key, presets)| (key, presets[output.effort as usize]));
     // a card with two encoders uses both for one picture, h264 has no such mode
     let split = (family == Some("nvenc") && !name.starts_with("h264"))
         .then_some(("split_encode_mode", "forced"));

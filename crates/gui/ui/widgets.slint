@@ -200,12 +200,14 @@ export component Tabs inherits HorizontalLayout {
 
 export component Segment inherits HorizontalLayout {
     in property <[string]> options;
+    // a hover tip for each option, none when empty
+    in property <[string]> tips;
     in-out property <string> value;
     callback changed(string);
     alignment: end;
     padding-top: 3px;
     padding-bottom: 3px;
-    for option in root.options: Rectangle {
+    for option[index] in root.options: cell := Rectangle {
         property <bool> active: option == root.value;
         accessible-role: button;
         accessible-label: option;
@@ -234,6 +236,21 @@ export component Segment inherits HorizontalLayout {
             clicked => {
                 root.value = option;
                 root.changed(option);
+            }
+            changed has-hover => {
+                if !self.has-hover && root.tips.length > 0 {
+                    Tip.text = "";
+                }
+            }
+        }
+        Timer {
+            interval: 500ms;
+            running: touch.has-hover && index < root.tips.length;
+            triggered => {
+                Tip.keys = [];
+                Tip.x = cell.absolute-position.x + cell.width / 2;
+                Tip.y = cell.absolute-position.y;
+                Tip.text = root.tips[index];
             }
         }
     }

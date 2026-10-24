@@ -105,6 +105,11 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_preview_off(value("preview: ") == Some("no"));
     ui.window()
         .set_maximized(value("maximized: ") == Some("yes"));
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        interpolini_core::find_encoders();
+        let _ = weak.upgrade_in_event_loop(|ui| ui.set_encoders_found(true));
+    });
     let sizes = ["Full", "1/2", "1/4"];
     ui.set_resolution(
         value("resolution: ")

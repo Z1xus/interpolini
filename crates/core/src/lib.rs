@@ -49,6 +49,7 @@ pub use compose::{Canvas, Picture, Place, Setup, Source, Sources};
 pub use copy::keyframes;
 pub use decode::{Probe, probe};
 pub use dedup::{differences, repeats, threshold};
+pub use encode::{effort, find_encoders};
 pub use error::{Error, Result};
 pub use estimate::estimate;
 pub use event::{Event, Sink};

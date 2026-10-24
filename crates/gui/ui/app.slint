@@ -140,6 +140,9 @@ export component App inherits Window {
     callback resized();
     callback close-gaps();
     callback changed();
+    pure callback effort-tip(Settings, string, bool) -> string;
+    // the encoders of this system are known, so the effort tips can name the one in use
+    in property <bool> encoders-found;
     callback seek();
     callback play();
     callback moved();
@@ -636,6 +639,10 @@ export component App inherits Window {
             selected: root.selected;
             settings <=> root.settings;
             sections <=> root.sections;
+            encoders-found: root.encoders-found;
+            effort-tip(settings, effort, found) => {
+                root.effort-tip(settings, effort, found)
+            }
             scope <=> root.scope;
             configs: root.configs;
             config <=> root.config;
