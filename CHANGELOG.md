@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.23
+- Faster: SVP on medium, up to 2x, also on 4:4:4
+- Faster: GPU decoding, also for blend only
+- New: Default preview zoom
+- New: Effort tooltips with the encoder preset, like NVENC p1
+- New: Maximized state kept between sessions
+- New: Warnings for damaged video and cropped odd sizes
+- Changed: Clearer error messages
+- Fixed: Audio cut off at the end
+- Fixed: RIFE crashes on Vulkan
+- Fixed: TensorRT not starting on Windows
+- Fixed: Renders differing slightly between runs
+- Fixed: Renders failing when VRAM runs out
+- Fixed: Rotation metadata ignored
+- Fixed: Preview lag during renders
+- Fixed: CLI ignoring a second Ctrl-C
+- Fixed: CLI joining audio files with clips
+
 ## 0.1.22
 - Changed: Project settings are available without project files
 - Changed: Cleaner project settings window
