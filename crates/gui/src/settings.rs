@@ -212,8 +212,9 @@ pub fn save_preferences(ui: &App) {
         .collect();
     let prefs = ui.get_prefs();
     let mut text = format!(
-        "theme: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\nprojects: {}\nautosave: {}\nasksave: {}\nreopen: {}\nconfirm: {}\nmemory: {}\nzoom: {}\nfolder: {}\npreset: {}\n",
+        "theme: {}\nmaximized: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\nprojects: {}\nautosave: {}\nasksave: {}\nreopen: {}\nconfirm: {}\nmemory: {}\nzoom: {}\nfolder: {}\npreset: {}\n",
         ui.get_theme(),
+        yes(ui.window().is_maximized()),
         yes(ui.get_light()),
         yes(ui.get_separate()),
         ui.get_rail(),

@@ -103,6 +103,8 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_light(value("light: ") == Some("yes"));
     ui.set_separate(value("separate: ") == Some("yes"));
     ui.set_preview_off(value("preview: ") == Some("no"));
+    ui.window()
+        .set_maximized(value("maximized: ") == Some("yes"));
     let sizes = ["Full", "1/2", "1/4"];
     ui.set_resolution(
         value("resolution: ")
@@ -290,6 +292,9 @@ fn main() -> Result<(), slint::PlatformError> {
         weak.upgrade().is_none_or(|ui| {
             let ask = question(&ui, 0);
             project::question(&ui, ask);
+            if ask.is_empty() {
+                settings::save_preferences(&ui);
+            }
             ask.is_empty()
         })
     };
