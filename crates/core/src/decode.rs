@@ -329,20 +329,14 @@ fn row(picture: &frame::Video, plane: usize, y: usize) -> &[u8] {
 }
 
 fn same(gpu: &frame::Video, cpu: &frame::Video) -> bool {
-    let (width, height) = (cpu.width() as usize, cpu.height() as usize);
-    let plane = |p: usize| (0..height).all(|y| row(gpu, p, y)[..width] == row(cpu, p, y)[..width]);
-    match (gpu.format(), yuv444(cpu.format())) {
-        (Pixel::NV12, false) => {
-            plane(0)
-                && (0..height / 2).all(|y| {
-                    let both = &row(gpu, 1, y)[..width];
-                    let (u, v) = (&row(cpu, 1, y)[..width / 2], &row(cpu, 2, y)[..width / 2]);
-                    both.iter().step_by(2).eq(u) && both.iter().skip(1).step_by(2).eq(v)
-                })
-        }
-        (Pixel::YUV444P, true) => (0..3).all(plane),
-        _ => false,
-    }
+    let shift = usize::from(!yuv444(cpu.format()));
+    yuv444(gpu.format()) == yuv444(cpu.format())
+        && (0..3).all(|plane| {
+            let shift = if plane == 0 { 0 } else { shift };
+            let width = cpu.width() as usize >> shift;
+            let height = cpu.height() as usize >> shift;
+            (0..height).all(|y| row(gpu, plane, y)[..width] == row(cpu, plane, y)[..width])
+        })
 }
 
 fn rgb(format: Pixel) -> bool {
@@ -785,7 +779,7 @@ impl Decoder {
         self.with(n, |decoder| {
             let format = decoder.frame.format();
             let whole = decoder.by == 1;
-            if whole && (native(format, decoder.meta.yuv444) || format == Pixel::NV12) {
+            if whole && native(format, decoder.meta.yuv444) {
                 return Ok(share(&decoder.frame));
             }
             let Meta { width, height, .. } = decoder.meta;
@@ -869,31 +863,13 @@ impl Ahead {
 impl Reader for Ahead {
     fn read(&self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
         let picture = self.picture(n)?;
-        let (width, height) = (self.meta.width as usize, self.meta.height as usize);
-        let target = |plane: usize, y: usize, length: usize| unsafe {
-            std::slice::from_raw_parts_mut(
-                planes[plane].offset(y as isize * strides[plane]),
-                length,
-            )
-        };
-        for y in 0..height {
-            target(0, y, width).copy_from_slice(&row(&picture, 0, y)[..width]);
-        }
-        if picture.format() == Pixel::NV12 {
-            for y in 0..height / 2 {
-                let (u, v) = (target(1, y, width / 2), target(2, y, width / 2));
-                let both = row(&picture, 1, y)[..width].as_chunks::<2>().0;
-                for ((u, v), &[first, second]) in u.iter_mut().zip(v).zip(both) {
-                    (*u, *v) = (first, second);
-                }
-            }
-            return Ok(());
-        }
-        let shift = self.meta.shift();
-        let (width, height) = (width >> shift, height >> shift);
-        for plane in 1..3 {
-            for y in 0..height {
-                target(plane, y, width).copy_from_slice(&row(&picture, plane, y)[..width]);
+        for plane in 0..3 {
+            let shift = if plane == 0 { 0 } else { self.meta.shift() };
+            let width = self.meta.width as usize >> shift;
+            for y in 0..self.meta.height as usize >> shift {
+                let target = unsafe { planes[plane].offset(y as isize * strides[plane]) };
+                let target = unsafe { std::slice::from_raw_parts_mut(target, width) };
+                target.copy_from_slice(&row(&picture, plane, y)[..width]);
             }
         }
         Ok(())

@@ -23,6 +23,7 @@ pub enum Made {
 struct Job {
     frames: Range<i32>,
     threads: usize,
+    whole: bool,
     packets: bool,
     made: Sender<Result<Made>>,
 }
@@ -83,9 +84,11 @@ pub struct Segments {
     math: Blend,
     cores: usize,
     most: usize,
+    fits: usize,
     room: usize,
     jobs: Arc<Jobs>,
     started: usize,
+    gpu: bool,
     lanes: Vec<JoinHandle<()>>,
     closing: Vec<JoinHandle<()>>,
     parts: VecDeque<Part>,
@@ -112,6 +115,7 @@ struct Lane {
     meta: Meta,
     by: u32,
     workers: usize,
+    gpu: bool,
 }
 
 fn work(lane: Lane) -> JoinHandle<()> {
@@ -137,8 +141,16 @@ fn run(lane: Lane) {
         meta,
         by,
         workers: _,
+        gpu,
     } = lane;
     let mut decoder: Option<(usize, Ahead)> = None;
+    // the gpu lane takes parts beside the cpu lanes, so each decoder makes as many as it can
+    if gpu {
+        let Some(found) = Decoder::gpu(&clip) else {
+            return;
+        };
+        decoder = Some((0, Ahead::new(found.shrink(by))));
+    }
     loop {
         let mut queue = jobs
             .queue
@@ -149,11 +161,14 @@ fn run(lane: Lane) {
             threads,
             packets,
             made,
+            ..
         } = loop {
             if queue.1 {
                 return;
             }
-            match queue.0.pop_front() {
+            // a part for all the threads is for a cpu decoder
+            let at = queue.0.iter().position(|job| !(gpu && job.whole));
+            match at.and_then(|at| queue.0.remove(at)) {
                 Some(job) => break job,
                 None => {
                     let woken = jobs.ready.wait(queue);
@@ -174,7 +189,7 @@ fn run(lane: Lane) {
         let (first, end) = (frames.start, frames.end);
         for n in frames {
             let picture = |decoder: &mut Option<(usize, Ahead)>| {
-                if decoder.as_ref().is_none_or(|decoder| decoder.0 != threads) {
+                if !gpu && decoder.as_ref().is_none_or(|decoder| decoder.0 != threads) {
                     *decoder = Some(feed(&clip, threads, by)?);
                 }
                 let source = |index| match decoder {
@@ -231,9 +246,11 @@ impl Segments {
             math,
             cores,
             most,
+            fits: lanes,
             room: (budget / 2 / picture).max(2),
             jobs: Arc::default(),
             started: 0,
+            gpu: false,
             lanes: Vec::new(),
             closing: Vec::new(),
             parts: VecDeque::new(),
@@ -283,8 +300,8 @@ impl Segments {
         }
     }
 
-    fn lane(&mut self) {
-        self.started += 1;
+    fn lane(&mut self, gpu: bool) {
+        self.started += usize::from(!gpu);
         self.jobs.alive.fetch_add(1, Ordering::AcqRel);
         self.lanes.push(work(Lane {
             clip: self.clip.clone(),
@@ -296,6 +313,7 @@ impl Segments {
             meta: self.meta,
             by: self.probe.by(),
             workers: self.most,
+            gpu,
         }));
     }
 
@@ -319,11 +337,12 @@ impl Segments {
                 };
                 fit.clamp(1, self.most)
             };
-            // a part per lane and one more for a lane that is done
-            let open = match self.packing() {
-                true => lanes + 1,
-                false => (self.room / self.longest.max(1)).min(lanes + 1).max(1),
-            };
+            // one more lane on the gpu when its pictures fit in memory
+            let gpu = lanes > 0 && self.fits > self.most;
+            let total = lanes + usize::from(gpu);
+            // the lanes run ahead as far as memory allows, so a faster lane makes more parts
+            let least = if self.packing() { total + 1 } else { 1 };
+            let open = (self.room / self.longest.max(1)).max(least);
             if self.parts.len() >= if lanes == 0 { 1 } else { open } {
                 break;
             }
@@ -331,14 +350,15 @@ impl Segments {
             // 0 lanes: one decoder makes the part with all threads
             let (threads, room) = match lanes {
                 0 => (self.cores, 2),
-                lanes => (
-                    self.cores.div_ceil(lanes),
-                    (end - start) as usize * (lanes - 1) / lanes,
-                ),
+                lanes => (self.cores.div_ceil(lanes), (end - start) as usize),
             };
             let (made, pictures) = work::channel(room.clamp(2, self.room));
             if self.started < lanes.max(1) {
-                self.lane();
+                self.lane(false);
+            }
+            if gpu && !self.gpu {
+                self.gpu = true;
+                self.lane(true);
             }
             let packets = lanes > 0 && self.packing();
             let queue = self.jobs.queue.lock();
@@ -346,6 +366,7 @@ impl Segments {
             queue.0.push_back(Job {
                 frames: start..end,
                 threads,
+                whole: lanes == 0,
                 packets,
                 made,
             });
@@ -383,6 +404,7 @@ impl Segments {
             }));
         }
         self.started = 0;
+        self.gpu = false;
     }
 
     pub fn frame(&mut self, n: i32, cancel: &Cancel) -> Result<frame::Video> {
