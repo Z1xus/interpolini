@@ -212,7 +212,7 @@ pub fn save_preferences(ui: &App) {
         .collect();
     let prefs = ui.get_prefs();
     let mut text = format!(
-        "theme: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\nprojects: {}\nautosave: {}\nasksave: {}\nreopen: {}\nconfirm: {}\nmemory: {}\nfolder: {}\npreset: {}\n",
+        "theme: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\nprojects: {}\nautosave: {}\nasksave: {}\nreopen: {}\nconfirm: {}\nmemory: {}\nzoom: {}\nfolder: {}\npreset: {}\n",
         ui.get_theme(),
         yes(ui.get_light()),
         yes(ui.get_separate()),
@@ -229,6 +229,7 @@ pub fn save_preferences(ui: &App) {
         yes(prefs.reopen),
         yes(prefs.confirm_delete),
         prefs.memory,
+        prefs.zoom,
         prefs.folder,
         prefs.preset,
     );
@@ -258,6 +259,10 @@ pub fn load_prefs(ui: &App, saved: &str) {
         reopen: value("reopen: ") == Some("yes"),
         confirm_delete: value("confirm: ") == Some("yes"),
         memory: number("memory: ", 0).max(0),
+        zoom: value("zoom: ")
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(1.0f32)
+            .clamp(0.1, 4.0),
         folder: value("folder: ").unwrap_or_default().into(),
         preset: value("preset: ").unwrap_or("default").into(),
     });

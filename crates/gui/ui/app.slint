@@ -77,7 +77,7 @@ export component App inherits Window {
     in property <[string]> models;
     in property <string> tensorrt-need;
     in property <bool> tensorrt-fixable;
-    in-out property <Prefs> prefs: { projects: false, autosave: 5, ask-save: true };
+    in-out property <Prefs> prefs: { projects: false, autosave: 5, ask-save: true, zoom: 1 };
     in property <bool> modified;
     in property <string> project-name: "Untitled";
     in property <[Recent]> recent;
@@ -427,6 +427,7 @@ export component App inherits Window {
                     root.switched();
                 }
                 held: root.held;
+                zoom: root.prefs.zoom;
                 viewed => {
                     root.viewed();
                 }

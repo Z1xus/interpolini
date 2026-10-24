@@ -47,7 +47,8 @@ export component Stage inherits Rectangle {
     in property <image> original;
     in-out property <string> view;
     in property <bool> held;
-    property <float> scale: 1;
+    in property <float> zoom: 1;
+    property <float> scale: root.zoom;
     property <length> pan-x;
     property <length> pan-y;
     in property <[Piece]> art;
@@ -158,6 +159,12 @@ export component Stage inherits Rectangle {
             }
         }
     }
+    changed zoom => {
+        root.scale = root.zoom;
+        root.pan-x = 0;
+        root.pan-y = 0;
+        root.viewed();
+    }
     // a short light on the picture after a frame is saved
     in-out property <bool> flash;
     background: Theme.void;
@@ -258,7 +265,7 @@ export component Stage inherits Rectangle {
                 }
             }
             double-clicked => {
-                root.scale = 1;
+                root.scale = root.zoom;
                 root.pan-x = 0;
                 root.pan-y = 0;
                 root.viewed();

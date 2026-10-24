@@ -1,4 +1,4 @@
-import { Action, Button, Cell, Dropdown, FormRow, Segment, Switch, Tabs, Theme } from "widgets.slint";
+import { Action, Button, Cell, Dropdown, FormRow, Segment, Slider, Switch, Tabs, Theme } from "widgets.slint";
 import { Download, Parts } from "components.slint";
 import { Prefs } from "types.slint";
 
@@ -118,6 +118,28 @@ export component Preferences inherits Window {
                         root.prefs.memory = choice == "Auto" ? 0 : choice == "512 MB" ? 512 : choice.to-float() * 1024;
                         root.changed();
                     }
+                }
+            }
+            FormRow {
+                label: "Default preview zoom";
+                Slider {
+                    label: "Default preview zoom";
+                    minimum: 0.1;
+                    maximum: 4;
+                    value: root.prefs.zoom;
+                    changed(zoom) => {
+                        root.prefs.zoom = round(zoom * 10) / 10;
+                        root.changed();
+                    }
+                }
+                Text {
+                    width: 38px;
+                    text: root.prefs.zoom == 1 ? "Fit" : "\{root.prefs.zoom}×";
+                    color: Theme.ink;
+                    font-size: 12px;
+                    font-family: "monospace";
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
                 }
             }
             FormRow {
