@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.24
+- Fixed: GUI going poof when turning on blending, the CLI is no longer the favorite child
+
 ## 0.1.23
 - Faster: SVP on medium, up to 2x, also on 4:4:4
 - Faster: GPU decoding, also for blend only
