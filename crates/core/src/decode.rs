@@ -412,6 +412,7 @@ impl Decoder {
             self.by = by;
             self.meta.width = ((self.full.0 / by) & !3).max(4);
             self.meta.height = ((self.full.1 / by) & !3).max(4);
+            self.scaler = None;
         }
         self
     }
