@@ -636,7 +636,7 @@ export component Panel inherits Rectangle {
                     }
                 }
                 if masking.peel: Note {
-                    text: "An advanced algorithm that learns the HUD and draws it back after interpolation.";
+                    text: "Removes the HUD before interpolation and restores it after. Handles transparency.";
                 }
                 if masking.peel: SliderRow {
                     label: "Limit";
@@ -649,7 +649,7 @@ export component Panel inherits Rectangle {
                     }
                 }
                 if !masking.peel: Note {
-                    text: "Stops static parts, like the HUD, from smearing.";
+                    text: "Pixels that don't change are faded instead of warped.";
                 }
                 if !masking.peel: SliderRow {
                     label: "Limit";
