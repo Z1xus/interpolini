@@ -412,7 +412,6 @@ impl Decoder {
             self.by = by;
             self.meta.width = ((self.full.0 / by) & !3).max(4);
             self.meta.height = ((self.full.1 / by) & !3).max(4);
-            self.scaler = None;
         }
         self
     }
@@ -649,19 +648,25 @@ impl Decoder {
     }
 
     fn scaler(&mut self) -> Result<Option<&mut scaling::Context>> {
-        let format = self.frame.format();
-        if native(format, self.meta.yuv444) && self.by == 1 {
+        let (format, width, height) =
+            (self.frame.format(), self.frame.width(), self.frame.height());
+        if native(format, self.meta.yuv444) && self.by == 1 && (width, height) == self.full {
             return Ok(None);
         }
-        if self.scaler.is_none() {
-            let Meta { width, height, .. } = self.meta;
-            let (full_width, full_height) = self.full;
+        // a clip can change its size or format midway, and shrink changes the size of the output
+        let fits = |scaler: &scaling::Context| {
+            let (input, output) = (scaler.input(), scaler.output());
+            (input.format, input.width, input.height) == (format, width, height)
+                && (output.width, output.height) == (self.meta.width, self.meta.height)
+        };
+        if !self.scaler.as_ref().is_some_and(fits) {
             let file = Meta {
-                width: full_width,
-                height: full_height,
+                width,
+                height,
                 ..self.meta
             };
-            self.scaler = Some(file.scaler(format, self.meta.pixel(), width, height)?);
+            let pixel = self.meta.pixel();
+            self.scaler = Some(file.scaler(format, pixel, self.meta.width, self.meta.height)?);
         }
         Ok(self.scaler.as_mut())
     }
@@ -669,7 +674,7 @@ impl Decoder {
     fn store(&mut self, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
         let (width, height) = (self.meta.width as usize, self.meta.height as usize);
         let source = unsafe { &*self.frame.as_ptr() };
-        let rows = self.full.1 as i32;
+        let rows = self.frame.height() as i32;
         if let Some(scaler) = self.scaler()? {
             let planes = [planes[0], planes[1], planes[2], std::ptr::null_mut()];
             let strides = [strides[0] as i32, strides[1] as i32, strides[2] as i32, 0];
@@ -778,9 +783,7 @@ impl Decoder {
 
     pub fn picture(&mut self, n: i32) -> Result<frame::Video> {
         self.with(n, |decoder| {
-            let format = decoder.frame.format();
-            let whole = decoder.by == 1;
-            if whole && native(format, decoder.meta.yuv444) {
+            if decoder.scaler()?.is_none() {
                 return Ok(share(&decoder.frame));
             }
             let Meta { width, height, .. } = decoder.meta;
