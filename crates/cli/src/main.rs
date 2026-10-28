@@ -368,7 +368,8 @@ fn render() -> ExitCode {
             failed.store(true, Ordering::Relaxed);
         }
         if lines {
-            println!("{}", json(&event, &jobs));
+            // a reader that went away must not stop the render
+            let _ = writeln!(std::io::stdout(), "{}", json(&event, &jobs));
         } else {
             print(&event, &jobs, live);
         }
