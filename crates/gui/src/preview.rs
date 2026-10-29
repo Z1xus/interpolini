@@ -12,8 +12,7 @@ use interpolini_core::budget::{self, Class};
 use interpolini_core::config::Config;
 use interpolini_core::work::{self, Cancel};
 use interpolini_core::{
-    Canvas, Event, Fade, Graph, Image, Job, Place, Setup, Sink, Sound, Source, Sources, estimate,
-    peaks,
+    Canvas, Event, Fade, Image, Job, Place, Setup, Sink, Sound, Source, Sources, estimate, peaks,
 };
 use slint::{Model, Rgba8Pixel, SharedPixelBuffer, Weak};
 
@@ -925,18 +924,10 @@ pub fn thumbs(
     ui: Weak<App>,
     key: &str,
     clip: PathBuf,
-    config: Config,
     places: impl Fn() -> Vec<(Option<usize>, usize)> + Send + Clone + 'static,
 ) {
     services::background(key, move |cancel| {
-        let Ok(graph) = Graph::open(&clip, &source(&config), &|_| {}, cancel) else {
-            return;
-        };
-        for thumb in 0..THUMBS {
-            let frame = (thumb * graph.info.frames as usize / THUMBS) as i32;
-            let Ok(image) = graph.preview(frame, 160, cancel) else {
-                return;
-            };
+        let _ = interpolini_core::thumbs(&clip, THUMBS, 160, cancel, |thumb, image| {
             let (places, pixels, cancel) = (places.clone(), pixels(&image), cancel.clone());
             let _ = ui.upgrade_in_event_loop(move |ui| {
                 // the clip can move or go away while its thumbnails are made
@@ -950,7 +941,7 @@ pub fn thumbs(
                     row.thumbs.set_row_data(thumb, shown.clone());
                 }
             });
-        }
+        });
     });
 }
 
@@ -962,10 +953,12 @@ pub fn differences(
     part: (f64, f64),
     done: impl FnOnce(&App, Vec<Vec<f32>>) + Send + 'static,
 ) {
-    services::background(key, move |cancel| {
-        if let Ok(differences) = interpolini_core::differences(&clip, part.0, part.1, cancel) {
-            let _ = ui.upgrade_in_event_loop(move |ui| done(&ui, differences));
-        }
+    services::with(|services| {
+        services.differences.submit(key, move |cancel| {
+            if let Ok(differences) = interpolini_core::differences(&clip, part.0, part.1, cancel) {
+                let _ = ui.upgrade_in_event_loop(move |ui| done(&ui, differences));
+            }
+        })
     });
 }
 

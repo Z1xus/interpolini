@@ -318,23 +318,11 @@ pub fn fill(ui: &App, state: &Shared) {
                 .collect::<Vec<_>>()
         };
         let bare = |image: Option<slint::Image>| image.is_none_or(|image| image.size().width == 0);
-        if let Some((index, picture)) = picture {
-            if rows
-                .row_data(index)
-                .is_some_and(|row| bare(row.thumbs.row_data(0)))
-            {
-                let (clip, config) = (picture.clip.clone(), picture.config.clone());
-                preview::thumbs(
-                    ui.as_weak(),
-                    &format!("thumbs {link}"),
-                    clip,
-                    config,
-                    places.clone(),
-                );
-            }
-            if !picture.still && picture.keys.is_empty() {
-                keys(ui.as_weak(), Arc::clone(state), picture.clip.clone());
-            }
+        if let Some((_, picture)) = picture
+            && !picture.still
+            && picture.keys.is_empty()
+        {
+            keys(ui.as_weak(), Arc::clone(state), picture.clip.clone());
         }
         let sounds = guard.entries.iter().enumerate();
         let mut sounds = sounds.filter(|(_, entry)| own(entry) && entry.audio.is_some());
@@ -344,7 +332,17 @@ pub fn fill(ui: &App, state: &Shared) {
         });
         if silent && !any.still {
             let key = format!("waves {link}");
+            let places = places.clone();
             preview::waves(ui.as_weak(), &key, any.clip.clone(), any.seconds, places);
+        }
+        if let Some((index, picture)) = picture {
+            let missing = rows
+                .row_data(index)
+                .is_some_and(|row| bare(row.thumbs.row_data(0)));
+            if missing {
+                let key = format!("thumbs {link}");
+                preview::thumbs(ui.as_weak(), &key, picture.clip.clone(), places);
+            }
         }
     }
 }
@@ -395,8 +393,8 @@ fn keys(ui: Weak<App>, state: Shared, clip: PathBuf) {
 
 pub fn forget(state: &State, gone: &Entry) {
     services::with(|services| {
+        services.differences.cancel(&format!("diff {}", gone.id));
         let pool = &services.background;
-        pool.cancel(&format!("diff {}", gone.id));
         if !state
             .entries
             .iter()
@@ -426,7 +424,7 @@ pub fn measure(ui: &App, state: &Shared) {
             f64::from(entry.cut.1) * entry.seconds,
         );
         let key = format!("diff {id}");
-        services::with(|services| services.background.cancel(&key));
+        services::with(|services| services.differences.cancel(&key));
         preview::differences(
             ui.as_weak(),
             &key,
