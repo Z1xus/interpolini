@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.26
+- New: Preview buffering
+- Faster: High fps previews
+- Faster: Timeline loading
+- Changed: Smoother preview audio
+
 ## 0.1.25
 - Fixed: TensorRT crashing on Windows, it worked on my machine (my machine runs linux)
 - Fixed: Crash on clips that change size midway
