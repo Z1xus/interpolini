@@ -610,7 +610,8 @@ impl Decoder {
     }
 
     fn seek(&mut self, n: i32) -> Result<()> {
-        let target = self.start + (f64::from(n) / self.frames_per_tick) as i64;
+        // mid-frame, so rounding cannot miss a keyframe at n
+        let target = self.start + ((f64::from(n) + 0.5) / self.frames_per_tick) as i64;
         let code = unsafe {
             ffi::av_seek_frame(
                 self.input.as_mut_ptr(),
@@ -637,14 +638,16 @@ impl Decoder {
             return Err("the file has no index".into());
         }
         self.seek(n)?;
-        loop {
+        let key = loop {
             self.cancel.check()?;
             next(&mut self.packet, &mut self.input)?;
             if self.packet.stream() == self.stream && self.packet.is_key() {
                 let time = self.packet.pts().or(self.packet.dts()).ok_or("no time")?;
-                return Ok(((time - self.start) as f64 * self.frames_per_tick).round() as i32);
+                break ((time - self.start) as f64 * self.frames_per_tick).round() as i32;
             }
-        }
+        };
+        self.seek(key)?;
+        Ok(key)
     }
 
     fn scaler(&mut self) -> Result<Option<&mut scaling::Context>> {

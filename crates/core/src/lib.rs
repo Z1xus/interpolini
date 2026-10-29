@@ -53,7 +53,7 @@ pub use encode::{effort, find_encoders};
 pub use error::{Error, Result};
 pub use estimate::estimate;
 pub use event::{Event, Sink};
-pub use graph::{Graph, Image, Info, Plan, lossless};
+pub use graph::{Graph, Image, Info, Plan, lossless, thumbs};
 pub use queue::{Job, run, sequence, sounds};
 pub use rife::shutdown;
 pub use tensorrt::{Support, libraries, plugin, support};

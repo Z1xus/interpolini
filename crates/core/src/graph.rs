@@ -464,6 +464,33 @@ impl Graph {
     }
 }
 
+pub fn thumbs(
+    clip: &Path,
+    count: usize,
+    width: u32,
+    cancel: &Cancel,
+    mut each: impl FnMut(usize, Image),
+) -> Result<()> {
+    let mut decoder = Decoder::threaded(clip, 1)?.following(&Follow::new(cancel));
+    let meta = decoder.meta();
+    let half = meta.frames / count as i32 / 2;
+    let scaler = Scaler::new();
+    for slot in 0..count {
+        cancel.check()?;
+        let n = (slot * meta.frames as usize / count) as i32;
+        let around = [n, (n + half).min(meta.frames - 1)];
+        let near = around
+            .into_iter()
+            .filter_map(|at| decoder.key(at).ok())
+            .filter(|key| (key - n).abs() <= half)
+            .min_by_key(|key| (key - n).abs());
+        let mut picture = decoder.picture(near.unwrap_or(n))?;
+        meta.tag(&mut picture);
+        each(slot, image(&scaler, &picture, width)?);
+    }
+    Ok(())
+}
+
 pub fn image(scaler: &Scaler, picture: &frame::Video, width: u32) -> Result<Image> {
     let width = width.min(picture.width()) & !1;
     let height =
