@@ -385,6 +385,10 @@ impl<T: Send + 'static> Receiver<T> {
 
     // none when drained and the senders are gone
     pub fn recv(&self, cancel: &Cancel) -> Result<Option<T>> {
+        Ok(self.recv_until(cancel, None)?.flatten())
+    }
+
+    pub fn recv_until(&self, cancel: &Cancel, until: Option<Instant>) -> Result<Option<Option<T>>> {
         let lane = Arc::clone(&self.0);
         let _wake = cancel.wake(move || {
             let _line = locked(&lane.line);
@@ -394,17 +398,28 @@ impl<T: Send + 'static> Receiver<T> {
         loop {
             if let Some(item) = line.items.pop_front() {
                 self.0.writable.notify_one();
-                return Ok(Some(item));
+                return Ok(Some(Some(item)));
             }
             if line.closed {
-                return Ok(None);
+                return Ok(Some(None));
             }
             cancel.check()?;
-            line = self
-                .0
-                .readable
-                .wait(line)
-                .unwrap_or_else(|p| p.into_inner());
+            line = match until.map(|until| until.saturating_duration_since(Instant::now())) {
+                Some(left) if left.is_zero() => return Ok(None),
+                Some(left) => {
+                    let (line, _) = self
+                        .0
+                        .readable
+                        .wait_timeout(line, left)
+                        .unwrap_or_else(|p| p.into_inner());
+                    line
+                }
+                None => self
+                    .0
+                    .readable
+                    .wait(line)
+                    .unwrap_or_else(|p| p.into_inner()),
+            };
         }
     }
 }

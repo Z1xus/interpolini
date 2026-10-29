@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -23,7 +25,8 @@ const WIDTH: u32 = 1280;
 const SHOWN_FPS: f64 = 60.0;
 const AHEAD: usize = 8;
 const LEAD: Duration = Duration::from_millis(50);
-const LATE: Duration = Duration::from_millis(100);
+// 3 s at 60 fps
+const FILL: usize = 180;
 // the seconds before the end of a stretch when the clips of the next one open
 const EARLY: f64 = 2.0;
 pub const THUMBS: usize = 8;
@@ -31,6 +34,7 @@ const WAVE: usize = 120;
 // the rows of a wave, which the window stretches to the height of the track
 const STRIP: u32 = 64;
 
+#[derive(Clone)]
 pub struct Layer {
     pub clip: PathBuf,
     pub config: Config,
@@ -45,6 +49,7 @@ pub struct Layer {
     pub missing: Option<(u32, u32)>,
 }
 
+#[derive(Clone)]
 pub struct Stretch {
     // the clips that show, the lowest one first
     pub layers: Vec<Layer>,
@@ -60,6 +65,7 @@ pub enum View {
     Original,
 }
 
+#[derive(Clone)]
 pub struct Show {
     // a playback has all stretches up to a gap, a paused picture has one
     pub parts: Vec<Stretch>,
@@ -95,13 +101,16 @@ struct Frame {
 }
 
 pub fn source(config: &Config) -> Config {
-    let mut config = config.clone();
-    config.dedup.enabled = false;
-    config.pre.enabled = false;
-    config.interpolation.enabled = false;
-    config.blending.enabled = false;
-    config.color.enabled = false;
-    config
+    let mut plain = Config {
+        shrink: config.shrink,
+        ..Config::default()
+    };
+    plain.dedup.enabled = false;
+    plain.pre.enabled = false;
+    plain.interpolation.enabled = false;
+    plain.blending.enabled = false;
+    plain.color.enabled = false;
+    plain
 }
 
 // a decoded frame does not depend on the encode settings, so they stay out of the key
@@ -312,6 +321,7 @@ fn warn(ui: &Weak<App>) -> impl Fn(Event) + Sync + '_ {
 
 fn fail(ui: &Weak<App>, error: interpolini_core::Error) {
     let _ = ui.upgrade_in_event_loop(move |ui| {
+        LAST.take();
         ui.set_failed(true);
         ui.set_status(error.to_string().into());
         ui.set_playing(false);
@@ -380,7 +390,7 @@ struct Play {
     view: View,
     total: f64,
     width: u32,
-    ahead: usize,
+    ahead: (usize, usize),
     held: Vec<Key>,
     setup: Setup,
 }
@@ -392,12 +402,13 @@ fn widest(size: (u32, u32)) -> u32 {
     ((pixels as f64 * wide / high).sqrt() as u32).max(WIDTH)
 }
 
-fn ahead(size: (u32, u32), view: View) -> usize {
+fn ahead(size: (u32, u32), view: View) -> (usize, usize) {
     let (wide, high) = (u64::from(size.0.max(1)), u64::from(size.1.max(1)));
     let frame = u64::from(WIDTH) * (u64::from(WIDTH) * high / wide + 1) * 4;
     let copies = if view == View::Both { 2 } else { 1 };
-    let room = budget::bytes(Class::Interactive) as u64 / 8 / (frame * copies);
-    (room as usize).clamp(2, AHEAD)
+    let fits = (budget::bytes(Class::Interactive) as u64 / 4 / (frame * copies)) as usize;
+    let capacity = fits.clamp(2, AHEAD);
+    (capacity, fits.clamp(capacity, FILL))
 }
 
 impl Worker {
@@ -546,7 +557,51 @@ fn run(worker: &Arc<Mutex<Worker>>, show: Show, cancel: &Cancel) {
     }
 }
 
+thread_local! {
+    static LAST: RefCell<Option<Show>> = const { RefCell::new(None) };
+}
+
+fn same(a: &Show, b: &Show) -> bool {
+    let original = a.view == View::Original;
+    let layer = |a: &Layer, b: &Layer| {
+        a.clip == b.clip
+            && (a.config == b.config || original && plain(a) == plain(b))
+            && a.still == b.still
+            && a.place == b.place
+            && a.fade == b.fade
+            && a.fills == b.fills
+            && a.missing == b.missing
+            && a.length == b.length
+            && (a.start - a.inside - (b.start - b.inside)).abs() < 1e-6
+    };
+    let stretch = |a: &Stretch, b: &Stretch| {
+        a.end == b.end
+            && a.layers.len() == b.layers.len()
+            && a.layers.iter().zip(&b.layers).all(|(a, b)| layer(a, b))
+    };
+    a.canvas == b.canvas
+        && a.setup == b.setup
+        && a.view == b.view
+        && a.width == b.width
+        && a.size == b.size
+        && a.total == b.total
+        && a.quiet == b.quiet
+        && a.save == b.save
+        && a.parts.len() == b.parts.len()
+        && a.parts.iter().zip(&b.parts).all(|(a, b)| stretch(a, b))
+}
+
 pub fn show(show: Show) {
+    let kept = LAST.with_borrow_mut(|last| {
+        let kept = show.play && last.as_ref().is_some_and(|last| same(last, &show));
+        if !kept {
+            *last = show.play.then(|| show.clone());
+        }
+        kept
+    });
+    if kept {
+        return;
+    }
     services::with(|services| {
         let worker = Arc::clone(&services.worker);
         services
@@ -687,7 +742,7 @@ fn compose_all(
             reach.notify();
         }
         let (details, fps) = details(open, &stretch.layers, view == View::Original, &setup);
-        let step = (fps / SHOWN_FPS).round().max(1.0) / fps;
+        let step = 1.0 / fps.min(SHOWN_FPS);
         let layers = &stretch.layers;
         for moved in (0..).map(|index| f64::from(index) * step) {
             let Ok((image, before)) = pair(open, canvas, layers, view, moved, width, stop) else {
@@ -718,40 +773,98 @@ fn show_frames(
     ui: &Weak<App>,
     queue: &work::Receiver<Frame>,
     cancel: &Cancel,
-    (time, total): (f64, f64),
+    (time, end, total): (f64, f64, f64),
+    (ahead, fill): (usize, usize),
 ) -> bool {
     let mut clock: Option<(Instant, f64)> = None;
-    let mut started = None;
-    let mut shown = 0;
+    let (mut begun, mut made) = (None, 0);
+    let mut held = VecDeque::new();
+    let mut room = ahead;
+    let mut until = Instant::now();
+    let mut shown = VecDeque::new();
     loop {
-        let frame = match queue.recv(cancel) {
-            Ok(Some(frame)) => frame,
-            Ok(None) => return !cancel.stopped(),
-            Err(_) => return false,
+        let (frame, (at, from), first) = match clock {
+            None => {
+                while held.len() < room {
+                    let step = match queue.recv(cancel) {
+                        Ok(Some(frame)) => {
+                            let step = frame.step;
+                            held.push_back(frame);
+                            step
+                        }
+                        Ok(None) => break,
+                        Err(_) => return false,
+                    };
+                    let begun: &Instant = begun.get_or_insert_with(Instant::now);
+                    let rate = (made + held.len() - 1) as f64 / begun.elapsed().as_secs_f64();
+                    let left = end - time - held[0].moved;
+                    let short = (1.0 / step - rate).max(0.0) * left;
+                    if held.len() >= ahead + short as usize {
+                        break;
+                    }
+                    if room > ahead {
+                        let progress = held.len() as f32 / room as f32;
+                        note(ui, "Buffering…".into(), Note::Sticky, progress);
+                    }
+                }
+                let Some(frame) = held.pop_front() else {
+                    return !cancel.stopped();
+                };
+                let anchor = (Instant::now() + LEAD, frame.moved);
+                clock = Some(anchor);
+                (frame, anchor, true)
+            }
+            Some(anchor) => {
+                while held.len() < room {
+                    let Some(frame) = queue.try_recv() else {
+                        break;
+                    };
+                    held.push_back(frame);
+                }
+                let frame = match held.pop_front() {
+                    Some(frame) => frame,
+                    None => match queue.recv_until(cancel, Some(until)) {
+                        Ok(Some(Some(frame))) => frame,
+                        Ok(Some(None)) => return !cancel.stopped(),
+                        Ok(None) => {
+                            clock = None;
+                            let cancel = cancel.clone();
+                            let _ = ui.upgrade_in_event_loop(move |_| {
+                                if !cancel.stopped() {
+                                    services::with(|services| services.audio.stop());
+                                }
+                            });
+                            room = fill;
+                            continue;
+                        }
+                        Err(_) => return false,
+                    },
+                };
+                (frame, anchor, false)
+            }
         };
-        let due = clock.map(|(at, from)| at + Duration::from_secs_f64(frame.moved - from));
-        // the sound starts with the first picture, and again after pictures that are too late
-        let first = due.is_none_or(|due| due + LATE < Instant::now());
-        let due = match first {
-            true => Instant::now() + LEAD,
-            false => due.unwrap_or_else(Instant::now),
-        };
-        if first {
-            clock = Some((due, frame.moved));
-        }
+        let due = at + Duration::from_secs_f64((frame.moved - from).max(0.0));
         if !cancel.pause(due) {
             return false;
         }
-        let started: Instant = *started.get_or_insert_with(Instant::now);
+        until = due + Duration::from_secs_f64(frame.step);
+        let now = Instant::now();
+        shown.push_back(now);
+        while shown
+            .front()
+            .is_some_and(|at| now - *at > Duration::from_secs(1))
+        {
+            shown.pop_front();
+        }
         let position = ((time + frame.moved) / total) as f32;
-        let speed = f64::from(shown) / started.elapsed().as_secs_f64().max(0.001);
         let rate = 1.0 / frame.step;
-        let text = match shown > 0 {
+        let speed = (shown.len() - 1) as f64 / (now - shown[0]).as_secs_f64().max(0.001);
+        let text = match shown.len() > 1 {
             true => format!("{:.0} of {rate:.0} fps", speed.min(rate)),
             false => String::new(),
         };
         post(ui, cancel, frame, text, Some(position), first);
-        shown += 1;
+        made += 1;
     }
 }
 
@@ -768,7 +881,7 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
     } = play;
     let time = parts[0].time;
     let parts = Arc::new(parts);
-    let (pictures, queue) = work::channel(ahead);
+    let (pictures, queue) = work::channel(ahead.0);
     let (opened, ready) = channel();
     let (reach, stop) = (Arc::new(Reach::default()), Cancel::default());
     budget::preview(true);
@@ -789,7 +902,8 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
             compose_all(&worker, play, &reach, &stop, &ready, &pictures)
         }
     });
-    let finished = show_frames(&ui, &queue, cancel, (time, total));
+    let end = parts[parts.len() - 1].end;
+    let finished = show_frames(&ui, &queue, cancel, (time, end, total), ahead);
     stop.stop();
     drop(queue);
     reach.notify();
@@ -798,6 +912,7 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
     budget::preview(false);
     if finished {
         let _ = ui.upgrade_in_event_loop(|ui| {
+            LAST.take();
             ui.set_speed("".into());
             say(&ui, String::new(), Note::Sticky, -1.0);
             ui.invoke_ended();
