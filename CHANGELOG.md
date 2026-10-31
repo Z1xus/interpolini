@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.27
+- New: Clip speed
+- New: Box and range selection
+- New: Ripple delete
+- New: Corner fades
+- New: Snapping toggle
+- New: Track menu
+- New: Keyboard control
+- New: Screen reader support
+- Changed: Clips stop at clips
+- Changed: Steady timeline and playhead
+- Changed: New transport layout
+- Changed: Cleaner project settings
+- Fixed: System smooth scroll
+- Fixed: Black preview line
+
 ## 0.1.26
 - New: Preview buffering
 - Faster: High fps previews
