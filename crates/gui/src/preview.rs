@@ -43,6 +43,7 @@ pub struct Layer {
     pub start: f64,
     pub inside: f64,
     pub length: f64,
+    pub speed: f64,
     pub fade: Fade,
     pub fills: bool,
     pub missing: Option<(u32, u32)>,
@@ -76,7 +77,7 @@ pub struct Show {
     pub view: View,
     pub width: u32,
     pub size: (u32, u32),
-    pub total: f64,
+    pub span: f64,
     // a frame to save at full size, the original or the result
     pub save: Option<bool>,
 }
@@ -235,7 +236,9 @@ fn compose(
     for layer in &layers[top.unwrap_or(0)..] {
         let config = used(layer, original);
         let source = open.get_mut(&layer.clip, &config);
-        if let Some(Ok(picture)) = source.map(|source| source.at(layer.start + moved, cancel)) {
+        if let Some(Ok(picture)) =
+            source.map(|source| source.at(layer.start + moved * layer.speed, cancel))
+        {
             pictures.push((picture, layer.place, level(layer)));
         }
     }
@@ -269,14 +272,16 @@ fn pair(
 fn details(open: &Sources, layers: &[Layer], original: bool, setup: &Setup) -> (String, f64) {
     let mut graphs = layers.iter().rev().filter_map(|layer| {
         let source = open.get(&layer.clip, &used(layer, original))?;
-        source.graph()
+        source.graph().map(|graph| (graph, layer.speed))
     });
-    let Some(graph) = graphs.next() else {
+    let Some((graph, speed)) = graphs.next() else {
         return (String::new(), 30.0);
     };
     let info = graph.info;
-    let fps = setup.fps.unwrap_or(info.fps.0 as f64 / info.fps.1 as f64);
-    let source = graph.source_fps();
+    let fps = setup
+        .fps
+        .unwrap_or(info.fps.0 as f64 / info.fps.1 as f64 * speed);
+    let source = graph.source_fps() * speed;
     let rate = match source.round() == fps.round() {
         true => format!("{fps:.0} fps"),
         false => format!("{source:.0} to {fps:.0} fps"),
@@ -387,7 +392,7 @@ struct Play {
     ui: Weak<App>,
     parts: Vec<Stretch>,
     view: View,
-    total: f64,
+    span: f64,
     width: u32,
     ahead: (usize, usize),
     held: Vec<Key>,
@@ -436,7 +441,7 @@ impl Worker {
             view,
             width,
             size,
-            total,
+            span,
             save,
         } = show;
         let Some(first) = parts.first() else {
@@ -521,7 +526,7 @@ impl Worker {
             return Some(Play {
                 ui: ui.clone(),
                 view,
-                total,
+                span,
                 width: width.min(WIDTH),
                 ahead: ahead(size, view),
                 held: open.keys(),
@@ -571,7 +576,8 @@ fn same(a: &Show, b: &Show) -> bool {
             && a.fills == b.fills
             && a.missing == b.missing
             && a.length == b.length
-            && (a.start - a.inside - (b.start - b.inside)).abs() < 1e-6
+            && a.speed == b.speed
+            && (a.start - a.inside * a.speed - (b.start - b.inside * b.speed)).abs() < 1e-6
     };
     let stretch = |a: &Stretch, b: &Stretch| {
         a.end == b.end
@@ -583,7 +589,7 @@ fn same(a: &Show, b: &Show) -> bool {
         && a.view == b.view
         && a.width == b.width
         && a.size == b.size
-        && a.total == b.total
+        && a.span == b.span
         && a.quiet == b.quiet
         && a.save == b.save
         && a.parts.len() == b.parts.len()
@@ -772,7 +778,7 @@ fn show_frames(
     ui: &Weak<App>,
     queue: &work::Receiver<Frame>,
     cancel: &Cancel,
-    (time, end, total): (f64, f64, f64),
+    (time, end, span): (f64, f64, f64),
     (ahead, fill): (usize, usize),
 ) -> bool {
     let mut clock: Option<(Instant, f64)> = None;
@@ -855,7 +861,7 @@ fn show_frames(
         {
             shown.pop_front();
         }
-        let position = ((time + frame.moved) / total) as f32;
+        let position = ((time + frame.moved) / span) as f32;
         let rate = 1.0 / frame.step;
         let speed = (shown.len() - 1) as f64 / (now - shown[0]).as_secs_f64().max(0.001);
         let text = match shown.len() > 1 {
@@ -872,7 +878,7 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
         ui,
         parts,
         view,
-        total,
+        span,
         width,
         ahead,
         held,
@@ -902,7 +908,7 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
         }
     });
     let end = parts[parts.len() - 1].end;
-    let finished = show_frames(&ui, &queue, cancel, (time, end, total), ahead);
+    let finished = show_frames(&ui, &queue, cancel, (time, end, span), ahead);
     stop.stop();
     drop(queue);
     reach.notify();

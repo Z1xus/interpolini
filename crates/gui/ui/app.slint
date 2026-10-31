@@ -1,5 +1,5 @@
-import { Button, Piece, Theme, Tip } from "widgets.slint";
-import { Clip, Fact, Family, Ghost, Lane, Note, Prefs, Recent, Sections, Settings } from "types.slint";
+import { Button, Keyboard, Modal, Piece, Popups, Theme, Tip } from "widgets.slint";
+import { Clip, Family, Ghost, Lane, Note, Prefs, Recent, Sections, Settings } from "types.slint";
 import { Timeline } from "timeline.slint";
 import { Menu } from "menu.slint";
 import { Code, Panel } from "panel.slint";
@@ -12,7 +12,7 @@ import { Transport } from "transport.slint";
 
 export { Change, Code, Sheet, Preferences, ProjectSettings, Update }
 export { Note, Recent }
-export { Piece, System, Theme } from "widgets.slint";
+export { Keyboard, Piece, System, Theme } from "widgets.slint";
 
 export component App inherits Window {
     in-out property <[Clip]> clips;
@@ -24,6 +24,7 @@ export component App inherits Window {
     in property <int> link: -1;
     in property <length> content;
     in property <float> extent;
+    in property <float> end;
     in-out property <bool> playing;
     in-out property <float> volume: 1;
     in-out property <bool> muted;
@@ -64,6 +65,7 @@ export component App inherits Window {
     in property <string> speed;
     in property <string> rate;
     in property <string> timecode;
+    in property <string> duration;
     in property <[float]> weights;
     in property <string> summary;
     in property <[string]> configs;
@@ -77,8 +79,9 @@ export component App inherits Window {
     in property <[string]> models;
     in property <string> tensorrt-need;
     in property <bool> tensorrt-fixable;
-    in-out property <Prefs> prefs: { projects: false, autosave: 5, ask-save: true, zoom: 1 };
+    in-out property <Prefs> prefs: { projects: false, autosave: 5, ask-save: true, zoom: 1, snapping: true, scrolling: "system" };
     in property <bool> modified;
+    in property <float> snapped: -1;
     in property <string> project-name: "Untitled";
     in property <[Recent]> recent;
     in property <int> missing;
@@ -106,7 +109,7 @@ export component App inherits Window {
         root.moded();
     }
     callback moded();
-    in property <[Fact]> left;
+    in property <string> left;
     in property <string> estimate;
     in-out property <bool> separate;
     in-out property <bool> preview-off;
@@ -119,23 +122,33 @@ export component App inherits Window {
 
     callback add-clips();
     callback remove-clip();
+    callback ripple-clip();
     callback replace-clip(int);
     callback close-clips();
     callback step(int, float);
     callback hop(bool);
+    callback fit-timeline();
     callback mark(string);
+    callback select-track(bool, int);
+    callback jump-clip(int);
+    callback move-clips(float);
+    callback gap-here();
+    callback place-key();
     callback undo();
     callback redo();
-    callback trimmed(int, float, bool);
+    callback trimmed(int, float, bool, bool);
     callback tune(int, string, float, bool);
     callback curve(int, string, string, bool);
+    callback retime(int, float);
     callback joint(int, bool) -> int;
+    callback scrub-start();
+    callback scrub-done();
     callback trim-start();
     callback trim-done();
     callback place-start();
     callback placed();
     callback grab(int, float, bool);
-    callback drag(float, length, float);
+    callback drag(float, length, float, bool);
     callback release();
     callback resized();
     callback close-gaps();
@@ -158,6 +171,13 @@ export component App inherits Window {
     }
     callback select(int);
     callback extend(int);
+    callback range(int);
+    callback select-all();
+    callback lasso-start(bool);
+    callback lasso(float, float, length, length);
+    callback lasso-end();
+    callback gap(float, length) -> bool;
+    callback close-gap(float, length);
     callback lane-height(bool, int, length);
     callback lane-wheel(length, length);
     callback add-lane(bool);
@@ -196,8 +216,37 @@ export component App inherits Window {
     in property <string> rendered;
     callback reveal(string);
 
+    function toggle() {
+        root.prefs.snapping = !root.prefs.snapping;
+        root.prefs-changed();
+    }
     public function blur() {
-        keys.focus();
+        if Popups.open == 0 {
+            keys.focus();
+        }
+    }
+    property <Clip> nudged;
+    function place(dx: length, dy: length, grow: float) {
+        root.place-key();
+        root.nudged = root.clips[root.framed];
+        root.nudged.x = root.nudged.x + dx / root.drawn;
+        root.nudged.y = root.nudged.y + dy / (root.drawn / (root.preview.height > 0 ? root.preview.width / root.preview.height : 16 / 9));
+        root.nudged.zoom-x = clamp(root.nudged.zoom-x * grow, 0.05, 8);
+        root.nudged.zoom-y = clamp(root.nudged.zoom-y * grow, 0.05, 8);
+        root.clips[root.framed] = root.nudged;
+        root.placed();
+    }
+    changed closing => {
+        Modal.open = root.closing != "";
+        if root.closing == "" {
+            keys.focus();
+        }
+    }
+    public function stretch(factor: float) {
+        timeline.stretch(factor);
+    }
+    public function fitted() {
+        timeline.reset();
     }
 
     // the time on the timeline under a point of the window, below 0 when the point is not on it
@@ -214,7 +263,9 @@ export component App inherits Window {
         copier.copy();
     }
 
+    // clipboard only, Tab skips it
     copier := TextInput {
+        visible: false;
         width: 0;
         height: 0;
     }
@@ -231,6 +282,18 @@ export component App inherits Window {
 
     keys := FocusScope {
         key-pressed(event) => {
+            if event.text == Key.Escape && !keys.has-focus {
+                keys.focus();
+                return accept;
+            }
+            if event.text == Key.F10 && !event.modifiers.shift {
+                menu.open-file();
+                return accept;
+            }
+            if (event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift)) && root.clips.length > 0 {
+                timeline.open-selected();
+                return accept;
+            }
             if event.modifiers.control && (event.text == "y" || event.text == "Z" || (event.text == "z" && event.modifiers.shift)) {
                 root.redo();
                 return accept;
@@ -241,6 +304,10 @@ export component App inherits Window {
             }
             if event.modifiers.control && (event.text == "=" || event.text == "+" || event.text == "-") {
                 timeline.magnify(event.text == "-" ? 0.8 : 1.25);
+                return accept;
+            }
+            if event.text == "\\" {
+                root.fit-timeline();
                 return accept;
             }
             if root.prefs.projects && event.modifiers.control && event.text == "n" {
@@ -263,6 +330,10 @@ export component App inherits Window {
                 root.mark("split");
                 return accept;
             }
+            if event.modifiers.control && event.text == "a" && root.clips.length > 0 {
+                root.select-all();
+                return accept;
+            }
             if event.modifiers.control && (event.text == "E" || (event.text == "e" && event.modifiers.shift)) && root.clips.length > 0 && !root.rendering {
                 root.save-frame();
                 return accept;
@@ -279,6 +350,10 @@ export component App inherits Window {
                 root.hop(false);
             } else if event.text == Key.RightArrow && event.modifiers.alt && root.copying {
                 root.hop(true);
+            } else if root.transform && root.framed >= 0 && (event.text == Key.LeftArrow || event.text == Key.RightArrow || event.text == Key.UpArrow || event.text == Key.DownArrow) {
+                root.place((event.text == Key.LeftArrow ? -1px : event.text == Key.RightArrow ? 1px : 0px) * (event.modifiers.shift ? 10 : 1), (event.text == Key.UpArrow ? -1px : event.text == Key.DownArrow ? 1px : 0px) * (event.modifiers.shift ? 10 : 1), 1);
+            } else if root.transform && root.framed >= 0 && (event.text == "+" || event.text == "=" || event.text == "-") {
+                root.place(0px, 0px, event.text == "-" ? 0.95 : 1.05);
             } else if event.text == Key.LeftArrow {
                 root.step(event.modifiers.shift ? 0 : -1, event.modifiers.shift ? -1 : 0);
             } else if event.text == Key.RightArrow {
@@ -288,11 +363,15 @@ export component App inherits Window {
             } else if event.text == "l" {
                 root.step(0, 1);
             } else if event.text == Key.Home {
+                root.scrub-start();
                 root.position = 0;
                 root.seek();
+                root.scrub-done();
             } else if event.text == Key.End {
-                root.position = 1;
+                root.scrub-start();
+                root.position = root.end;
                 root.seek();
+                root.scrub-done();
             } else if event.text == "m" {
                 root.muted = !root.muted;
                 root.loudness();
@@ -308,6 +387,22 @@ export component App inherits Window {
                 root.mark("clear");
             } else if event.text == "s" {
                 root.mark("split");
+            } else if event.text == "n" {
+                root.toggle();
+            } else if event.text == "[" || event.text == "]" {
+                root.jump-clip(event.text == "[" ? -1 : 1);
+            } else if event.text == "," || event.text == "." {
+                root.move-clips((event.text == "," ? -1 : 1) * root.tick);
+            } else if event.text == "<" || event.text == ">" {
+                root.move-clips(event.text == "<" ? -1 : 1);
+            } else if event.text == "t" || event.text == "T" {
+                timeline.open-track();
+            } else if event.text == "g" || event.text == "G" {
+                root.gap-here();
+            } else if event.text == Key.Escape {
+                root.select(-1);
+            } else if (event.text == Key.Delete || event.text == Key.Backspace) && event.modifiers.shift {
+                root.ripple-clip();
             } else if event.text == Key.Delete || event.text == Key.Backspace {
                 root.remove-clip();
             } else {
@@ -323,162 +418,357 @@ export component App inherits Window {
             root.viewed();
             accept
         }
-    }
+    
 
-    VerticalLayout {
-    Menu {
-        clips: root.clips;
-        rendering: root.rendering;
-        themes: root.themes;
-        theme <=> root.theme;
-        light <=> root.light;
-        light-available: root.light-available;
-        projects: root.prefs.projects;
-        recent: root.recent;
-        missing: root.missing;
-        new-project => {
-            root.new-project();
-        }
-        open-project => {
-            root.open-project();
-        }
-        open-recent(path) => {
-            root.open-recent(path);
-        }
-        clear-recent => {
-            root.clear-recent();
-        }
-        save-project => {
-            root.save-project();
-        }
-        save-project-as => {
-            root.save-project-as();
-        }
-        show-project => {
-            root.show-project();
-        }
-        locate => {
-            root.locate();
-        }
-        show-preferences => {
-            root.show-preferences();
-        }
-        separate <=> root.separate;
-        copying: root.copying;
-        add-clips => {
-            root.add-clips();
-        }
-        remove-clip => {
-            root.remove-clip();
-        }
-        close-clips => {
-            root.close-clips();
-        }
-        save-frame => {
-            root.save-frame();
-        }
-        undo => {
-            root.undo();
-        }
-        redo => {
-            root.redo();
-        }
-        close-gaps => {
-            root.close-gaps();
-        }
-        render => {
-            root.render();
-        }
-        cancel => {
-            root.cancel();
-        }
-        save-preferences => {
-            root.save-preferences();
-        }
-        quit => {
-            root.quit();
-        }
-        mark(name) => {
-            root.mark(name);
-        }
-        choose-theme(name) => {
-            root.choose-theme(name);
-        }
-        preview-theme(name) => {
-            root.preview-theme(name);
-        }
-        show-sheet(name) => {
-            root.show-sheet(name);
-        }
-    }
-    Rectangle {
-        height: 1px;
-        background: Theme.seam;
-    }
-    HorizontalLayout {
         VerticalLayout {
-            horizontal-stretch: 1;
-            stage := Stage {
-                vertical-stretch: 1;
-                clips <=> root.clips;
-                preview: root.preview;
-                original: root.original;
-                view <=> root.view;
-                copying: root.copying;
-                off <=> root.preview-off;
-                switched => {
-                    root.switched();
+        menu := Menu {
+            clips: root.clips;
+            rendering: root.rendering;
+            themes: root.themes;
+            theme <=> root.theme;
+            light <=> root.light;
+            light-available: root.light-available;
+            projects: root.prefs.projects;
+            recent: root.recent;
+            missing: root.missing;
+            ripple-clip => {
+                root.ripple-clip();
+            }
+            select-all => {
+                root.select-all();
+            }
+            new-project => {
+                root.new-project();
+            }
+            open(url) => {
+                root.open(url);
+            }
+            open-project => {
+                root.open-project();
+            }
+            open-recent(path) => {
+                root.open-recent(path);
+            }
+            clear-recent => {
+                root.clear-recent();
+            }
+            save-project => {
+                root.save-project();
+            }
+            save-project-as => {
+                root.save-project-as();
+            }
+            show-project => {
+                root.show-project();
+            }
+            locate => {
+                root.locate();
+            }
+            show-preferences => {
+                root.show-preferences();
+            }
+            separate <=> root.separate;
+            copying: root.copying;
+            preview-off <=> root.preview-off;
+            switched => {
+                root.switched();
+            }
+            add-clips => {
+                root.add-clips();
+            }
+            remove-clip => {
+                root.remove-clip();
+            }
+            close-clips => {
+                root.close-clips();
+            }
+            save-frame => {
+                root.save-frame();
+            }
+            undo => {
+                root.undo();
+            }
+            redo => {
+                root.redo();
+            }
+            close-gaps => {
+                root.close-gaps();
+            }
+            render => {
+                root.render();
+            }
+            cancel => {
+                root.cancel();
+            }
+            save-preferences => {
+                root.save-preferences();
+            }
+            quit => {
+                root.quit();
+            }
+            mark(name) => {
+                root.mark(name);
+            }
+            choose-theme(name) => {
+                root.choose-theme(name);
+            }
+            preview-theme(name) => {
+                root.preview-theme(name);
+            }
+            show-sheet(name) => {
+                root.show-sheet(name);
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.seam;
+        }
+        HorizontalLayout {
+            VerticalLayout {
+                horizontal-stretch: 1;
+                stage := Stage {
+                    vertical-stretch: 1;
+                    clips <=> root.clips;
+                    preview: root.preview;
+                    original: root.original;
+                    view <=> root.view;
+                    copying: root.copying;
+                    off <=> root.preview-off;
+                    switched => {
+                        root.switched();
+                    }
+                    held: root.held;
+                    zoom: root.prefs.zoom;
+                    viewed => {
+                        root.viewed();
+                    }
+                    art: root.art;
+                    light: root.light;
+                    rendering: root.rendering;
+                    open(url) => {
+                        root.open(url);
+                    }
+                    position: root.position;
+                    seconds: root.seconds;
+                    transform: root.transform;
+                    framed: root.framed;
+                    place-start => {
+                        root.place-start();
+                    }
+                    placed => {
+                        root.placed();
+                    }
+                    add-clips => {
+                        root.add-clips();
+                    }
+                    save-frame => {
+                        root.save-frame();
+                    }
+                    flash <=> root.flash;
+                    note: root.preview-note;
+                    kind: root.note-kind;
+                    progress: root.note-progress;
+                    shot: root.shot;
+                    action: root.note-action;
+                    act => {
+                        root.locate();
+                    }
+                    reveal(path) => {
+                        root.reveal(path);
+                    }
                 }
-                held: root.held;
-                zoom: root.prefs.zoom;
-                viewed => {
-                    root.viewed();
+
+                if root.clips.length > 0: Rectangle {
+                    height: 5px;
+                    background: grip.has-hover || grip.pressed ? Theme.accent : Theme.seam;
+                    grip := TouchArea {
+                        mouse-cursor: row-resize;
+                        moved => {
+                            if self.pressed {
+                                // 42px is the transport bar and its line
+                                root.deck = clamp(root.height - (self.absolute-position.y + self.mouse-y) - 42px, 90px, max(90px, root.height - 220px));
+                            }
+                        }
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.up {
+                                root.resized();
+                            }
+                        }
+                    }
                 }
-                art: root.art;
-                light: root.light;
-                rendering: root.rendering;
-                open(url) => {
-                    root.open(url);
+
+                if root.clips.length > 0: Transport {
+                    transform <=> root.transform;
+                    copying: root.copying;
+                    resolution <=> root.resolution;
+                    switched => {
+                        root.switched();
+                    }
+                    hop(forward) => {
+                        root.hop(forward);
+                    }
+                    playing: root.playing;
+                    volume <=> root.volume;
+                    muted <=> root.muted;
+                    loudness => {
+                        root.loudness();
+                    }
+                    rendering: root.rendering;
+                    details: root.details;
+                    speed: root.speed;
+                    rate: root.rate;
+                    timecode: root.timecode;
+                    duration: root.duration;
+                    step(frames, seconds) => {
+                        root.step(frames, seconds);
+                    }
+                    play => {
+                        root.play();
+                    }
+                    mark(name) => {
+                        root.mark(name);
+                    }
+                    add-clips => {
+                        root.add-clips();
+                    }
+                    remove-clip => {
+                        root.remove-clip();
+                    }
+                    save-frame => {
+                        root.save-frame();
+                    }
                 }
-                position: root.position;
-                seconds: root.seconds;
-                transform: root.transform;
-                framed: root.framed;
-                place-start => {
-                    root.place-start();
+
+                if root.clips.length > 0: Rectangle {
+                    height: 1px;
+                    background: Theme.seam;
                 }
-                placed => {
-                    root.placed();
-                }
-                add-clips => {
-                    root.add-clips();
-                }
-                save-frame => {
-                    root.save-frame();
-                }
-                flash <=> root.flash;
-                note: root.preview-note;
-                kind: root.note-kind;
-                progress: root.note-progress;
-                shot: root.shot;
-                action: root.note-action;
-                act => {
-                    root.locate();
-                }
-                reveal(path) => {
-                    root.reveal(path);
+
+                timeline := Timeline {
+                    visible: root.clips.length > 0;
+                    height: root.clips.length == 0 ? 0px : root.deck > 0 ? max(90px, root.deck) : min(root.content + 24px, 380px);
+                    clips <=> root.clips;
+                    copying: root.copying;
+                    snapping: root.prefs.snapping;
+                    toggle => {
+                        root.toggle();
+                    }
+                    snapped: root.snapped;
+                    video: root.video;
+                    audio: root.audio;
+                    selected: root.selected;
+                    link: root.link;
+                    content: root.content;
+                    extent: root.extent;
+                    seconds: root.seconds;
+                    position <=> root.position;
+                    seek => {
+                        root.seek();
+                    }
+                    scrub-start => {
+                        root.scrub-start();
+                    }
+                    scrub-done => {
+                        root.scrub-done();
+                    }
+                    select(index) => {
+                        root.select(index);
+                    }
+                    extend(index) => {
+                        root.extend(index);
+                    }
+                    range(index) => {
+                        root.range(index);
+                    }
+                    lasso-start(add) => {
+                        root.lasso-start(add);
+                    }
+                    lasso(from, to, top, bottom) => {
+                        root.lasso(from, to, top, bottom);
+                    }
+                    lasso-end => {
+                        root.lasso-end();
+                    }
+                    gap(time, depth) => {
+                        root.gap(time, depth)
+                    }
+                    close-gap(time, depth) => {
+                        root.close-gap(time, depth);
+                    }
+                    grab(index, time, alone) => {
+                        root.grab(index, time, alone);
+                    }
+                    drag(time, depth, slack, cutting) => {
+                        root.drag(time, depth, slack, cutting);
+                    }
+                    release => {
+                        root.release();
+                    }
+                    trim-start => {
+                        root.trim-start();
+                    }
+                    trimmed(index, slack, alone, cutting) => {
+                        root.trimmed(index, slack, alone, cutting);
+                    }
+                    tune(index, name, value, alone) => {
+                        root.tune(index, name, value, alone);
+                    }
+                    curve(index, fade, name, alone) => {
+                        root.curve(index, fade, name, alone);
+                    }
+                    retime(index, speed) => {
+                        root.retime(index, speed);
+                    }
+                    joint(index, head) => {
+                        root.joint(index, head)
+                    }
+                    mark(name) => {
+                        root.mark(name);
+                    }
+                    select-track(audio, index) => {
+                        root.select-track(audio, index);
+                    }
+                    remove-clip => {
+                        root.remove-clip();
+                    }
+                    ripple-clip => {
+                        root.ripple-clip();
+                    }
+                    replace-clip(index) => {
+                        root.replace-clip(index);
+                    }
+                    trim-done => {
+                        root.trim-done();
+                    }
+                    lane-height(audio, index, height) => {
+                        root.lane-height(audio, index, height);
+                    }
+                    ghosts: root.ghosts;
+                    art: root.art;
+                    light: root.light;
+                    lane-wheel(depth, delta) => {
+                        root.lane-wheel(depth, delta);
+                    }
+                    add-lane(audio) => {
+                        root.add-lane(audio);
+                    }
+                    remove-lane(audio, index) => {
+                        root.remove-lane(audio, index);
+                    }
+                    mute-lane(index) => {
+                        root.mute-lane(index);
+                    }
                 }
             }
 
-            if root.clips.length > 0: Rectangle {
-                height: 5px;
-                background: grip.has-hover || grip.pressed ? Theme.accent : Theme.seam;
-                grip := TouchArea {
-                    mouse-cursor: row-resize;
+            Rectangle {
+                width: 5px;
+                background: side.has-hover || side.pressed ? Theme.accent : Theme.seam;
+                side := TouchArea {
+                    mouse-cursor: col-resize;
                     moved => {
                         if self.pressed {
-                            // 42px is the transport bar and its line, between this grip and the timeline
-                            root.deck = clamp(root.height - (self.absolute-position.y + self.mouse-y) - 42px, 90px, max(90px, root.height - 220px));
+                            root.rail = clamp(root.width - (self.absolute-position.x + self.mouse-x), 340px, max(340px, root.width - 770px));
                         }
                     }
                     pointer-event(event) => {
@@ -489,305 +779,187 @@ export component App inherits Window {
                 }
             }
 
-            if root.clips.length > 0: Transport {
-                transform <=> root.transform;
-                copying: root.copying;
-                resolution <=> root.resolution;
-                switched => {
-                    root.switched();
-                }
-                hop(forward) => {
-                    root.hop(forward);
-                }
-                playing: root.playing;
-                volume <=> root.volume;
-                muted <=> root.muted;
-                loudness => {
-                    root.loudness();
-                }
-                rendering: root.rendering;
-                details: root.details;
-                speed: root.speed;
-                rate: root.rate;
-                timecode: root.timecode;
-                step(frames, seconds) => {
-                    root.step(frames, seconds);
-                }
-                play => {
-                    root.play();
-                }
-                mark(name) => {
-                    root.mark(name);
-                }
-                add-clips => {
-                    root.add-clips();
-                }
-                remove-clip => {
-                    root.remove-clip();
-                }
-                save-frame => {
-                    root.save-frame();
-                }
-            }
-
-            if root.clips.length > 0: Rectangle {
-                height: 1px;
-                background: Theme.seam;
-            }
-
-            timeline := Timeline {
-                visible: root.clips.length > 0;
-                height: root.clips.length == 0 ? 0px : root.deck > 0 ? max(90px, root.deck) : min(root.content + 24px, 380px);
-                clips <=> root.clips;
-                copying: root.copying;
-                video: root.video;
-                audio: root.audio;
+            Panel {
+                width: max(340px, root.rail);
+                clips: root.clips;
+                videos: root.videos;
                 selected: root.selected;
-                link: root.link;
-                content: root.content;
-                extent: root.extent;
-                seconds: root.seconds;
-                position <=> root.position;
-                seek => {
-                    root.seek();
+                settings <=> root.settings;
+                sections <=> root.sections;
+                encoders-found: root.encoders-found;
+                effort-tip(settings, effort, found) => {
+                    root.effort-tip(settings, effort, found)
                 }
-                select(index) => {
-                    root.select(index);
+                scope <=> root.scope;
+                configs: root.configs;
+                config <=> root.config;
+                unsaved: root.unsaved;
+                repeats: root.repeats;
+                models: root.models;
+                tensorrt-need: root.tensorrt-need;
+                tensorrt-fixable: root.tensorrt-fixable;
+                weights: root.weights;
+                summary: root.summary;
+                lossless: root.lossless;
+                copying <=> root.copying;
+                left: root.left;
+                estimate: root.estimate;
+                separate: root.separate;
+                rendering: root.rendering;
+                progress: root.progress;
+                status: root.status;
+                failed: root.failed;
+                rendered: root.rendered;
+                reveal(path) => {
+                    root.reveal(path);
                 }
-                extend(index) => {
-                    root.extend(index);
+                version: root.version;
+                update: root.update;
+                copied: root.copied;
+                done: root.done;
+                changed => {
+                    root.changed();
                 }
-                grab(index, time, alone) => {
-                    root.grab(index, time, alone);
+                choose-lut => {
+                    root.choose-lut();
                 }
-                drag(time, depth, slack) => {
-                    root.drag(time, depth, slack);
+                save-config => {
+                    root.save-config();
                 }
-                release => {
-                    root.release();
+                delete-config => {
+                    root.delete-config();
                 }
-                trim-start => {
-                    root.trim-start();
+                render => {
+                    root.render();
                 }
-                trimmed(index, slack, alone) => {
-                    root.trimmed(index, slack, alone);
+                cancel => {
+                    root.cancel();
                 }
-                tune(index, name, value, alone) => {
-                    root.tune(index, name, value, alone);
+                copy-details => {
+                    root.copy-details();
                 }
-                curve(index, fade, name, alone) => {
-                    root.curve(index, fade, name, alone);
+                show-components => {
+                    root.show-components();
                 }
-                joint(index, head) => {
-                    root.joint(index, head)
+                show-update => {
+                    root.show-update();
                 }
-                mark(name) => {
-                    root.mark(name);
+                choose-config(name) => {
+                    root.choose-config(name);
                 }
-                remove-clip => {
-                    root.remove-clip();
-                }
-                replace-clip(index) => {
-                    root.replace-clip(index);
-                }
-                trim-done => {
-                    root.trim-done();
-                }
-                lane-height(audio, index, height) => {
-                    root.lane-height(audio, index, height);
-                }
-                ghosts: root.ghosts;
-                art: root.art;
-                light: root.light;
-                lane-wheel(depth, delta) => {
-                    root.lane-wheel(depth, delta);
-                }
-                add-lane(audio) => {
-                    root.add-lane(audio);
-                }
-                remove-lane(audio, index) => {
-                    root.remove-lane(audio, index);
-                }
-                mute-lane(index) => {
-                    root.mute-lane(index);
+                new-config(name) => {
+                    root.new-config(name);
                 }
             }
         }
-
-        Rectangle {
-            width: 5px;
-            background: side.has-hover || side.pressed ? Theme.accent : Theme.seam;
-            side := TouchArea {
-                mouse-cursor: col-resize;
-                moved => {
-                    if self.pressed {
-                        root.rail = clamp(root.width - (self.absolute-position.x + self.mouse-x), 340px, max(340px, root.width - 770px));
-                    }
-                }
-                pointer-event(event) => {
-                    if event.kind == PointerEventKind.up {
-                        root.resized();
-                    }
-                }
-            }
         }
 
-        Panel {
-            width: max(340px, root.rail);
-            clips: root.clips;
-            videos: root.videos;
-            selected: root.selected;
-            settings <=> root.settings;
-            sections <=> root.sections;
-            encoders-found: root.encoders-found;
-            effort-tip(settings, effort, found) => {
-                root.effort-tip(settings, effort, found)
-            }
-            scope <=> root.scope;
-            configs: root.configs;
-            config <=> root.config;
-            unsaved: root.unsaved;
-            repeats: root.repeats;
-            models: root.models;
-            tensorrt-need: root.tensorrt-need;
-            tensorrt-fixable: root.tensorrt-fixable;
-            weights: root.weights;
-            summary: root.summary;
-            lossless: root.lossless;
-            copying <=> root.copying;
-            left: root.left;
-            estimate: root.estimate;
-            separate: root.separate;
-            rendering: root.rendering;
-            progress: root.progress;
-            status: root.status;
-            failed: root.failed;
-            rendered: root.rendered;
-            reveal(path) => {
-                root.reveal(path);
-            }
-            version: root.version;
-            update: root.update;
-            copied: root.copied;
-            done: root.done;
-            changed => {
-                root.changed();
-            }
-            choose-lut => {
-                root.choose-lut();
-            }
-            save-config => {
-                root.save-config();
-            }
-            delete-config => {
-                root.delete-config();
-            }
-            render => {
-                root.render();
-            }
-            cancel => {
-                root.cancel();
-            }
-            copy-details => {
-                root.copy-details();
-            }
-            show-components => {
-                root.show-components();
-            }
-            show-update => {
-                root.show-update();
-            }
-            choose-config(name) => {
-                root.choose-config(name);
-            }
-            new-config(name) => {
-                root.new-config(name);
-            }
-        }
-    }
-    }
-
-    if Tip.text != "": Rectangle {
-        x: clamp(Tip.x - self.width / 2, 4px, root.width - self.width - 4px);
-        y: Tip.y - self.height - 6px;
-        width: tip.preferred-width;
-        height: 24px;
-        background: Theme.raised;
-        border-width: 1px;
-        border-color: Theme.seam;
-        tip := HorizontalLayout {
-            padding-left: 8px;
-            padding-right: 8px;
-            spacing: 6px;
-            Text {
-                text: Tip.text;
-                color: Theme.ink;
-                font-size: 11px;
-                vertical-alignment: center;
-            }
-            for key in Tip.keys: VerticalLayout {
-                alignment: center;
-                Rectangle {
-                    width: cap.preferred-width + 8px;
-                    height: 16px;
-                    border-width: 1px;
-                    border-color: Theme.seam;
-                    background: Theme.rack;
-                    cap := Text {
-                        text: key;
-                        color: Theme.muted;
-                        font-size: 10px;
-                        font-family: "monospace";
-                    }
-                }
-            }
-        }
-    }
-
-    if root.closing != "": Rectangle {
-
-        background: Theme.void.with-alpha(0.7);
-        TouchArea { }
-        Rectangle {
-            width: 340px;
-            height: 104px;
-            background: Theme.rack;
+        if Tip.text != "": Rectangle {
+            x: clamp(Tip.x - self.width / 2, 4px, root.width - self.width - 4px);
+            y: Tip.y - self.height - 6px;
+            width: tip.preferred-width;
+            height: 26px;
+            background: Theme.raised;
             border-width: 1px;
             border-color: Theme.seam;
-            VerticalLayout {
-                padding: 16px;
-                spacing: 18px;
+            drop-shadow-blur: 12px;
+            drop-shadow-offset-y: 2px;
+            drop-shadow-color: black.with-alpha(0.4);
+            tip := HorizontalLayout {
+                padding-left: 9px;
+                padding-right: 9px;
+                spacing: 4px;
                 Text {
-                    text: root.closing == "render" ? "Stop the render and quit?" : root.closing == "save" ? "Save changes to \"\{root.config}\"?" : root.ask;
+                    text: Tip.text;
                     color: Theme.ink;
-                    font-size: 13px;
-                    overflow: elide;
+                    font-size: 11px;
+                    vertical-alignment: center;
                 }
-                HorizontalLayout {
-                    spacing: 8px;
-                    if root.closing == "save" || root.closing == "project" || root.closing == "switch" || root.closing == "recover": Button {
-                        height: 26px;
-                        text: root.closing == "recover" ? "Discard" : "Don't save";
-                        clicked => {
-                            root.close-answer(false);
-                        }
-                    }
+                if Tip.keys.length > 0: Rectangle {
+                    width: 4px;
+                }
+                for key in Tip.keys: VerticalLayout {
+                    alignment: center;
                     Rectangle {
-                        horizontal-stretch: 1;
-                    }
-                    Button {
-                        height: 26px;
-                        text: root.closing == "recover" ? "Later" : "Cancel";
-                        clicked => {
-                            root.closing = "";
+                        width: cap.preferred-width + 8px;
+                        height: 16px;
+                        background: Theme.seam;
+                        cap := Text {
+                            text: key;
+                            color: Theme.ink;
+                            font-size: 10px;
+                            font-family: "monospace";
                         }
                     }
-                    Button {
-                        height: 26px;
-                        text: root.closing == "render" ? "Quit" : root.closing == "delete" ? "Remove" : root.closing == "recover" ? "Recover" : "Save";
-                        main: true;
-                        clicked => {
-                            root.close-answer(root.closing != "render");
+                }
+            }
+        }
+
+        if root.closing != "": Rectangle {
+            background: Theme.void.with-alpha(0.7);
+            TouchArea { }
+            FocusScope {
+                focus-on-click: false;
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
+                        root.closing = "";
+                    } else if event.text == Key.Return {
+                        root.close-answer(root.closing != "render");
+                    } else {
+                        return reject;
+                    }
+                    accept
+                }
+                Rectangle {
+                    width: 340px;
+                    height: 104px;
+                    background: Theme.rack;
+                    border-width: 1px;
+                    border-color: Theme.seam;
+                    accessible-role: groupbox;
+                    accessible-label: question.text;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 18px;
+                        question := Text {
+                            text: root.closing == "render" ? "Stop the render and quit?" : root.closing == "save" ? "Save changes to \"\{root.config}\"?" : root.ask;
+                            color: Theme.ink;
+                            font-size: 13px;
+                            overflow: elide;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            if root.closing == "save" || root.closing == "project" || root.closing == "switch" || root.closing == "recover": Button {
+                                height: 26px;
+                                top: true;
+                                text: root.closing == "recover" ? "Discard" : "Don't save";
+                                clicked => {
+                                    root.close-answer(false);
+                                }
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                            }
+                            Button {
+                                height: 26px;
+                                top: true;
+                                text: root.closing == "recover" ? "Later" : "Cancel";
+                                init => {
+                                    self.focus();
+                                }
+                                clicked => {
+                                    root.closing = "";
+                                }
+                            }
+                            Button {
+                                height: 26px;
+                                top: true;
+                                text: root.closing == "render" ? "Quit" : root.closing == "delete" ? "Remove" : root.closing == "recover" ? "Recover" : "Save";
+                                main: true;
+                                clicked => {
+                                    root.close-answer(root.closing != "render");
+                                }
+                            }
                         }
                     }
                 }

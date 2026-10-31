@@ -14,7 +14,7 @@ struct Moment {
     rows: Vec<Clip>,
     tracks: Tracks,
     size: Option<(u32, u32)>,
-    position: f32,
+    time: f64,
 }
 
 struct History {
@@ -38,7 +38,7 @@ fn moment(ui: &App, state: &State) -> Moment {
         rows: ui.get_clips().iter().collect(),
         tracks: state.tracks.clone(),
         size: state.project.look.size,
-        position: ui.get_position(),
+        time: state.time(ui.get_position()),
     }
 }
 
@@ -108,7 +108,8 @@ fn restore(ui: &App, shared: &Shared, target: Moment) {
     drop(state);
     crate::clips::fill(ui, shared);
     fit(ui, shared);
-    ui.set_position(target.position);
+    let span = lock(shared).span.max(0.001);
+    ui.set_position((target.time / span).clamp(0.0, 1.0) as f32);
     load(ui, &mut lock(shared));
     refresh(ui, shared);
 }

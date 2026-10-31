@@ -345,8 +345,7 @@ pub fn wire(ui: &App) {
             });
         });
         themes::paint(&window.global::<Theme>(), &ui.get_theme(), ui.get_light());
-        let smooth = ui.global::<System>().get_smooth_scroll();
-        window.global::<System>().set_smooth_scroll(smooth);
+        crate::settings::share_scroll(&ui, &window.global::<System>());
         present(window);
     });
 }

@@ -389,13 +389,14 @@ impl Canvas {
 
     // the layers go on a black canvas, the lowest one first
     pub(crate) fn compose(&mut self, layers: Vec<(Picture, Place, f32)>) -> Result<frame::Video> {
-        self.draw(layers, self.size())
+        self.draw(layers, self.size(), false)
     }
 
     fn draw(
         &mut self,
         mut layers: Vec<(Picture, Place, f32)>,
         size: (u32, u32),
+        preview: bool,
     ) -> Result<frame::Video> {
         let full = self.size();
         let (space, range) = self.meta.tags();
@@ -429,6 +430,14 @@ impl Canvas {
             // the part that is on the canvas, and the same part in the pixels of the clip
             let (left, top) = (even(kept[0], size.0), even(kept[1], size.1));
             let (right, bottom) = (even(kept[2], size.0), even(kept[3], size.1));
+            // shrunken clips are a few rows short
+            let near = |edge: u32, to: u32| edge.abs_diff(to) <= 4;
+            let short =
+                near(left, 0) && near(top, 0) && near(right, size.0) && near(bottom, size.1);
+            let (left, top, right, bottom) = match preview && short && *place == Place::default() {
+                true => (0, 0, size.0, size.1),
+                false => (left, top, right, bottom),
+            };
             if right <= left || bottom <= top {
                 continue;
             }
@@ -473,7 +482,7 @@ impl Canvas {
             true => (wide, high),
             false => (width, height),
         };
-        let picture = self.draw(layers, size)?;
+        let picture = self.draw(layers, size, true)?;
         image(&self.shown, &picture, width)
     }
 }

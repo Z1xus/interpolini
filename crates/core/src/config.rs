@@ -485,6 +485,17 @@ impl Default for Config {
 pub(crate) type Field<'a> = (&'static str, &'static str, Box<dyn Value + 'a>);
 
 impl Config {
+    pub fn retimed(&self, speed: f64) -> Config {
+        let mut config = self.clone();
+        config.interpolation.fps = match config.interpolation.fps {
+            Rate::Fps(fps) => Rate::Fps(((f64::from(fps) / speed).round() as u32).max(1)),
+            Rate::Times(times) => Rate::Times(times / speed as f32),
+        };
+        let fps = (f64::from(config.blending.fps) / speed).round();
+        config.blending.fps = (fps as u32).clamp(1, 1000);
+        config
+    }
+
     // the words codes count fields in this order, so a new field goes at the end
     pub(crate) fn fields(&mut self) -> Vec<Field<'_>> {
         fn field<'a>(

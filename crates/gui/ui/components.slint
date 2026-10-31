@@ -21,6 +21,7 @@ component Group inherits VerticalLayout {
         Tabs {
             x: parent.width - self.preferred-width - 16px;
             width: self.preferred-width;
+            label: "Backend";
             options: root.tabs;
             value <=> root.tab;
         }
@@ -38,16 +39,26 @@ component Group inherits VerticalLayout {
 
 component Hint inherits HorizontalLayout {
     in property <string> text;
-    in property <color> color: Theme.faint;
+    in property <bool> alert;
     height: 28px;
-    padding-left: 158px;
+    padding-left: 150px;
     padding-right: 16px;
+    Rectangle {
+        width: 8px;
+        Rectangle {
+            y: 6px;
+            width: root.alert ? 2px : 0px;
+            height: parent.height - 12px;
+            background: Theme.accent;
+        }
+    }
     Text {
         text: root.text;
-        color: root.color;
+        color: root.alert ? Theme.ink : Theme.faint;
         font-size: 11px;
         vertical-alignment: center;
         overflow: elide;
+        accessible-live-region: polite;
     }
 }
 
@@ -73,11 +84,17 @@ component Item inherits FormRow {
             font-size: 11px;
             vertical-alignment: center;
             overflow: elide;
+            accessible-live-region: polite;
         }
         if root.loading: Rectangle {
             y: parent.height - 3px;
             height: 2px;
             background: Theme.seam;
+            accessible-role: progress-indicator;
+            accessible-label: "\{root.label} progress";
+            accessible-value: round(root.fraction * 100) + "";
+            accessible-value-minimum: 0;
+            accessible-value-maximum: 100;
             Rectangle {
                 x: 0;
                 width: parent.width * root.fraction;
@@ -91,6 +108,7 @@ component Item inherits FormRow {
         padding-bottom: 3px;
         Button {
             text: root.loading ? "Cancel" : root.installed ? "Remove" : root.get;
+            accessible: self.text + " " + root.label;
             main: !root.loading && !root.installed;
             enabled: root.loading || (root.busy == "" && root.enabled);
             clicked => {
@@ -141,6 +159,7 @@ export component Parts inherits VerticalLayout {
             FormRow {
                 label: "Source";
                 Segment {
+                    label: "FFmpeg source";
                     width: self.preferred-width;
                     alignment: start;
                     options: root.ffmpeg-fixed ? ["system"] : !root.ffmpeg-system ? (root.ffmpeg == "custom" ? ["bundled", "custom"] : ["bundled"]) : root.ffmpeg == "custom" ? ["bundled", "system", "custom"] : ["bundled", "system"];
@@ -169,9 +188,10 @@ export component Parts inherits VerticalLayout {
                 Text {
                     horizontal-stretch: 1;
                     text: "Restart to apply.";
-                    color: Theme.accent;
+                    color: Theme.ink;
                     font-size: 11px;
                     vertical-alignment: center;
+                    accessible-live-region: polite;
                 }
                 HorizontalLayout {
                     padding-top: 3px;
@@ -211,7 +231,7 @@ export component Parts inherits VerticalLayout {
             }
             if root.backend == "tensorrt" && root.tensorrt-need != "": Hint {
                 text: root.tensorrt-need;
-                color: Theme.accent;
+                alert: true;
             }
             for model in root.shown: Item {
                 name: root.backend + "/" + model.name;
@@ -234,7 +254,7 @@ export component Parts inherits VerticalLayout {
         }
         if root.note != "": Hint {
             text: root.note;
-            color: Theme.accent;
+            alert: true;
         }
     }
 }

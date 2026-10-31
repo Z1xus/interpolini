@@ -1,10 +1,12 @@
-import { Action, Button, Dropdown, Field, Label, Note, Number, Row, Scroll, Section, Segment, SliderRow, Switch, Theme } from "widgets.slint";
-import { Clip, Fact, Sections, Settings } from "types.slint";
+import { Action, Button, Dropdown, Field, Focus, Label, Note, Number, Popups, Row, Scroll, Section, Segment, SliderRow, Switch, Theme } from "widgets.slint";
+import { Clip, Sections, Settings } from "types.slint";
 
 component Curve inherits Rectangle {
     in property <[float]> weights;
     in property <string> summary;
     height: root.weights.length > 0 ? 76px : 24px;
+    accessible-role: image;
+    accessible-label: root.summary;
     HorizontalLayout {
         x: 28px;
         y: 4px;
@@ -26,6 +28,7 @@ component Curve inherits Rectangle {
         color: Theme.faint;
         font-size: 11px;
         font-family: "monospace";
+        accessible-role: none;
     }
 }
 
@@ -49,10 +52,14 @@ component Need inherits HorizontalLayout {
     padding-right: 12px;
     padding-bottom: 6px;
     spacing: 8px;
+    Rectangle {
+        width: 2px;
+        background: Theme.accent;
+    }
     Text {
         horizontal-stretch: 1;
         text: root.text;
-        color: Theme.accent;
+        color: Theme.ink;
         font-size: 11px;
         wrap: word-wrap;
     }
@@ -82,7 +89,7 @@ export component Panel inherits Rectangle {
     in property <string> summary;
     in property <bool> lossless;
     in-out property <bool> copying;
-    in property <[Fact]> left;
+    in property <string> left;
     in property <string> estimate;
     in property <bool> separate;
     in property <bool> rendering;
@@ -119,12 +126,17 @@ export component Panel inherits Rectangle {
         HorizontalLayout {
             height: 54px;
             padding: 10px;
+            accessible-role: radio-group;
+            accessible-label: "Mode";
             for mode[index] in ["Render", "Lossless cut"]: Rectangle {
                 property <bool> active: (index == 1) == root.copying;
-                accessible-role: button;
+                accessible-role: radio-button;
                 accessible-label: mode;
                 accessible-checkable: true;
                 accessible-checked: active;
+                accessible-enabled: !root.rendering;
+                accessible-item-index: index;
+                accessible-item-count: 2;
                 accessible-action-default => {
                     touch.clicked();
                 }
@@ -132,10 +144,17 @@ export component Panel inherits Rectangle {
                 border-color: active ? Theme.accent : Theme.seam;
                 background: active ? Theme.ghost : touch.has-hover ? Theme.raised : transparent;
                 animate background, border-color { duration: Theme.quick; }
+                Focus {
+                    usable: !root.rendering;
+                    activate => {
+                        touch.clicked();
+                    }
+                }
                 Text {
                     text: mode;
                     color: active ? Theme.ink : Theme.muted;
                     font-size: 13px;
+                    accessible-role: none;
                 }
                 touch := TouchArea {
                     mouse-cursor: pointer;
@@ -153,6 +172,10 @@ export component Panel inherits Rectangle {
         }
 
         if !root.copying: HorizontalLayout {
+            property <bool> shown: share.is-open;
+            changed shown => {
+                Popups.open += self.shown ? 1 : -1;
+            }
             height: 42px;
             padding: 10px;
             spacing: 10px;
@@ -168,6 +191,7 @@ export component Panel inherits Rectangle {
             }
             if root.naming: Field {
                 horizontal-stretch: 1;
+                label: "Config name";
                 placeholder: "Name";
                 text <=> root.name;
                 commit: false;
@@ -178,6 +202,7 @@ export component Panel inherits Rectangle {
             }
             Action {
                 text: root.done == "Saved" ? "Saved" : root.unsaved ? "Save*" : "Save";
+                accessible: "Save config";
                 active: root.unsaved;
                 clicked => {
                     if root.naming {
@@ -190,6 +215,7 @@ export component Panel inherits Rectangle {
             }
             Action {
                 text: root.naming ? "Cancel" : "New";
+                accessible: root.naming ? "Cancel new config" : "New config";
                 clicked => {
                     root.name = "";
                     root.naming = !root.naming;
@@ -197,6 +223,7 @@ export component Panel inherits Rectangle {
             }
             Action {
                 text: root.done == "Deleted" ? "Deleted" : root.confirming ? "Delete?" : "Delete";
+                accessible: root.confirming ? "Confirm delete config" : "Delete config";
                 active: root.confirming;
                 clicked => {
                     if root.confirming {
@@ -207,6 +234,7 @@ export component Panel inherits Rectangle {
             }
             Action {
                 text: "Share";
+                accessible: "Share config";
                 active: share.is-open;
                 clicked => {
                     root.code = "";
@@ -216,134 +244,145 @@ export component Panel inherits Rectangle {
                     share.show();
                 }
             }
-            share := PopupWindow {
-                x: 10px;
-                y: parent.height - 4px;
-                width: root.width - 20px;
-                close-policy: close-on-click-outside;
-                Rectangle {
-                    background: Theme.raised;
-                    border-width: 1px;
-                    border-color: Theme.seam;
-                    drop-shadow-blur: 16px;
-                    drop-shadow-offset-y: 4px;
-                    drop-shadow-color: #00000080;
-                    VerticalLayout {
-                        padding: 12px;
-                        spacing: 8px;
-                        Text {
-                            text: "Share code";
-                            color: Theme.faint;
-                            font-size: 11px;
-                        }
-                        // six rows show, a longer code scrolls
-                        Scroll {
-                            height: min(self.content-height, 6 * 34px - 4px);
-                            VerticalLayout {
+        share := PopupWindow {
+            x: 10px;
+            y: parent.height - 4px;
+            width: root.width - 20px;
+            close-policy: close-on-click-outside;
+            forward-focus: paste;
+            Rectangle {
+                background: Theme.raised;
+                border-width: 1px;
+                border-color: Theme.seam;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 4px;
+                drop-shadow-color: #00000080;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    Text {
+                        text: "Share code";
+                        color: Theme.faint;
+                        font-size: 11px;
+                    }
+                    Scroll {
+                        height: min(self.content-height, 6 * 34px - 4px);
+                        VerticalLayout {
+                            spacing: 4px;
+                            for row in Math.ceil(Code.words.length / 3): HorizontalLayout {
                                 spacing: 4px;
-                                for row in Math.ceil(Code.words.length / 3): HorizontalLayout {
-                                    spacing: 4px;
-                                    for column in 3: cell := Rectangle {
-                                        property <int> at: row * 3 + column;
-                                        property <bool> used: self.at < Code.words.length;
-                                        horizontal-stretch: 1;
-                                        height: 30px;
-                                        background: self.used ? Theme.void : transparent;
-                                        border-width: 1px;
-                                        border-color: self.used ? Theme.seam : transparent;
-                                        if cell.used: HorizontalLayout {
-                                            padding-left: 8px;
-                                            spacing: 6px;
-                                            Text {
-                                                text: cell.at + 1;
-                                                color: Theme.faint;
-                                                font-size: 10px;
-                                                vertical-alignment: center;
-                                            }
-                                            Text {
-                                                horizontal-stretch: 1;
-                                                text: Code.words[cell.at];
-                                                color: Theme.ink;
-                                                font-size: 13px;
-                                                vertical-alignment: center;
-                                            }
+                                for column in 3: cell := Rectangle {
+                                    property <int> at: row * 3 + column;
+                                    property <bool> used: self.at < Code.words.length;
+                                    horizontal-stretch: 1;
+                                    height: 30px;
+                                    background: self.used ? Theme.void : transparent;
+                                    border-width: 1px;
+                                    border-color: self.used ? Theme.seam : transparent;
+                                    if cell.used: HorizontalLayout {
+                                        padding-left: 8px;
+                                        spacing: 6px;
+                                        Text {
+                                            text: cell.at + 1;
+                                            color: Theme.faint;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                            accessible-role: none;
+                                        }
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            text: Code.words[cell.at];
+                                            color: Theme.ink;
+                                            font-size: 13px;
+                                            vertical-alignment: center;
                                         }
                                     }
                                 }
                             }
                         }
-                        HorizontalLayout {
-                            height: 26px;
-                            spacing: 8px;
-                            Text {
-                                horizontal-stretch: 1;
-                                text: Code.about;
-                                color: Theme.faint;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                            }
-                            Timer {
-                                interval: 1500ms;
-                                running: root.copied-code;
-                                triggered => {
-                                    root.copied-code = false;
-                                }
-                            }
-                            Button {
-                                text: root.copied-code ? "Copied" : "Copy";
-                                main: true;
-                                clicked => {
-                                    Code.copy();
-                                    root.copied-code = true;
-                                }
-                            }
-                        }
-                        Rectangle {
-                            height: 1px;
-                            background: Theme.seam;
-                        }
+                    }
+                    HorizontalLayout {
+                        height: 26px;
+                        spacing: 8px;
                         Text {
-                            text: "Use a code";
+                            horizontal-stretch: 1;
+                            text: Code.about;
                             color: Theme.faint;
                             font-size: 11px;
+                            vertical-alignment: center;
                         }
-                        HorizontalLayout {
-                            height: 28px;
-                            spacing: 8px;
-                            Field {
-                                horizontal-stretch: 1;
-                                placeholder: "Paste the words";
-                                text <=> root.code;
-                                commit: false;
-                                edited => {
-                                    Code.check(self.text);
-                                }
-                                accepted(text) => {
-                                    if Code.valid {
-                                        Code.apply(text);
-                                        share.close();
-                                    }
-                                }
+                        Timer {
+                            interval: 1500ms;
+                            running: root.copied-code;
+                            triggered => {
+                                root.copied-code = false;
                             }
-                            Button {
-                                text: "Apply";
-                                main: true;
-                                enabled: Code.valid;
-                                clicked => {
-                                    Code.apply(root.code);
+                        }
+                        Button {
+                            text: root.copied-code ? "Copied" : "Copy";
+                            main: true;
+                            clicked => {
+                                Code.copy();
+                                root.copied-code = true;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        height: 1px;
+                        background: Theme.seam;
+                    }
+                    Text {
+                        text: "Use a code";
+                        color: Theme.faint;
+                        font-size: 11px;
+                    }
+                    HorizontalLayout {
+                        height: 28px;
+                        spacing: 8px;
+                        paste := Field {
+                            horizontal-stretch: 1;
+                            label: "Code to use";
+                            placeholder: "Paste the words";
+                            text <=> root.code;
+                            commit: false;
+                            edited => {
+                                Code.check(self.text);
+                            }
+                            accepted(text) => {
+                                if Code.valid {
+                                    Code.apply(text);
                                     share.close();
                                 }
                             }
                         }
-                        if Code.result != "": Text {
+                        Button {
+                            text: "Apply";
+                            main: true;
+                            enabled: Code.valid;
+                            clicked => {
+                                Code.apply(root.code);
+                                share.close();
+                            }
+                        }
+                    }
+                    if Code.result != "": HorizontalLayout {
+                        spacing: 6px;
+                        if Code.bad: Rectangle {
+                            width: 2px;
+                            background: Theme.accent;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
                             text: Code.result;
-                            color: Code.bad ? Theme.accent : Code.valid ? Theme.ok : Theme.faint;
+                            color: Code.bad ? Theme.ink : Code.valid ? Theme.ok : Theme.faint;
                             font-size: 11px;
                             wrap: word-wrap;
+                            accessible-live-region: polite;
                         }
                     }
                 }
             }
+        }
         }
 
         if !root.copying: Rectangle {
@@ -363,6 +402,7 @@ export component Panel inherits Rectangle {
                 text: "Settings for";
             }
             Segment {
+                label: "Settings scope";
                 options: root.selected < 0 ? ["all clips"] : ["all clips", "this clip"];
                 value: root.selected < 0 ? "all clips" : root.scope;
                 changed(value) => {
@@ -380,9 +420,6 @@ export component Panel inherits Rectangle {
             vertical-stretch: 1;
             alignment: start;
             padding-top: 10px;
-            Note {
-                text: "No re-encode. Cuts start on keyframes.";
-            }
             if root.estimate != "": Row {
                 label: "Size";
                 Rectangle { }
@@ -390,29 +427,8 @@ export component Panel inherits Rectangle {
                     text: root.estimate;
                 }
             }
-            if root.left.length > 0: Rectangle {
-                height: 17px;
-                Rectangle {
-                    height: 1px;
-                    background: Theme.seam;
-                }
-            }
-            if root.left.length > 0: HorizontalLayout {
-                height: 28px;
-                padding-left: 28px;
-                Text {
-                    text: "Left out";
-                    color: Theme.ink;
-                    font-size: 13px;
-                    vertical-alignment: center;
-                }
-            }
-            for fact in root.left: Row {
-                label: fact.name;
-                Rectangle { }
-                Label {
-                    text: fact.value;
-                }
+            if root.left != "": Note {
+                text: "Not kept: " + root.left;
             }
         }
 
@@ -457,7 +473,7 @@ export component Panel inherits Rectangle {
                     label: "Frame rate";
                     Rectangle { }
                     Field {
-                        label: "Frame rate";
+                        label: "Pre-interpolation frame rate";
                         width: 76px;
                         height: 22px;
                         y: 3px;
@@ -470,6 +486,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Backend";
                     Segment {
+                        label: "Pre-interpolation backend";
                         options: ["vulkan", "tensorrt"];
                         value <=> root.settings.backend;
                         changed => {
@@ -489,7 +506,7 @@ export component Panel inherits Rectangle {
                     Dropdown {
                         height: 22px;
                         y: 3px;
-                        label: "Model";
+                        label: "Pre-interpolation model";
                         options: root.models;
                         action: "Get more models…";
                         value <=> root.settings.model;
@@ -513,6 +530,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Engine";
                     Segment {
+                        label: "Interpolation engine";
                         options: ["svp", "rife"];
                         value <=> root.settings.engine;
                         changed => {
@@ -524,7 +542,7 @@ export component Panel inherits Rectangle {
                     label: "Frame rate";
                     Rectangle { }
                     Field {
-                        label: "Frame rate";
+                        label: "Interpolation frame rate";
                         width: 76px;
                         height: 22px;
                         y: 3px;
@@ -537,6 +555,7 @@ export component Panel inherits Rectangle {
                 if root.settings.engine == "rife": Row {
                     label: "Backend";
                     Segment {
+                        label: "Interpolation backend";
                         options: ["vulkan", "tensorrt"];
                         value <=> root.settings.backend;
                         changed => {
@@ -556,7 +575,7 @@ export component Panel inherits Rectangle {
                     Dropdown {
                         height: 22px;
                         y: 3px;
-                        label: "Model";
+                        label: "Interpolation model";
                         options: root.models;
                         action: "Get more models…";
                         value <=> root.settings.model;
@@ -571,6 +590,7 @@ export component Panel inherits Rectangle {
                 if root.settings.engine == "svp": Row {
                     label: "Speed";
                     Segment {
+                        label: "Interpolation speed";
                         options: ["medium", "fast", "faster", "fastest"];
                         value <=> root.settings.speed;
                         changed => {
@@ -583,7 +603,7 @@ export component Panel inherits Rectangle {
                     Dropdown {
                         height: 22px;
                         y: 3px;
-                        label: "Tuning";
+                        label: "Interpolation tuning";
                         options: ["weak", "smooth", "film", "animation"];
                         value <=> root.settings.tuning;
                         changed => {
@@ -594,6 +614,7 @@ export component Panel inherits Rectangle {
                 if root.settings.engine == "svp": Row {
                     label: "Look";
                     Segment {
+                        label: "Interpolation look";
                         options: ["sharp", "standard", "smooth"];
                         value <=> root.settings.algorithm;
                         changed => {
@@ -607,7 +628,7 @@ export component Panel inherits Rectangle {
                     VerticalLayout {
                         alignment: center;
                         Switch {
-                                label: "Half-size analysis";
+                            label: "Half-size analysis";
                             checked <=> root.settings.half;
                             toggled => {
                                 root.changed();
@@ -628,6 +649,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Method";
                     Segment {
+                        label: "Masking method";
                         options: ["peel", "still"];
                         value <=> root.settings.mask-method;
                         changed => {
@@ -699,6 +721,7 @@ export component Panel inherits Rectangle {
                     label: "Frame rate";
                     Rectangle { }
                     Number {
+                        label: "Blend frame rate";
                         width: 76px;
                         height: 22px;
                         y: 3px;
@@ -735,7 +758,7 @@ export component Panel inherits Rectangle {
                     Dropdown {
                         height: 22px;
                         y: 3px;
-                        label: "Weighting";
+                        label: "Blend weighting";
                         options: ["equal", "gaussian", "gaussian_sym", "pyramid", "ascending", "descending", "vegas", "custom"];
                         value <=> root.settings.weighting;
                         changed => {
@@ -746,6 +769,7 @@ export component Panel inherits Rectangle {
                 if root.settings.weighting == "custom": Row {
                     label: "Curve";
                     Field {
+                        label: "Custom blend curve";
                         height: 22px;
                         y: 3px;
                         text <=> root.settings.custom;
@@ -816,12 +840,14 @@ export component Panel inherits Rectangle {
                     }
                     Action {
                         text: "Choose…";
+                        accessible: "Choose LUT";
                         clicked => {
                             root.choose-lut();
                         }
                     }
                     if root.settings.lut != "": Action {
                         text: "×";
+                        accessible: "Clear LUT";
                         clicked => {
                             root.settings.lut = "";
                             root.changed();
@@ -843,6 +869,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Resolution";
                     Segment {
+                        label: "Upscale resolution";
                         options: ["1080p", "1440p", "2160p"];
                         value <=> root.settings.resolution;
                         changed => {
@@ -855,7 +882,7 @@ export component Panel inherits Rectangle {
                     Dropdown {
                         height: 22px;
                         y: 3px;
-                        label: "Method";
+                        label: "Upscale method";
                         options: ["nearest", "bilinear", "bicubic", "lanczos"];
                         value <=> root.settings.method;
                         changed => {
@@ -873,6 +900,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Codec";
                     Segment {
+                        label: "Output codec";
                         options: ["h264", "hevc", "av1"];
                         value <=> root.settings.codec;
                         changed => {
@@ -883,6 +911,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Encoder";
                     Segment {
+                        label: "Video encoder";
                         options: ["auto", "hardware", "software"];
                         value <=> root.settings.encoder;
                         changed => {
@@ -893,6 +922,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Target";
                     Segment {
+                        label: "Output target";
                         options: ["quality", "size"];
                         value <=> root.settings.target;
                         changed => {
@@ -913,6 +943,7 @@ export component Panel inherits Rectangle {
                     label: "Size";
                     Rectangle { }
                     Number {
+                        label: "Target size in MB";
                         width: 76px;
                         height: 22px;
                         y: 3px;
@@ -928,6 +959,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Effort";
                     Segment {
+                        label: "Encoding effort";
                         options: ["fastest", "fast", "balanced", "best"];
                         tips: [
                             root.effort-tip(root.settings, "fastest", root.encoders-found),
@@ -944,6 +976,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Audio tracks";
                     Segment {
+                        label: "Audio tracks";
                         options: ["separate", "mix"];
                         value <=> root.settings.audio;
                         changed => {
@@ -956,7 +989,7 @@ export component Panel inherits Rectangle {
                     Field {
                         height: 22px;
                         y: 3px;
-                        label: "Options";
+                        label: "Extra encoder options";
                         placeholder: "e.g. -preset p7";
                         text <=> root.settings.options;
                         accepted => {
@@ -967,6 +1000,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Container";
                     Segment {
+                        label: "Output container";
                         options: ["mp4", "mkv", "mov"];
                         value <=> root.settings.container;
                         changed => {
@@ -992,15 +1026,33 @@ export component Panel inherits Rectangle {
                 border-width: 1px;
                 border-color: ready ? Theme.accent : Theme.seam;
                 background: go.has-hover && ready && !root.rendering ? Theme.ghost : transparent;
+                accessible-role: button;
+                accessible-label: label.text;
+                accessible-enabled: ready;
+                accessible-action-default => {
+                    go.clicked();
+                }
+                Focus {
+                    usable: ready;
+                    activate => {
+                        go.clicked();
+                    }
+                }
                 Rectangle {
                     x: 0;
                     width: root.rendering ? root.progress * parent.width : 0;
                     background: Theme.ghost;
+                    accessible-role: progress-indicator;
+                    accessible-label: "Render progress";
+                    accessible-value: round(root.progress * 100);
+                    accessible-value-minimum: 0;
+                    accessible-value-maximum: 100;
                 }
-                Text {
+                label := Text {
                     text: root.rendering ? "Stop" : (root.copying || (root.lossless && (root.separate || root.videos < 2)) ? "Export" : "Render") + (root.videos > 1 && (root.separate || root.copying) ? " \{root.videos} clips" : "");
                     color: ready ? Theme.ink : Theme.faint;
                     font-size: 13px;
+                    accessible-role: none;
                 }
                 go := TouchArea {
                     mouse-cursor: pointer;
@@ -1017,17 +1069,22 @@ export component Panel inherits Rectangle {
             HorizontalLayout {
                 height: 14px;
                 spacing: 12px;
+                if root.failed: Rectangle {
+                    width: 2px;
+                    background: Theme.accent;
+                }
                 Text {
                     horizontal-stretch: 1;
                     min-width: 0;
                     text: root.status;
-                    color: root.failed ? Theme.accent : Theme.faint;
+                    color: root.failed ? Theme.ink : Theme.faint;
                     font-size: 11px;
                     // the live numbers do not jitter in monospace, a finished line matches the action next to it
                     font-family: root.rendering ? "monospace" : "";
                     overflow: elide;
                     accessible-role: text;
                     accessible-label: self.text;
+                    accessible-live-region: polite;
                 }
                 if root.rendered != "" && !root.failed && !root.rendering: Action {
                     text: "Show in folder";
@@ -1051,6 +1108,7 @@ export component Panel inherits Rectangle {
                 }
                 Action {
                     text: root.copied ? "Copied" : root.version;
+                    accessible: "Copy version details";
                     clicked => {
                         root.copy-details();
                     }

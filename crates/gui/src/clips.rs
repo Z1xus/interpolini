@@ -12,7 +12,7 @@ use crate::project::{even, placement};
 use crate::state::{Entry, STILL, Saved, Shared, State, lock};
 #[cfg(target_os = "linux")]
 use crate::view::lanes;
-use crate::view::{fit, refresh, update};
+use crate::view::{fit, refit, refresh, update};
 use crate::{App, Clip, preview, services};
 #[cfg(target_os = "linux")]
 use crate::{Ghost, drop, icon};
@@ -116,6 +116,7 @@ pub fn import(ui: Weak<App>, state: Shared, clips: Vec<PathBuf>, point: Option<(
                 *next = Some(add(&ui, &state, probed, place));
                 if index + 1 == last {
                     fill(&ui, &state);
+                    refit(&ui, &mut lock(&state));
                 }
             });
         }
@@ -264,6 +265,7 @@ pub fn row(entry: &Entry) -> Clip {
         track: entry.track as i32,
         cut_in: entry.cut.0,
         cut_out: entry.cut.1,
+        speed: entry.speed,
         audio: entry.audio.is_some(),
         link: entry.link as i32,
         still: entry.still,

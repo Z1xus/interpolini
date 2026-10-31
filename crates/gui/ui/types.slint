@@ -15,6 +15,7 @@ export struct Clip {
     length: float,
     cut-in: float,
     cut-out: float,
+    speed: float,
     // an audio clip sits on an audio track, and clips from one file share a link
     audio: bool,
     link: int,
@@ -53,11 +54,6 @@ export struct Clip {
     ease-after: string,
     // other clips are from the same file
     paired: bool,
-}
-
-export struct Fact {
-    name: string,
-    value: string,
 }
 
 export struct Family {
@@ -157,4 +153,6 @@ export struct Prefs {
     memory: int,
     // 1 fits the picture in the preview
     zoom: float,
+    snapping: bool,
+    scrolling: string,
 }

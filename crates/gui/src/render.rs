@@ -95,7 +95,8 @@ pub fn jobs(
         let entry = &state.entries[*index];
         // the fades are for the timeline, a clip in a file of its own has none
         let span = &spans[*index];
-        let (start, end) = (span.start, span.start + span.length);
+        let speed = if copy { 1.0 } else { f64::from(entry.speed) };
+        let (start, end) = (span.start, span.start + span.length * speed);
         let faded = !separate && span.length != entry.kept();
         // a clip on its own takes the audio tracks of its file that are still on the timeline
         let kept = |stream: &usize| {
@@ -129,10 +130,11 @@ pub fn jobs(
                 span.picture()
             },
             hold: if faded {
-                (end - entry.seconds).max(0.0)
+                (end - entry.seconds).max(0.0) / speed
             } else {
                 0.0
             },
+            speed,
         }
     };
     let mut jobs: Vec<Job> = rows.iter().map(job).collect();

@@ -63,7 +63,7 @@ fn sample(source: &mut Source, job: &Job, time: f64, end: f64, cancel: &Cancel) 
     let rate = fps.0 as f64 / fps.1 as f64;
     let time = time.min(end - f64::from(FRAMES) / rate);
     let picture = |n| Ok(source.at(time + f64::from(n) / rate, cancel)?.0);
-    encode(meta, fps, job, picture, cancel)
+    Ok(encode(meta, fps, job, picture, cancel)? * job.speed)
 }
 
 pub fn estimate(
@@ -110,26 +110,34 @@ pub fn estimate(
         if spots.is_empty() {
             continue;
         }
-        sources.with(&job.clip, &job.config, cancel, |source| {
-            let graph = source.graph().ok_or("the clip has no video")?;
-            let grow = setup
-                .size
-                .filter(|_| timeline.is_some())
-                .map_or(1.0, |size| {
-                    f64::from(size.0) * f64::from(size.1)
-                        / (f64::from(graph.meta.width) * f64::from(graph.meta.height)).max(1.0)
-                });
-            if timeline.is_some() && black == 0.0 && end > shown {
-                let (meta, fps) = (graph.meta, graph.info.fps);
-                let picture = Canvas::new(meta, [0; 3]).black((meta.width, meta.height));
-                black = grow * encode(meta, fps, job, |_| Ok(picture.clone()), cancel)?;
-            }
-            let start = job.cut.map_or(0.0, |cut| cut.0);
-            for time in spots {
-                rates.push(grow * sample(source, job, start + time, start + length, cancel)?);
-            }
-            Ok(())
-        })?;
+        sources.with(
+            &job.clip,
+            &job.config.retimed(job.speed),
+            cancel,
+            |source| {
+                let graph = source.graph().ok_or("the clip has no video")?;
+                let grow = setup
+                    .size
+                    .filter(|_| timeline.is_some())
+                    .map_or(1.0, |size| {
+                        f64::from(size.0) * f64::from(size.1)
+                            / (f64::from(graph.meta.width) * f64::from(graph.meta.height)).max(1.0)
+                    });
+                if timeline.is_some() && black == 0.0 && end > shown {
+                    let (meta, fps) = (graph.meta, graph.info.fps);
+                    let picture = Canvas::new(meta, [0; 3]).black((meta.width, meta.height));
+                    black =
+                        grow * encode(meta, fps, job, |_| Ok(picture.clone()), cancel)? * job.speed;
+                }
+                let start = job.cut.map_or(0.0, |cut| cut.0);
+                let end = start + length * job.speed;
+                for time in spots {
+                    let time = start + time * job.speed;
+                    rates.push(grow * sample(source, job, time, end, cancel)?);
+                }
+                Ok(())
+            },
+        )?;
     }
     let picture = rates.iter().sum::<f64>() / rates.len() as f64;
     let (seconds, heard) = match timeline {

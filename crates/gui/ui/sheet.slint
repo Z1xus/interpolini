@@ -1,62 +1,98 @@
-import { Theme } from "widgets.slint";
+import { Scroll, Theme } from "widgets.slint";
 
 component Column inherits VerticalLayout {
-    in property <[{text: string, note: string}]> lines;
+    in property <[{text: string, note: string, keys: [string]}]> lines;
     alignment: start;
-    for line in root.lines: HorizontalLayout {
-        height: line.note == "" ? 30px : 22px;
-        spacing: 24px;
-        Text {
-            horizontal-stretch: 1;
-            text: line.text;
-            color: line.note == "" ? Theme.faint : Theme.ink;
-            font-size: line.note == "" ? 11px : 12px;
-            vertical-alignment: line.note == "" ? bottom : center;
-            overflow: elide;
-        }
-        Text {
-            text: line.note;
-            color: Theme.faint;
-            font-family: "monospace";
-            font-size: 11px;
-            horizontal-alignment: right;
-            vertical-alignment: center;
+    for line in root.lines: Rectangle {
+        property <bool> heading: line.note == "" && line.keys.length == 0;
+        property <[string]> keys: line.keys;
+        height: self.heading ? 32px : 24px;
+        accessible-role: text;
+        accessible-label: line.text + (line.note == "" ? "" : ", " + line.note) + (keys.length > 0 ? ", " + keys[0] : "") + (keys.length > 1 ? ", " + keys[1] : "") + (keys.length > 2 ? ", " + keys[2] : "") + (keys.length > 3 ? ", " + keys[3] : "");
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                horizontal-stretch: 1;
+                text: line.text;
+                color: heading ? Theme.faint : Theme.ink;
+                font-size: heading ? 11px : 12px;
+                vertical-alignment: heading ? bottom : center;
+                overflow: elide;
+                accessible-role: none;
+            }
+            Text {
+                text: line.note;
+                color: Theme.faint;
+                font-size: 11px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+            for key in line.keys: VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: cap.preferred-width + 8px;
+                    height: 18px;
+                    background: Theme.raised;
+                    cap := Text {
+                        text: key;
+                        color: Theme.muted;
+                        font-size: 10px;
+                        font-family: "monospace";
+                        accessible-role: none;
+                    }
+                }
+            }
         }
     }
 }
 
 export component Sheet inherits Window {
     in property <string> heading;
-    // a line without a note is a heading
-    in property <[{text: string, note: string}]> left;
-    in property <[{text: string, note: string}]> right;
+    in property <[{text: string, note: string, keys: [string]}]> left;
+    in property <[{text: string, note: string, keys: [string]}]> right;
     // a line under the rows
     in property <string> note;
     title: root.heading;
+    forward-focus: list;
     icon: @image-url("../../../assets/interpolini.svg");
     background: Theme.rack;
     default-font-size: 12px;
-    width: root.right.length > 0 ? 720px : 400px;
+    width: root.right.length > 0 ? 760px : 400px;
     height: max(first.preferred-height, second.preferred-height) + (root.note == "" ? 0px : 26px) + 32px;
-    body := VerticalLayout {
-        padding: 16px;
-        spacing: 6px;
-        HorizontalLayout {
-            spacing: root.right.length > 0 ? 32px : 0px;
-            first := Column {
-                lines: root.left;
+    keys := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close();
+                return accept;
             }
-            second := Column {
-                max-width: root.right.length > 0 ? 100000px : 0px;
-                lines: root.right;
-            }
+            reject
         }
-        if root.note != "": Text {
-            height: 20px;
-            text: root.note;
-            color: Theme.faint;
-            font-size: 11px;
-            vertical-alignment: bottom;
+        VerticalLayout {
+            padding: 16px;
+            spacing: 6px;
+            list := Scroll {
+                keyboard: true;
+                vertical-stretch: 1;
+                HorizontalLayout {
+                    spacing: root.right.length > 0 ? 32px : 0px;
+                    first := Column {
+                        lines: root.left;
+                    }
+                    second := Column {
+                        max-width: root.right.length > 0 ? 100000px : 0px;
+                        lines: root.right;
+                    }
+                }
+            }
+            if root.note != "": Text {
+                height: 20px;
+                text: root.note;
+                color: Theme.faint;
+                font-size: 11px;
+                vertical-alignment: bottom;
+            }
         }
     }
 }

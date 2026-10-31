@@ -14,7 +14,7 @@ use crate::file::{self, Document, Media};
 use crate::history::{self, record};
 use crate::settings::save_preferences;
 use crate::state::{Entry, Shared, State, Tracks, lock};
-use crate::view::{fit, layout, refresh, select};
+use crate::view::{fit, layout, refit, refresh, select};
 use crate::{App, ProjectSettings, Recent, Theme, themes};
 
 const RECENT: usize = 8;
@@ -363,7 +363,7 @@ fn snapshot(ui: &App, state: &mut State, target: Option<&Path>) -> Document {
         clips,
         tracks: state.tracks.clone(),
         view: View {
-            position: ui.get_position(),
+            position: (state.time(ui.get_position()) / state.seconds().max(0.001)) as f32,
             selected: ui.get_selected(),
             scope: ui.get_scope().into(),
             view: ui.get_view().into(),
@@ -688,7 +688,11 @@ fn restore(ui: &App, shared: &Shared, document: Document, path: Option<PathBuf>,
     ui.set_view(view.view.into());
     ui.set_copying(view.copying);
     fit(ui, shared);
-    ui.set_position(view.position.clamp(0.0, 1.0));
+    let mut state = lock(shared);
+    refit(ui, &mut state);
+    let at = f64::from(view.position.clamp(0.0, 1.0)) * state.seconds();
+    ui.set_position((at / state.span.max(0.001)) as f32);
+    drop(state);
     fill(ui, shared);
     select(ui, shared, view.selected);
     refresh(ui, shared);

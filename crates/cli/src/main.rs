@@ -326,6 +326,7 @@ fn render() -> ExitCode {
             place: Place::default(),
             fade: Fade::default(),
             hold: 0.0,
+            speed: 1.0,
             folder: None,
         });
     }

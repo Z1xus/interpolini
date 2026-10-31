@@ -1,4 +1,4 @@
-import { Icon, Icons, MenuHeading, MenuItem, MenuPanel, MenuSeparator, MenuTitle, Theme } from "widgets.slint";
+import { Focus, Icon, Icons, MenuHeading, MenuItem, MenuPanel, Keyboard, MenuPopup, MenuSeparator, MenuTitle, Popups, Theme } from "widgets.slint";
 import { Family, Clip, Recent } from "types.slint";
 
 export component Menu inherits Rectangle {
@@ -13,6 +13,8 @@ export component Menu inherits Rectangle {
     in property <int> missing;
     in-out property <bool> separate;
     in property <bool> copying;
+    in-out property <bool> preview-off;
+    callback switched();
     callback add-clips();
     callback remove-clip();
     callback close-clips();
@@ -20,6 +22,8 @@ export component Menu inherits Rectangle {
     callback undo();
     callback redo();
     callback close-gaps();
+    callback ripple-clip();
+    callback select-all();
     callback render();
     callback cancel();
     callback choose-theme(string);
@@ -27,6 +31,7 @@ export component Menu inherits Rectangle {
     callback save-preferences();
     callback show-sheet(string);
     callback new-project();
+    callback open(string);
     callback open-project();
     callback open-recent(string);
     callback clear-recent();
@@ -39,7 +44,29 @@ export component Menu inherits Rectangle {
     callback save-frame();
 
     property <bool> sub;
-    property <length> sub-y;
+    property <bool> shown: file.is-open || edit.is-open || view-menu.is-open || help.is-open;
+    changed shown => {
+        Popups.open += root.shown ? 1 : -1;
+    }
+    function go(to: int) {
+        file.close();
+        edit.close();
+        view-menu.close();
+        help.close();
+        root.sub = false;
+        if to == 0 {
+            file.show();
+        } else if to == 1 {
+            edit.show();
+        } else if to == 2 {
+            view-menu.show();
+        } else {
+            help.show();
+        }
+    }
+    public function open-file() {
+        root.go(0);
+    }
 
     height: 26px;
     background: Theme.rack;
@@ -48,247 +75,86 @@ export component Menu inherits Rectangle {
         padding-left: 4px;
         MenuTitle {
             text: "File";
+            open: file.is-open;
             clicked => {
-                root.sub = false;
-                file.show();
+                root.go(0);
             }
-            file := PopupWindow {
+            file := MenuPopup {
                 x: 0px;
                 y: parent.height;
                 close-policy: close-on-click-outside;
-                width: files.preferred-width + column.preferred-width;
-                height: files.preferred-height;
-                TouchArea {
-                    x: file-panel.width;
+                side(back) => {
+                    root.go(back ? 3 : 1);
+                }
+                if root.projects: MenuItem {
+                    text: "New project";
+                    hint: "Ctrl N";
+                    enabled: !root.rendering;
+                    hovered(inside) => {
+                        if inside {
+                            root.sub = false;
+                        }
+                    }
                     clicked => {
+                        root.new-project();
                         file.close();
                     }
                 }
-                file-panel := MenuPanel {
-                    x: 0px;
-                    y: 0px;
-                    width: files.preferred-width;
-                    height: files.preferred-height;
-                    keys := FocusScope {
-                        key-pressed(event) => {
-                            if event.text == Key.Escape && root.sub {
-                                root.sub = false;
-                                return accept;
-                            }
-                            return reject;
+                if root.projects: MenuItem {
+                    text: "Open project…";
+                    hint: "Ctrl O";
+                    enabled: !root.rendering;
+                    hovered(inside) => {
+                        if inside {
+                            root.sub = false;
                         }
                     }
-                    files := VerticalLayout {
-                        padding: 4px;
-                        if root.projects: MenuItem {
-                            text: "New project";
-                            hint: "Ctrl N";
-                            enabled: !root.rendering;
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub = false;
-                                }
-                            }
-                            clicked => {
-                                root.new-project();
-                                file.close();
-                            }
+                    clicked => {
+                        root.open-project();
+                        file.close();
+                    }
+                }
+                if root.projects: recents := MenuItem {
+                    text: "Open recent";
+                    enabled: root.recent.length > 0 && !root.rendering;
+                    clicked => {
+                        root.sub = true;
+                        if !self.hover {
+                            Keyboard.step(false);
                         }
-                        if root.projects: MenuItem {
-                            text: "Open project…";
-                            hint: "Ctrl O";
-                            enabled: !root.rendering;
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub = false;
-                                }
-                            }
-                            clicked => {
-                                root.open-project();
-                                file.close();
-                            }
+                    }
+                    hovered(inside) => {
+                        if inside && self.hover {
+                            root.sub = true;
                         }
-                        if root.projects: MenuItem {
-                            text: "Open recent";
-                            enabled: root.recent.length > 0 && !root.rendering;
-                            clicked => {
-                                root.sub-y = self.absolute-position.y - file-panel.absolute-position.y;
-                                root.sub = true;
-                                keys.focus();
-                            }
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub-y = self.absolute-position.y - file-panel.absolute-position.y;
-                                    root.sub = true;
-                                    keys.focus();
-                                }
-                            }
-                            Icon {
-                                x: parent.width - self.width - 8px;
-                                y: (parent.height - self.height) / 2;
-                                width: 10px;
-                                height: 10px;
-                                shape: Icons.chevron;
-                                color: Theme.faint;
-                            }
+                    }
+                    key(event) => {
+                        if event.text == Key.RightArrow {
+                            root.sub = true;
+                            Keyboard.step(false);
+                            return accept;
                         }
-                        if root.projects: MenuSeparator { }
-                        if root.projects: MenuItem {
-                            text: "Save";
-                            hint: "Ctrl S";
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub = false;
-                                }
-                            }
-                            clicked => {
-                                root.save-project();
-                                file.close();
-                            }
-                        }
-                        if root.projects: MenuItem {
-                            text: "Save as…";
-                            hint: "Ctrl Shift S";
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub = false;
-                                }
-                            }
-                            clicked => {
-                                root.save-project-as();
-                                file.close();
-                            }
-                        }
-                        if root.projects: MenuSeparator { }
-                        MenuItem {
-                            text: "Project settings…";
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub = false;
-                                }
-                            }
-                            clicked => {
-                                root.show-project();
-                                file.close();
-                            }
-                        }
-                        MenuSeparator { }
-                        MenuItem {
-                            text: "Import…";
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub = false;
-                                }
-                            }
-                            clicked => {
-                                root.add-clips();
-                                file.close();
-                            }
-                        }
-                        MenuItem {
-                            text: "Close all clips";
-                            enabled: root.clips.length > 0 && !root.rendering;
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub = false;
-                                }
-                            }
-                            clicked => {
-                                root.close-clips();
-                                file.close();
-                            }
-                        }
-                        MenuItem {
-                            text: "Locate missing files…";
-                            enabled: root.missing > 0;
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub = false;
-                                }
-                            }
-                            clicked => {
-                                root.locate();
-                                file.close();
-                            }
-                        }
-                        MenuItem {
-                            text: root.rendering ? "Stop" : "Render";
-                            enabled: root.clips.length > 0;
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub = false;
-                                }
-                            }
-                            clicked => {
-                                if root.rendering {
-                                    root.cancel();
-                                } else {
-                                    root.render();
-                                }
-                                file.close();
-                            }
-                        }
-                        MenuItem {
-                            text: "Save frame";
-                            hint: "Ctrl Shift E";
-                            enabled: root.clips.length > 0 && !root.rendering;
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub = false;
-                                }
-                            }
-                            clicked => {
-                                root.save-frame();
-                                file.close();
-                            }
-                        }
-                        MenuItem {
-                            text: "Export each clip separately";
-                            checked: root.separate || root.copying;
-                            enabled: !root.copying;
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub = false;
-                                }
-                            }
-                            clicked => {
-                                root.separate = !root.separate;
-                                root.save-preferences();
-                                file.close();
-                            }
-                        }
-                        MenuSeparator { }
-                        MenuItem {
-                            text: "Settings…";
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub = false;
-                                }
-                            }
-                            clicked => {
-                                root.show-preferences();
-                                file.close();
-                            }
-                        }
-                        MenuItem {
-                            text: "Quit";
-                            hovered(inside) => {
-                                if inside {
-                                    root.sub = false;
-                                }
-                            }
-                            clicked => {
-                                root.quit();
-                                file.close();
-                            }
-                        }
+                        reject
+                    }
+                    Icon {
+                        x: parent.width - self.width - 8px;
+                        y: (parent.height - self.height) / 2;
+                        width: 10px;
+                        height: 10px;
+                        shape: Icons.chevron;
+                        color: Theme.faint;
                     }
                     Rectangle {
                         visible: root.sub;
-                        x: file-panel.width;
-                        y: root.sub-y;
+                        x: parent.width + 4px;
                         width: column.preferred-width;
                         height: column.preferred-height;
+                        init => {
+                            file.room = self.width;
+                        }
+                        changed width => {
+                            file.room = self.width;
+                        }
                         MenuPanel {
                             column := VerticalLayout {
                                 padding: 4px;
@@ -300,6 +166,14 @@ export component Menu inherits Rectangle {
                                         root.open-recent(item.path);
                                         file.close();
                                     }
+                                    key(event) => {
+                                        if event.text == Key.LeftArrow {
+                                            root.sub = false;
+                                            recents.focus();
+                                            return accept;
+                                        }
+                                        reject
+                                    }
                                 }
                                 MenuSeparator { }
                                 MenuItem {
@@ -308,124 +182,344 @@ export component Menu inherits Rectangle {
                                         root.clear-recent();
                                         file.close();
                                     }
+                                    key(event) => {
+                                        if event.text == Key.LeftArrow {
+                                            root.sub = false;
+                                            recents.focus();
+                                            return accept;
+                                        }
+                                        reject
+                                    }
                                 }
                             }
                         }
+                    }
+                }
+                if root.projects: MenuSeparator { }
+                if root.projects: MenuItem {
+                    text: "Save";
+                    hint: "Ctrl S";
+                    hovered(inside) => {
+                        if inside {
+                            root.sub = false;
+                        }
+                    }
+                    clicked => {
+                        root.save-project();
+                        file.close();
+                    }
+                }
+                if root.projects: MenuItem {
+                    text: "Save as…";
+                    hint: "Ctrl Shift S";
+                    hovered(inside) => {
+                        if inside {
+                            root.sub = false;
+                        }
+                    }
+                    clicked => {
+                        root.save-project-as();
+                        file.close();
+                    }
+                }
+                if root.projects: MenuSeparator { }
+                MenuItem {
+                    text: "Project settings…";
+                    hovered(inside) => {
+                        if inside {
+                            root.sub = false;
+                        }
+                    }
+                    clicked => {
+                        root.show-project();
+                        file.close();
+                    }
+                }
+                MenuSeparator { }
+                MenuItem {
+                    text: "Import…";
+                    hovered(inside) => {
+                        if inside {
+                            root.sub = false;
+                        }
+                    }
+                    clicked => {
+                        root.add-clips();
+                        file.close();
+                    }
+                }
+                MenuItem {
+                    text: "Close all clips";
+                    enabled: root.clips.length > 0 && !root.rendering;
+                    hovered(inside) => {
+                        if inside {
+                            root.sub = false;
+                        }
+                    }
+                    clicked => {
+                        root.close-clips();
+                        file.close();
+                    }
+                }
+                MenuItem {
+                    text: "Locate missing files…";
+                    enabled: root.missing > 0;
+                    hovered(inside) => {
+                        if inside {
+                            root.sub = false;
+                        }
+                    }
+                    clicked => {
+                        root.locate();
+                        file.close();
+                    }
+                }
+                MenuItem {
+                    text: root.rendering ? "Stop" : "Render";
+                    enabled: root.clips.length > 0;
+                    hovered(inside) => {
+                        if inside {
+                            root.sub = false;
+                        }
+                    }
+                    clicked => {
+                        if root.rendering {
+                            root.cancel();
+                        } else {
+                            root.render();
+                        }
+                        file.close();
+                    }
+                }
+                MenuItem {
+                    text: "Save frame";
+                    hint: "Ctrl Shift E";
+                    enabled: root.clips.length > 0 && !root.rendering;
+                    hovered(inside) => {
+                        if inside {
+                            root.sub = false;
+                        }
+                    }
+                    clicked => {
+                        root.save-frame();
+                        file.close();
+                    }
+                }
+                MenuItem {
+                    text: "Export each clip separately";
+                    toggle: true;
+                    checked: root.separate || root.copying;
+                    enabled: !root.copying;
+                    hovered(inside) => {
+                        if inside {
+                            root.sub = false;
+                        }
+                    }
+                    clicked => {
+                        root.separate = !root.separate;
+                        root.save-preferences();
+                        file.close();
+                    }
+                }
+                MenuSeparator { }
+                MenuItem {
+                    text: "Settings…";
+                    hovered(inside) => {
+                        if inside {
+                            root.sub = false;
+                        }
+                    }
+                    clicked => {
+                        root.show-preferences();
+                        file.close();
+                    }
+                }
+                MenuItem {
+                    text: "Quit";
+                    hovered(inside) => {
+                        if inside {
+                            root.sub = false;
+                        }
+                    }
+                    clicked => {
+                        root.quit();
+                        file.close();
                     }
                 }
             }
         }
         MenuTitle {
             text: "Edit";
+            open: edit.is-open;
             clicked => {
-                edit.show();
+                root.go(1);
             }
-            edit := PopupWindow {
+            edit := MenuPopup {
                 y: parent.height;
-                MenuPanel {
-                    VerticalLayout {
-                        padding: 4px;
-                        MenuItem {
-                            text: "Undo";
-                            hint: "Ctrl Z";
-                            clicked => {
-                                root.undo();
-                            }
-                        }
-                        MenuItem {
-                            text: "Redo";
-                            hint: "Ctrl Shift Z";
-                            clicked => {
-                                root.redo();
-                            }
-                        }
-                        MenuItem {
-                            text: "Split";
-                            hint: "S";
-                            enabled: root.clips.length > 0;
-                            clicked => {
-                                root.mark("split");
-                            }
-                        }
-                        MenuItem {
-                            text: "Close gaps";
-                            enabled: root.clips.length > 0;
-                            clicked => {
-                                root.close-gaps();
-                            }
-                        }
-                        MenuItem {
-                            text: "Remove clip";
-                            hint: "Delete";
-                            enabled: root.clips.length > 0 && !root.rendering;
-                            clicked => {
-                                root.remove-clip();
-                            }
-                        }
+                close-policy: close-on-click-outside;
+                side(back) => {
+                    root.go(back ? 0 : 2);
+                }
+                MenuItem {
+                    text: "Undo";
+                    hint: "Ctrl Z";
+                    clicked => {
+                        root.undo();
+                        edit.close();
+                    }
+                }
+                MenuItem {
+                    text: "Redo";
+                    hint: "Ctrl Shift Z";
+                    clicked => {
+                        root.redo();
+                        edit.close();
+                    }
+                }
+                MenuSeparator { }
+                MenuItem {
+                    text: "Split";
+                    hint: "S";
+                    enabled: root.clips.length > 0;
+                    clicked => {
+                        root.mark("split");
+                        edit.close();
+                    }
+                }
+                MenuItem {
+                    text: "Remove clip";
+                    hint: "Delete";
+                    enabled: root.clips.length > 0 && !root.rendering;
+                    clicked => {
+                        root.remove-clip();
+                        edit.close();
+                    }
+                }
+                MenuItem {
+                    text: "Ripple delete";
+                    hint: "Shift Delete";
+                    enabled: root.clips.length > 0 && !root.rendering;
+                    clicked => {
+                        root.ripple-clip();
+                        edit.close();
+                    }
+                }
+                MenuItem {
+                    text: "Close gaps";
+                    enabled: root.clips.length > 0;
+                    clicked => {
+                        root.close-gaps();
+                        edit.close();
+                    }
+                }
+                MenuSeparator { }
+                MenuItem {
+                    text: "Select all";
+                    hint: "Ctrl A";
+                    enabled: root.clips.length > 0;
+                    clicked => {
+                        root.select-all();
+                        edit.close();
                     }
                 }
             }
         }
         MenuTitle {
             text: "View";
+            open: view-menu.is-open;
             clicked => {
-                view-menu.show();
+                root.go(2);
             }
-            view-menu := PopupWindow {
+            view-menu := MenuPopup {
                 y: parent.height;
-                MenuPanel {
-                    VerticalLayout {
-                        padding: 4px;
-                        MenuHeading {
-                            text: "THEME";
-                        }
-                        MenuItem {
-                            text: "Light mode";
-                            checked: root.light;
-                            enabled: root.light-available;
-                            clicked => {
-                                root.light = !root.light;
-                                root.choose-theme(root.theme);
+                close-policy: close-on-click-outside;
+                side(back) => {
+                    root.go(back ? 1 : 3);
+                }
+                MenuItem {
+                    text: "Preview";
+                    toggle: true;
+                    checked: !root.preview-off;
+                    clicked => {
+                        root.preview-off = !root.preview-off;
+                        root.switched();
+                        view-menu.close();
+                    }
+                }
+                MenuSeparator { }
+                MenuHeading {
+                    text: "THEME";
+                }
+                MenuItem {
+                    text: "Light mode";
+                    toggle: true;
+                    checked: root.light;
+                    enabled: root.light-available;
+                    clicked => {
+                        root.light = !root.light;
+                        root.choose-theme(root.theme);
+                        view-menu.close();
+                    }
+                }
+                MenuSeparator { }
+                for family in root.themes: MenuItem {
+                    min-width: 260px;
+                    text: family.name;
+                    toggle: true;
+                    checked: family.themes[0] == root.theme || family.themes[1] == root.theme || family.themes[2] == root.theme;
+                    clicked => {
+                        root.theme = family.themes[0];
+                        root.choose-theme(root.theme);
+                        view-menu.close();
+                    }
+                    hovered(inside) => {
+                        root.preview-theme(inside ? family.themes[0] : root.theme);
+                    }
+                    HorizontalLayout {
+                        x: parent.width - self.preferred-width - 12px;
+                        width: self.preferred-width;
+                        spacing: 10px;
+                        for name[index] in family.themes: Rectangle {
+                            visible: family.themes.length > 1;
+                            width: kind-text.preferred-width;
+                            accessible-role: button;
+                            accessible-label: family.name + " " + family.labels[index];
+                            accessible-checkable: true;
+                            accessible-checked: name == root.theme;
+                            accessible-action-default => {
+                                root.theme = name;
+                                root.choose-theme(name);
+                                view-menu.close();
                             }
-                        }
-                        Rectangle {
-                            height: 9px;
-                            Rectangle {
-                                height: 1px;
-                                background: Theme.seam;
+                            Focus {
+                                activate => {
+                                    root.theme = name;
+                                    root.choose-theme(name);
+                                    view-menu.close();
+                                }
+                                focus-gained => {
+                                    root.preview-theme(name);
+                                }
+                                focus-lost => {
+                                    root.preview-theme(root.theme);
+                                }
                             }
-                        }
-                        for family in root.themes: MenuItem {
-                            min-width: 260px;
-                            text: family.name;
-                            checked: family.themes[0] == root.theme || family.themes[1] == root.theme || family.themes[2] == root.theme;
-                            clicked => {
-                                root.theme = family.themes[0];
-                                root.choose-theme(root.theme);
+                            kind-text := Text {
+                                text: family.labels[index];
+                                color: name == root.theme || kind.has-hover ? Theme.ink : Theme.faint;
+                                font-weight: name == root.theme ? 700 : 400;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                accessible-role: none;
                             }
-                            hovered(inside) => {
-                                root.preview-theme(inside ? family.themes[0] : root.theme);
-                            }
-                            // the kinds of one theme are on its line
-                            HorizontalLayout {
-                                x: parent.width - self.preferred-width - 12px;
-                                width: self.preferred-width;
-                                spacing: 10px;
-                                for name[index] in family.themes: Text {
-                                    visible: family.themes.length > 1;
-                                    text: family.labels[index];
-                                    color: name == root.theme ? Theme.accent : kind.has-hover ? Theme.ink : Theme.faint;
-                                    font-size: 11px;
-                                    vertical-alignment: center;
-                                    kind := TouchArea {
-                                        clicked => {
-                                            root.theme = name;
-                                            root.choose-theme(name);
-                                        }
-                                        changed has-hover => {
-                                            root.preview-theme(self.has-hover ? name : root.theme);
-                                        }
-                                    }
+                            kind := TouchArea {
+                                clicked => {
+                                    root.theme = name;
+                                    root.choose-theme(name);
+                                    view-menu.close();
+                                }
+                                changed has-hover => {
+                                    root.preview-theme(self.has-hover ? name : root.theme);
                                 }
                             }
                         }
@@ -435,26 +529,36 @@ export component Menu inherits Rectangle {
         }
         MenuTitle {
             text: "Help";
+            open: help.is-open;
             clicked => {
-                help.show();
+                root.go(3);
             }
-            help := PopupWindow {
+            help := MenuPopup {
                 y: parent.height;
-                MenuPanel {
-                    VerticalLayout {
-                        padding: 4px;
-                        MenuItem {
-                            text: "Shortcuts";
-                            clicked => {
-                                root.show-sheet("Shortcuts");
-                            }
-                        }
-                        MenuItem {
-                            text: "Credits";
-                            clicked => {
-                                root.show-sheet("Credits");
-                            }
-                        }
+                close-policy: close-on-click-outside;
+                side(back) => {
+                    root.go(back ? 2 : 0);
+                }
+                MenuItem {
+                    text: "Shortcuts";
+                    clicked => {
+                        root.show-sheet("Shortcuts");
+                        help.close();
+                    }
+                }
+                MenuItem {
+                    text: "Credits";
+                    clicked => {
+                        root.show-sheet("Credits");
+                        help.close();
+                    }
+                }
+                MenuSeparator { }
+                MenuItem {
+                    text: "Support interpolini";
+                    clicked => {
+                        root.open("https://z1x.us/sponsor");
+                        help.close();
                     }
                 }
             }

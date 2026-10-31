@@ -5,7 +5,7 @@ use slint::{ComponentHandle, Model, VecModel};
 
 use crate::history::{record, revert};
 use crate::state::{Entry, Shared, State, lock};
-use crate::view::{fit, lanes, layout, load, refresh, select, selected};
+use crate::view::{fit, lanes, layout, load, refit, refresh, select, selected};
 use crate::{App, Clip};
 
 // moved is how far the clip came, a clip that is not moved gives 0
@@ -63,7 +63,7 @@ pub fn overwrite(ui: &App, state: &mut State, link: u64, moved: f64) {
                 () if to - moved <= start + 0.001 => (from.min(start), to),
                 () => (from, to),
             };
-            let place = |time: f64| row.cut_in + ((time - start) / other.seconds) as f32;
+            let place = |time: f64| row.cut_in + ((time - start) / other.length()) as f32;
             match (from <= start, to >= end) {
                 (true, true) => {
                     let gone = state.entries.remove(index);
@@ -152,12 +152,18 @@ fn clear(state: &State, group: &[u64], index: usize, track: usize, moved: f64) -
     };
     let sides =
         pairs().flat_map(|(mover, wall)| [wall.0 - mover.1 - mover.0, wall.0 + wall.1 - mover.0]);
-    let moves = [moved]
+    let spots: Vec<f64> = [moved, 0.0]
         .into_iter()
         .chain(sides)
-        .filter(|moved| free(*moved));
-    moves
-        .min_by(|a, b| (a - moved).abs().total_cmp(&(b - moved).abs()))
+        .filter(|moved| free(*moved))
+        .collect();
+    let near = |spots: &mut dyn Iterator<Item = &f64>| {
+        let best = spots.min_by(|a, b| (*a - moved).abs().total_cmp(&(*b - moved).abs()));
+        best.copied()
+    };
+    let (from, to) = (moved.min(0.0) - 0.0005, moved.max(0.0) + 0.0005);
+    near(&mut spots.iter().filter(|spot| (from..=to).contains(*spot)))
+        .or_else(|| near(&mut spots.iter()))
         .unwrap_or(0.0)
 }
 
@@ -171,8 +177,9 @@ fn snap(state: &State, entry: &Entry, time: f64) -> Option<f64> {
     };
     let start = f64::from(video.cut.0) * video.seconds;
     let end = f64::from(video.cut.1) * video.seconds;
-    let key = video.key(start + time - video.at, start + 0.05, end - 0.05)?;
-    Some(video.at + key - start)
+    let speed = f64::from(video.speed);
+    let key = video.key(start + (time - video.at) * speed, start + 0.05, end - 0.05)?;
+    Some(video.at + (key - start) / speed)
 }
 
 pub fn discard(ui: &App, state: &mut State, gone: impl Fn(&Entry) -> bool) {
@@ -186,6 +193,23 @@ pub fn discard(ui: &App, state: &mut State, gone: impl Fn(&Entry) -> bool) {
             crate::clips::forget(state, &gone);
             rows.remove(index);
         }
+    }
+}
+
+pub fn pause(ui: &App, state: &Shared) {
+    if ui.get_playing() {
+        lock(state).resume = true;
+        ui.set_playing(false);
+    }
+}
+
+pub fn resume(ui: &App, state: &Shared) {
+    let mut held = lock(state);
+    let again = std::mem::take(&mut held.resume);
+    let ended = held.time(ui.get_position()) >= held.seconds() - 0.001;
+    drop(held);
+    if again && !ended {
+        ui.invoke_play();
     }
 }
 
@@ -215,7 +239,99 @@ fn aimed(ui: &App, state: &State, index: usize, alone: bool) -> Vec<usize> {
         .collect()
 }
 
+fn bands(state: &State) -> Vec<(bool, usize, f32, f32)> {
+    let (video, audio, _) = state.places();
+    let video = video.into_iter().zip(&state.tracks.video).enumerate();
+    let audio = audio.into_iter().zip(&state.tracks.audio).enumerate();
+    let video = video.map(|(track, (top, height))| (false, track, top, top + height));
+    let audio = audio.map(|(track, (top, (height, _)))| (true, track, top, top + height));
+    video.chain(audio).collect()
+}
+
+fn hole(state: &State, time: f64, depth: f32) -> Option<(f64, f64)> {
+    let band = |band: &&(bool, usize, f32, f32)| band.2 <= depth && depth < band.3;
+    let bands = bands(state);
+    let (sound, track, ..) = bands.iter().find(band)?;
+    let lane = || {
+        let own = |entry: &&Entry| (entry.audio.is_some(), entry.track) == (*sound, *track);
+        state.entries.iter().filter(own)
+    };
+    if lane().any(|entry| entry.at < time && time < entry.at + entry.kept()) {
+        return None;
+    }
+    let ends = lane().map(|entry| entry.at + entry.kept());
+    let before = ends.filter(|end| *end <= time).fold(0.0, f64::max);
+    let after = lane().map(|entry| entry.at);
+    let after = after.filter(|at| *at >= time).fold(f64::MAX, f64::min);
+    (after != f64::MAX && after - before > 0.001).then_some((before, after))
+}
+
+fn ripple(ui: &App, state: &mut State, time: f64, mut by: f64) {
+    let mut firsts: HashMap<u64, f64> = HashMap::new();
+    for entry in &state.entries {
+        let first = firsts.entry(entry.link).or_insert(f64::MAX);
+        *first = first.min(entry.at);
+    }
+    let moves: Vec<bool> = (state.entries.iter())
+        .map(|entry| firsts[&entry.link] >= time - 0.001)
+        .collect();
+    if by < 0.0 {
+        let entries = || state.entries.iter().zip(&moves);
+        for (mover, _) in entries().filter(|(_, moves)| **moves) {
+            by = by.max(-mover.at);
+            let before = entries().filter(|(other, moves)| {
+                let same = other.audio.is_some() == mover.audio.is_some();
+                !**moves
+                    && same
+                    && other.track == mover.track
+                    && other.at + other.kept() <= mover.at + 0.001
+            });
+            for (other, _) in before {
+                by = by.max(other.at + other.kept() - mover.at);
+            }
+        }
+    }
+    let rows = ui.get_clips();
+    for (place, entry) in state.entries.iter_mut().enumerate() {
+        if let (true, Some(mut row)) = (moves[place], rows.row_data(place)) {
+            entry.at += by;
+            row.at = entry.at as f32;
+            rows.set_row_data(place, row);
+        }
+    }
+}
+
+fn pick(ui: &App, state: &State, wanted: impl Fn(&Entry) -> bool) {
+    let rows = ui.get_clips();
+    for (place, entry) in state.entries.iter().enumerate() {
+        let picked = wanted(entry);
+        if let Some(mut row) = rows.row_data(place).filter(|row| row.picked != picked) {
+            row.picked = picked;
+            rows.set_row_data(place, row);
+        }
+    }
+}
+
+fn close_gap(ui: &App, shared: &Shared, time: f64, depth: f32) {
+    let mut state = lock(shared);
+    let Some((before, after)) = hole(&state, time, depth) else {
+        return;
+    };
+    record(ui, &mut state, false);
+    ripple(ui, &mut state, after, before - after);
+    drop(state);
+    fit(ui, shared);
+    refresh(ui, shared);
+}
+
 pub fn wire(ui: &App, state: &Shared) {
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_fit_timeline(move || {
+        if let Some(ui) = weak.upgrade() {
+            refit(&ui, &mut lock(&shared));
+        }
+    });
+
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_extend(move |index| {
         let Some(ui) = weak.upgrade() else {
@@ -250,7 +366,7 @@ pub fn wire(ui: &App, state: &Shared) {
         }
     });
 
-    let remove = |all: bool| {
+    let remove = |all: bool, pull: bool| {
         let (weak, shared) = (ui.as_weak(), Arc::clone(state));
         move || {
             let Some(ui) = weak.upgrade() else {
@@ -266,7 +382,25 @@ pub fn wire(ui: &App, state: &Shared) {
             let now = move |ui: &App, shared: &Shared| {
                 let mut state = lock(shared);
                 record(ui, &mut state, false);
+                let gone = state
+                    .entries
+                    .iter()
+                    .filter(|entry| pull && links.contains(&entry.link));
+                let mut gone: Vec<(f64, f64)> = gone
+                    .map(|entry| (entry.at, entry.at + entry.kept()))
+                    .collect();
+                gone.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let mut spans: Vec<(f64, f64)> = Vec::new();
+                for span in gone {
+                    match spans.last_mut() {
+                        Some(last) if span.0 <= last.1 + 0.001 => last.1 = last.1.max(span.1),
+                        _ => spans.push(span),
+                    }
+                }
                 discard(ui, &mut state, |entry| all || links.contains(&entry.link));
+                for (start, end) in spans.into_iter().rev() {
+                    ripple(ui, &mut state, end, start - end);
+                }
                 drop(state);
                 fit(ui, shared);
                 select(ui, shared, -1);
@@ -283,8 +417,240 @@ pub fn wire(ui: &App, state: &Shared) {
             crate::project::ask(&ui, "delete", text, Box::new(now));
         }
     };
-    ui.on_remove_clip(remove(false));
-    ui.on_close_clips(remove(true));
+    ui.on_remove_clip(remove(false, false));
+    ui.on_ripple_clip(remove(false, true));
+    ui.on_close_clips(remove(true, false));
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_range(move |index| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let state = lock(&shared);
+        let span = selected(&ui).and_then(|place| {
+            let (anchor, clicked) = (
+                state.entries.get(place)?,
+                state.entries.get(index as usize)?,
+            );
+            let end = |entry: &Entry| entry.at + entry.kept();
+            Some((anchor.at.min(clicked.at), end(anchor).max(end(clicked))))
+        });
+        let Some((from, to)) = span else {
+            drop(state);
+            return select(&ui, &shared, index);
+        };
+        let inside =
+            |entry: &&Entry| entry.at < to - 0.001 && from + 0.001 < entry.at + entry.kept();
+        let links: Vec<u64> = state
+            .entries
+            .iter()
+            .filter(inside)
+            .map(|entry| entry.link)
+            .collect();
+        pick(&ui, &state, |entry| links.contains(&entry.link));
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_select_track(move |audio, index| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let state = lock(&shared);
+        let on_track =
+            |entry: &&Entry| entry.audio.is_some() == audio && entry.track == index as usize;
+        let links: Vec<u64> = state
+            .entries
+            .iter()
+            .filter(on_track)
+            .map(|entry| entry.link)
+            .collect();
+        if links.is_empty() {
+            return;
+        }
+        pick(&ui, &state, |entry| links.contains(&entry.link));
+        let first = state
+            .entries
+            .iter()
+            .position(|entry| links.contains(&entry.link));
+        drop(state);
+        let rows = ui.get_clips();
+        let held =
+            selected(&ui).is_some_and(|place| rows.row_data(place).is_some_and(|row| row.picked));
+        if !held {
+            ui.set_selected(first.map_or(-1, |place| place as i32));
+            load(&ui, &mut lock(&shared));
+        }
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_jump_clip(move |step| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let state = lock(&shared);
+        let mut order: Vec<usize> = (0..state.entries.len()).collect();
+        order.sort_by(|a, b| {
+            let (a, b) = (&state.entries[*a], &state.entries[*b]);
+            let kind = (a.audio.is_some(), a.track).cmp(&(b.audio.is_some(), b.track));
+            a.at.total_cmp(&b.at).then(kind)
+        });
+        let mut seen = std::collections::HashSet::new();
+        order.retain(|place| seen.insert(state.entries[*place].link));
+        let link = selected(&ui).and_then(|index| state.entries.get(index));
+        let link = link.map(|entry| entry.link);
+        let same = |place: &usize| Some(state.entries[*place].link) == link;
+        let now = order.iter().position(same);
+        let next = match now {
+            Some(now) => now as i32 + step,
+            None if step > 0 => 0,
+            None => order.len() as i32 - 1,
+        };
+        let Some(place) = usize::try_from(next).ok().and_then(|next| order.get(next)) else {
+            return;
+        };
+        let place = *place as i32;
+        drop(state);
+        select(&ui, &shared, place);
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_move_clips(move |by| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let Some(index) = selected(&ui) else {
+            return;
+        };
+        let rows = ui.get_clips();
+        let mut state = lock(&shared);
+        let Some(entry) = state.entries.get(index) else {
+            return;
+        };
+        let (link, track) = (entry.link, entry.track);
+        let mut group = chosen(&ui, &state);
+        if !group.contains(&link) {
+            group = vec![link];
+        }
+        let linked = |other: &&Entry| group.contains(&other.link);
+        let earliest = state.entries.iter().filter(linked).map(|other| other.at);
+        let wanted = f64::from(by).max(-earliest.fold(f64::MAX, f64::min));
+        let moved = clear(&state, &group, index, track, wanted);
+        if moved.abs() < 0.0005 {
+            return;
+        }
+        record(&ui, &mut state, true);
+        for (place, other) in state.entries.iter().enumerate() {
+            if let Some(mut row) = rows.row_data(place).filter(|_| group.contains(&other.link)) {
+                row.at = (other.at + moved) as f32;
+                rows.set_row_data(place, row);
+            }
+        }
+        layout(&ui, &mut state);
+        drop(state);
+        fit(&ui, &shared);
+        refresh(&ui, &shared);
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_select_all(move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let rows = ui.get_clips();
+        for place in 0..rows.row_count() {
+            if let Some(mut row) = rows.row_data(place).filter(|row| !row.picked) {
+                row.picked = true;
+                rows.set_row_data(place, row);
+            }
+        }
+        if selected(&ui).is_none() {
+            ui.set_selected(0);
+            load(&ui, &mut lock(&shared));
+        }
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_lasso_start(move |add| {
+        if let Some(ui) = weak.upgrade() {
+            let mut state = lock(&shared);
+            state.lasso = if add { chosen(&ui, &state) } else { Vec::new() };
+        }
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_lasso(move |from, to, top, bottom| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let state = lock(&shared);
+        let bands = bands(&state);
+        let (from, to) = (f64::from(from), f64::from(to));
+        let hit = |entry: &&Entry| {
+            let band = bands
+                .iter()
+                .find(|band| (band.0, band.1) == (entry.audio.is_some(), entry.track));
+            entry.at < to
+                && from < entry.at + entry.kept()
+                && band.is_some_and(|band| band.2 < bottom && top < band.3)
+        };
+        let links: Vec<u64> = state
+            .entries
+            .iter()
+            .filter(hit)
+            .map(|entry| entry.link)
+            .collect();
+        pick(&ui, &state, |entry| {
+            state.lasso.contains(&entry.link) || links.contains(&entry.link)
+        });
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_lasso_end(move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let rows = ui.get_clips();
+        let picked = |place: usize| rows.row_data(place).is_some_and(|row| row.picked);
+        if selected(&ui).is_some_and(picked) {
+            return;
+        }
+        let first = (0..rows.row_count()).find(|place| picked(*place));
+        let first = first.map_or(-1, |place| place as i32);
+        if ui.get_selected() == first {
+            return;
+        }
+        ui.set_selected(first);
+        load(&ui, &mut lock(&shared));
+    });
+
+    let shared = Arc::clone(state);
+    ui.on_gap(move |time, depth| hole(&lock(&shared), f64::from(time), depth).is_some());
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_close_gap(move |time, depth| {
+        if let Some(ui) = weak.upgrade() {
+            close_gap(&ui, &shared, f64::from(time), depth);
+        }
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_gap_here(move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let state = lock(&shared);
+        let time = state.time(ui.get_position());
+        let mut tracks = bands(&state);
+        tracks.sort_by(|a, b| a.2.total_cmp(&b.2));
+        let found = tracks.iter().map(|band| (band.2 + band.3) / 2.0);
+        let depth = found
+            .into_iter()
+            .find(|depth| hole(&state, time, *depth).is_some());
+        drop(state);
+        if let Some(depth) = depth {
+            close_gap(&ui, &shared, time, depth);
+        }
+    });
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_mark(move |kind| {
@@ -296,7 +662,7 @@ pub fn wire(ui: &App, state: &Shared) {
             return;
         };
         let mut state = lock(&shared);
-        let time = f64::from(ui.get_position()) * state.seconds();
+        let time = state.time(ui.get_position());
         // a part shorter than this is not worth a clip
         let least = 0.05;
         let under =
@@ -341,8 +707,8 @@ pub fn wire(ui: &App, state: &Shared) {
                 .filter(|time| *time >= end - 0.001)
                 .fold(f64::MAX, f64::min);
             let cut = (f64::from(entry.cut.0), 1.0 - f64::from(entry.cut.1));
-            room.0 = room.0.min(start - before).min(cut.0 * entry.seconds);
-            room.1 = room.1.min(after - end).min(cut.1 * entry.seconds);
+            room.0 = room.0.min(start - before).min(cut.0 * entry.length());
+            room.1 = room.1.min(after - end).min(cut.1 * entry.length());
         }
         let room = (room.0.max(0.0) as f32, room.1.max(0.0) as f32);
         record(&ui, &mut state, false);
@@ -352,7 +718,7 @@ pub fn wire(ui: &App, state: &Shared) {
                 continue;
             };
             let entry = state.entries[index].clone();
-            let length = entry.seconds as f32;
+            let length = entry.length() as f32;
             let time = match kind.as_str() {
                 "start" | "split" if ui.get_copying() => match snap(&state, &entry, time) {
                     Some(time) => time,
@@ -402,8 +768,8 @@ pub fn wire(ui: &App, state: &Shared) {
             .unwrap_or(0);
         drop(state);
         fit(&ui, &shared);
-        let total = lock(&shared).seconds().max(0.001);
-        ui.set_position((time / total).clamp(0.0, 1.0) as f32);
+        let span = lock(&shared).span.max(0.001);
+        ui.set_position((time / span).clamp(0.0, 1.0) as f32);
         ui.set_playing(false);
         refresh(&ui, &shared);
     });
@@ -414,12 +780,13 @@ pub fn wire(ui: &App, state: &Shared) {
         let Some(ui) = weak.upgrade() else {
             return;
         };
-        record(&ui, &mut state, false);
         // with alt the clip leaves the other clips of its file, and moves and cuts on its own
         if let Some(mut row) = ui.get_clips().row_data(index as usize).filter(|_| alone) {
+            record(&ui, &mut state, false);
             state.ids += 1;
             row.link = state.ids as i32;
             state.entries[index as usize].link = state.ids;
+            state.touched = Some(state.ids);
             ui.get_clips().set_row_data(index as usize, row);
             ui.set_link(state.ids as i32);
         }
@@ -428,14 +795,14 @@ pub fn wire(ui: &App, state: &Shared) {
             .get(index as usize)
             .map(|entry| (entry.id, f64::from(time) - entry.at, entry.at));
         state.held = held;
-        state.touched = state.entries.get(index as usize).map(|entry| entry.link);
     });
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
-    ui.on_drag(move |time, depth, slack| {
+    ui.on_drag(move |time, depth, slack, cutting| {
         let Some(ui) = weak.upgrade() else {
             return;
         };
+        pause(&ui, &shared);
         let rows = ui.get_clips();
         let mut state = lock(&shared);
         let Some((id, offset, _)) = state.held else {
@@ -444,21 +811,28 @@ pub fn wire(ui: &App, state: &Shared) {
         let Some(index) = state.entries.iter().position(|entry| entry.id == id) else {
             return;
         };
+        state.cutting = cutting && !ui.get_copying();
         let entry = state.entries[index].clone();
+        if state.touched.is_none() {
+            record(&ui, &mut state, false);
+            state.touched = Some(entry.link);
+        }
         let mut at = (f64::from(time) - offset).max(0.0);
         // the start or the end of the clip goes onto a near edge: the playhead or another clip
-        let playhead = f64::from(ui.get_position()) * state.seconds();
+        let playhead = state.time(ui.get_position());
         let others = state
             .entries
             .iter()
             .filter(|other| other.link != entry.link);
         let edges = others.flat_map(|other| [other.at, other.at + other.kept()]);
         let edges = edges.chain([0.0, playhead]);
-        let near = edges.flat_map(|edge| [edge - at, edge - at - entry.kept()]);
-        let near = near.min_by(|a, b| a.abs().total_cmp(&b.abs()));
-        if let Some(near) = near.filter(|near| near.abs() < f64::from(slack)) {
+        let near = edges.flat_map(|edge| [(edge - at, edge), (edge - at - entry.kept(), edge)]);
+        let near = near.min_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
+        let near = near.filter(|near| near.0.abs() < f64::from(slack));
+        if let Some((near, _)) = near {
             at = (at + near).max(0.0);
         }
+        ui.set_snapped(near.map_or(-1.0, |near| near.1 as f32));
         // the clips of one file move as one, with the other selected clips, and none of them goes before the start
         let mut group = chosen(&ui, &state);
         if !group.contains(&entry.link) {
@@ -474,7 +848,7 @@ pub fn wire(ui: &App, state: &Shared) {
         let moved = (at - entry.at).max(-earliest);
         let track = state.reach(entry.audio.is_some(), depth);
         lanes(&ui, &state);
-        let moved = match ui.get_copying() {
+        let moved = match ui.get_copying() || !cutting {
             true => clear(&state, &group, index, track, moved),
             false => moved,
         };
@@ -507,23 +881,33 @@ pub fn wire(ui: &App, state: &Shared) {
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_release(move || {
         if let Some(ui) = weak.upgrade() {
+            ui.set_snapped(-1.0);
             let mut state = lock(&shared);
+            let cutting = std::mem::take(&mut state.cutting);
             let moved = state.held.take().and_then(|(id, _, was)| {
                 let held = state.entries.iter().find(|entry| entry.id == id);
                 held.map(|entry| entry.at - was)
             });
             state.spare = None;
             if let Some(link) = state.touched.take() {
-                // a copy has one file for each clip, so a clip does not cut into another one
-                if ui.get_copying() && clashes(&state, link) {
-                    drop(state);
-                    return revert(&ui, &shared);
+                let mut group = chosen(&ui, &state);
+                if !group.contains(&link) {
+                    group = vec![link];
                 }
-                overwrite(&ui, &mut state, link, moved.unwrap_or(0.0));
+                // a copy has one file for each clip, so a clip does not cut into another one
+                if ui.get_copying() && group.iter().any(|link| clashes(&state, *link)) {
+                    drop(state);
+                    revert(&ui, &shared);
+                    return resume(&ui, &shared);
+                }
+                for link in group.into_iter().filter(|_| cutting) {
+                    overwrite(&ui, &mut state, link, moved.unwrap_or(0.0));
+                }
             }
             drop(state);
             fit(&ui, &shared);
             refresh(&ui, &shared);
+            resume(&ui, &shared);
         }
     });
 
@@ -570,13 +954,15 @@ pub fn wire(ui: &App, state: &Shared) {
     });
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
-    ui.on_trimmed(move |index, slack, alone| {
+    ui.on_trimmed(move |index, slack, alone, cutting| {
         let Some(ui) = weak.upgrade() else {
             return;
         };
+        pause(&ui, &shared);
         // the other clips of the same file get the same cut
         let rows = ui.get_clips();
         let mut state = lock(&shared);
+        state.cutting = cutting && !ui.get_copying();
         state.touched = state.entries.get(index as usize).map(|entry| entry.link);
         let (Some(mut row), Some(entry)) = (
             rows.row_data(index as usize),
@@ -610,25 +996,30 @@ pub fn wire(ui: &App, state: &Shared) {
             .find(joined)
             .filter(|_| !alone && !ui.get_copying())
             .cloned();
-        let playhead = f64::from(ui.get_position()) * state.seconds();
+        let playhead = state.time(ui.get_position());
         let others = state.entries.iter().filter(|other| other.link != link);
         let edges = others.flat_map(|other| [other.at, other.at + other.kept()]);
         let near = edges
             .chain([0.0, playhead])
-            .map(|other| other as f32 - edge)
-            .min_by(|a, b| a.abs().total_cmp(&b.abs()));
-        let moved = near.filter(|near| near.abs() < slack).unwrap_or(0.0) / row.length;
-        // in a copy the clips next to this file are walls, the end of the one before and the start of the one after
+            .map(|other| (other as f32 - edge, other as f32))
+            .min_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
+        let near = near.filter(|near| near.0.abs() < slack);
+        ui.set_snapped(near.map_or(-1.0, |near| near.1));
+        let moved = near.map_or(0.0, |near| near.0) / row.length;
+        let walls = ui.get_copying() || !cutting;
         let mut room = (0.0, f64::MAX);
-        let own = |member: &&Entry| member.link == link && ui.get_copying();
+        let own = |member: &&Entry| member.link == link && walls;
         for member in state.entries.iter().filter(own) {
             let wall = |other: &&Entry| {
                 let same = other.audio.is_some() == member.audio.is_some();
                 other.link != link && same && other.track == member.track
             };
             for other in state.entries.iter().filter(wall) {
+                let rolls = next.as_ref().is_some_and(|next| next.link == other.link);
                 match other.at < member.at {
+                    true if rolls => room.0 = f64::max(room.0, other.at + 0.1),
                     true => room.0 = f64::max(room.0, other.at + other.kept()),
+                    false if rolls => room.1 = f64::min(room.1, other.at + other.kept() - 0.1),
                     false => room.1 = f64::min(room.1, other.at),
                 }
             }
@@ -638,11 +1029,17 @@ pub fn wire(ui: &App, state: &Shared) {
         let key = video
             .filter(|_| head && ui.get_copying())
             .and_then(|video| {
-                let (start, end) = (row.cut_in * row.length, row.cut_out * row.length);
-                let first = (f64::from(start - row.at) + room.0).max(0.0) - 0.001;
-                video.key(f64::from(start), first, f64::from(end) - 0.1)
+                let speed = f64::from(video.speed);
+                let (start, end) = (
+                    row.cut_in * video.seconds as f32,
+                    row.cut_out * video.seconds as f32,
+                );
+                let first =
+                    ((room.0 - f64::from(row.at)) * speed + f64::from(start)).max(0.0) - 0.001;
+                let key = video.key(f64::from(start), first, f64::from(end) - 0.1)?;
+                Some((key / video.seconds) as f32 - row.cut_in)
             });
-        let moved = key.map_or(moved, |key| key as f32 / row.length - row.cut_in);
+        let moved = key.unwrap_or(moved);
         match head {
             true if row.cut_in + moved >= 0.0 => {
                 row.cut_in += moved;
@@ -650,6 +1047,11 @@ pub fn wire(ui: &App, state: &Shared) {
             }
             false if row.cut_out + moved <= 1.0 => row.cut_out += moved,
             _ => {}
+        }
+        let wall = room.0 as f32;
+        if head && walls && row.at < wall {
+            row.cut_in += (wall - row.at) / row.length;
+            row.at = wall;
         }
         let most = row.cut_in + ((room.1 - f64::from(row.at)) / f64::from(row.length)) as f32;
         row.cut_out = row.cut_out.min(most);
@@ -670,8 +1072,8 @@ pub fn wire(ui: &App, state: &Shared) {
                 true => row.at,
                 false => row.at + (row.cut_out - row.cut_in) * row.length,
             };
-            let moved = ((f64::from(edge) - was) / next.seconds) as f32;
-            let least = (0.1 / next.seconds) as f32;
+            let moved = ((f64::from(edge) - was) / next.length()) as f32;
+            let least = (0.1 / next.length()) as f32;
             let (from, to) = match head {
                 true => (
                     next.cut.0,
@@ -682,7 +1084,7 @@ pub fn wire(ui: &App, state: &Shared) {
                     next.cut.1,
                 ),
             };
-            let at = next.at + f64::from(from - next.cut.0) * next.seconds;
+            let at = next.at + f64::from(from - next.cut.0) * next.length();
             for (other, entry) in state.entries.iter().enumerate() {
                 let Some(mut near) = rows.row_data(other).filter(|_| entry.link == next.link)
                 else {
@@ -727,6 +1129,53 @@ pub fn wire(ui: &App, state: &Shared) {
             rows.set_row_data(place, row);
         }
         drop(state);
+        refresh(&ui, &shared);
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_retime(move |index, speed| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let rows = ui.get_clips();
+        let mut state = lock(&shared);
+        record(&ui, &mut state, true);
+        layout(&ui, &mut state);
+        let places = aimed(&ui, &state, index as usize, false).into_iter();
+        let mut links: Vec<u64> = places
+            .filter(|place| !state.entries[*place].still)
+            .map(|place| state.entries[place].link)
+            .collect();
+        links.sort_unstable();
+        links.dedup();
+        let first = |state: &State, link: u64| {
+            let own = state.entries.iter().filter(|entry| entry.link == link);
+            own.map(|entry| entry.at).fold(f64::MAX, f64::min)
+        };
+        links.sort_by(|a, b| first(&state, *b).total_cmp(&first(&state, *a)));
+        for link in links {
+            let members: Vec<usize> = (0..state.entries.len())
+                .filter(|place| state.entries[*place].link == link)
+                .collect();
+            let end = |state: &State| {
+                let ends = members
+                    .iter()
+                    .map(|place| state.entries[*place].at + state.entries[*place].kept());
+                ends.fold(0.0, f64::max)
+            };
+            let old = end(&state);
+            for place in &members {
+                state.entries[*place].speed = speed;
+                if let Some(mut row) = rows.row_data(*place) {
+                    row.speed = speed;
+                    rows.set_row_data(*place, row);
+                }
+            }
+            let new = end(&state);
+            ripple(&ui, &mut state, old, new - old);
+        }
+        drop(state);
+        fit(&ui, &shared);
         refresh(&ui, &shared);
     });
 
@@ -792,6 +1241,13 @@ pub fn wire(ui: &App, state: &Shared) {
     }
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_place_key(move || {
+        if let Some(ui) = weak.upgrade() {
+            record(&ui, &mut lock(&shared), true);
+        }
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_placed(move || {
         if let Some(ui) = weak.upgrade() {
             refresh(&ui, &shared);
@@ -801,17 +1257,23 @@ pub fn wire(ui: &App, state: &Shared) {
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_trim_done(move || {
         if let Some(ui) = weak.upgrade() {
+            ui.set_snapped(-1.0);
             let mut state = lock(&shared);
+            let cutting = std::mem::take(&mut state.cutting);
             if let Some(link) = state.touched.take() {
                 if ui.get_copying() && clashes(&state, link) {
                     drop(state);
-                    return revert(&ui, &shared);
+                    revert(&ui, &shared);
+                    return resume(&ui, &shared);
                 }
-                overwrite(&ui, &mut state, link, 0.0);
+                if cutting {
+                    overwrite(&ui, &mut state, link, 0.0);
+                }
             }
             drop(state);
             fit(&ui, &shared);
             refresh(&ui, &shared);
+            resume(&ui, &shared);
         }
     });
 }

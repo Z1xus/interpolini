@@ -1,13 +1,18 @@
 import { Field, Label, Segment, Theme } from "widgets.slint";
 
+component Heading inherits Text {
+    height: 26px;
+    color: Theme.faint;
+    font-size: 11px;
+    vertical-alignment: bottom;
+}
+
 component Line inherits HorizontalLayout {
     in property <string> label;
-    height: 34px;
-    padding-left: 16px;
-    padding-right: 16px;
-    spacing: 10px;
+    height: 30px;
+    spacing: 8px;
     Label {
-        horizontal-stretch: 1;
+        width: 88px;
         text: root.label;
     }
     @children
@@ -16,12 +21,14 @@ component Line inherits HorizontalLayout {
 component Entry inherits VerticalLayout {
     in-out property <string> text;
     in property <string> placeholder;
+    in property <string> label;
     in property <length> wide: 64px;
     callback accepted();
     alignment: center;
     Field {
         width: root.wide;
         height: 24px;
+        label: root.label;
         placeholder: root.placeholder;
         text <=> root.text;
         accepted => {
@@ -42,133 +49,167 @@ export component ProjectSettings inherits Window {
     in-out property <string> fit-choice;
     in property <color> swatch: black;
     callback changed();
-    property <int> custom: (root.size-choice == "Custom" ? 1 : 0) + (root.rate-choice == "Custom" ? 1 : 0) + (root.color-choice == "Custom" ? 1 : 0);
     title: "Project settings";
+    forward-focus: keys;
     icon: @image-url("../../../assets/interpolini.svg");
     background: Theme.rack;
     default-font-size: 12px;
-    width: 440px;
-    height: (4 + root.custom) * 34px + 20px;
-    VerticalLayout {
-        padding-top: 10px;
-        padding-bottom: 10px;
-        alignment: start;
-        Line {
-            label: "Resolution";
-            Segment {
-                options: ["Auto", "720p", "1080p", "1440p", "4K", "Custom"];
-                value <=> root.size-choice;
-                changed(choice) => {
-                    if choice == "Auto" {
-                        root.wide = "";
-                        root.high = "";
-                    } else if choice == "720p" {
-                        root.wide = "1280";
-                        root.high = "720";
-                    } else if choice == "1080p" {
-                        root.wide = "1920";
-                        root.high = "1080";
-                    } else if choice == "1440p" {
-                        root.wide = "2560";
-                        root.high = "1440";
-                    } else if choice == "4K" {
-                        root.wide = "3840";
-                        root.high = "2160";
+    width: 480px;
+    height: body.preferred-height;
+    keys := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close();
+                return accept;
+            }
+            reject
+        }
+        body := VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 6px;
+            padding-bottom: 14px;
+            alignment: start;
+            Heading {
+                text: "Output";
+            }
+            Line {
+                label: "Resolution";
+                Segment {
+                    fill: true;
+                    label: "Resolution";
+                    options: ["Auto", "720p", "1080p", "1440p", "4K", "Custom"];
+                    value <=> root.size-choice;
+                    changed(choice) => {
+                        if choice == "Auto" {
+                            root.wide = "";
+                            root.high = "";
+                        } else if choice == "720p" {
+                            root.wide = "1280";
+                            root.high = "720";
+                        } else if choice == "1080p" {
+                            root.wide = "1920";
+                            root.high = "1080";
+                        } else if choice == "1440p" {
+                            root.wide = "2560";
+                            root.high = "1440";
+                        } else if choice == "4K" {
+                            root.wide = "3840";
+                            root.high = "2160";
+                        }
+                        if choice != "Custom" {
+                            root.changed();
+                        }
                     }
-                    if choice != "Custom" {
+                }
+            }
+            if root.size-choice == "Custom": Line {
+                label: "";
+                Entry {
+                    label: "Width";
+                    placeholder: "Width";
+                    text <=> root.wide;
+                    accepted => {
                         root.changed();
                     }
                 }
-            }
-        }
-        if root.size-choice == "Custom": Line {
-            label: "";
-            Entry {
-                placeholder: "Width";
-                text <=> root.wide;
-                accepted => {
-                    root.changed();
+                Text {
+                    text: "×";
+                    color: Theme.faint;
+                    vertical-alignment: center;
+                    accessible-role: none;
                 }
-            }
-            Text {
-                text: "×";
-                color: Theme.faint;
-                vertical-alignment: center;
-            }
-            Entry {
-                placeholder: "Height";
-                text <=> root.high;
-                accepted => {
-                    root.changed();
-                }
-            }
-        }
-        Line {
-            label: "Frame rate";
-            Segment {
-                options: ["Auto", "24", "25", "30", "50", "60", "Custom"];
-                value <=> root.rate-choice;
-                changed(choice) => {
-                    if choice != "Custom" {
-                        root.rate = choice == "Auto" ? "" : choice;
+                Entry {
+                    label: "Height";
+                    placeholder: "Height";
+                    text <=> root.high;
+                    accepted => {
                         root.changed();
                     }
                 }
+                Rectangle { }
             }
-        }
-        if root.rate-choice == "Custom": Line {
-            label: "";
-            Entry {
-                placeholder: "fps";
-                text <=> root.rate;
-                accepted => {
-                    root.changed();
+            Line {
+                label: "Frame rate";
+                Segment {
+                    fill: true;
+                    label: "Frame rate";
+                    options: ["Auto", "24", "25", "30", "50", "60", "Custom"];
+                    value <=> root.rate-choice;
+                    changed(choice) => {
+                        if choice != "Custom" {
+                            root.rate = choice == "Auto" ? "" : choice;
+                            root.changed();
+                        }
+                    }
                 }
             }
-        }
-        Line {
-            label: "Background";
-            Rectangle {
-                width: 18px;
+            if root.rate-choice == "Custom": Line {
+                label: "";
+                Entry {
+                    label: "Frame rate";
+                    placeholder: "fps";
+                    text <=> root.rate;
+                    accepted => {
+                        root.changed();
+                    }
+                }
+                Rectangle { }
+            }
+            Heading {
+                text: "Canvas";
+            }
+            Line {
+                label: "Background";
+                Segment {
+                    fill: true;
+                    label: "Background";
+                    options: ["Black", "Gray", "White", "Custom"];
+                    value <=> root.color-choice;
+                    changed(choice) => {
+                        if choice != "Custom" {
+                            root.color-text = choice == "Black" ? "#000000" : choice == "Gray" ? "#808080" : "#ffffff";
+                            root.changed();
+                        }
+                    }
+                }
+            }
+            if root.color-choice == "Custom": Line {
+                label: "";
+                Entry {
+                    wide: 84px;
+                    label: "Background color";
+                    placeholder: "#000000";
+                    text <=> root.color-text;
+                    accepted => {
+                        root.changed();
+                    }
+                }
                 Rectangle {
-                    y: (parent.height - self.height) / 2;
                     width: 18px;
-                    height: 18px;
-                    background: root.swatch;
-                    border-width: 1px;
-                    border-color: Theme.seam;
-                }
-            }
-            Segment {
-                options: ["Black", "Gray", "White", "Custom"];
-                value <=> root.color-choice;
-                changed(choice) => {
-                    if choice != "Custom" {
-                        root.color-text = choice == "Black" ? "#000000" : choice == "Gray" ? "#808080" : "#ffffff";
-                        root.changed();
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: 18px;
+                        height: 18px;
+                        background: root.swatch;
+                        border-width: 1px;
+                        border-color: Theme.seam;
                     }
                 }
+                Rectangle { }
             }
-        }
-        if root.color-choice == "Custom": Line {
-            label: "";
-            Entry {
-                wide: 84px;
-                placeholder: "#000000";
-                text <=> root.color-text;
-                accepted => {
-                    root.changed();
-                }
-            }
-        }
-        Line {
-            label: "Import fit";
-            Segment {
-                options: ["Fit", "Fill", "Original size"];
-                value <=> root.fit-choice;
-                changed(choice) => {
-                    root.fit = choice == "Fit" ? "fit" : choice == "Fill" ? "fill" : "original";
-                    root.changed();
+            Line {
+                label: "New clips";
+                Segment {
+                    fill: true;
+                    label: "New clips";
+                    options: ["Fit", "Fill", "Original size"];
+                    value <=> root.fit-choice;
+                    changed(choice) => {
+                        root.fit = choice == "Fit" ? "fit" : choice == "Fill" ? "fill" : "original";
+                        root.changed();
+                    }
                 }
             }
         }

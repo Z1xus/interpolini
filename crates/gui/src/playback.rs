@@ -19,7 +19,7 @@ pub fn wire(ui: &App, state: &Shared) {
             Some(_) => f64::from(ui.get_tick()),
             None => 1.0 / 60.0,
         };
-        let moved = (f64::from(frames) * frame + f64::from(seconds)) / state.seconds().max(0.001);
+        let moved = (f64::from(frames) * frame + f64::from(seconds)) / state.span.max(0.001);
         drop(state);
         ui.set_position((f64::from(ui.get_position()) + moved).clamp(0.0, 1.0) as f32);
         ui.set_playing(false);
@@ -32,13 +32,15 @@ pub fn wire(ui: &App, state: &Shared) {
             return;
         };
         let state = lock(&shared);
-        let time = f64::from(ui.get_position()) * state.seconds();
+        let time = state.time(ui.get_position());
         let video = |entry: &&crate::state::Entry| entry.audio.is_none();
         let keys = state.entries.iter().filter(video).flat_map(|entry| {
             let start = f64::from(entry.cut.0) * entry.seconds;
-            let kept = move |key: &f64| *key >= start - 0.001 && *key < start + entry.kept();
+            let speed = f64::from(entry.speed);
+            let kept =
+                move |key: &f64| *key >= start - 0.001 && *key < start + entry.kept() * speed;
             let keys = entry.keys.iter().copied().filter(kept);
-            keys.map(move |key| entry.at + key - start)
+            keys.map(move |key| entry.at + (key - start) / speed)
         });
         let next = match forward {
             true => keys.filter(|key| *key > time + 0.001).reduce(f64::min),
@@ -47,7 +49,7 @@ pub fn wire(ui: &App, state: &Shared) {
         let Some(next) = next else {
             return;
         };
-        let position = next.max(0.0) / state.seconds().max(0.001);
+        let position = next.max(0.0) / state.span.max(0.001);
         drop(state);
         ui.set_position(position as f32);
         ui.set_playing(false);
@@ -60,7 +62,7 @@ pub fn wire(ui: &App, state: &Shared) {
             return;
         };
         let state = lock(&shared);
-        let time = f64::from(ui.get_position()) * state.seconds();
+        let time = state.time(ui.get_position());
         let heard = ui.get_playing().then(|| sounds(&state));
         drop(state);
         services::with(|services| match heard {
@@ -84,14 +86,16 @@ pub fn wire(ui: &App, state: &Shared) {
         };
         let state = lock(&shared);
         // the playhead is at the end of the part, which is also the start of the next one
-        let time = f64::from(ui.get_position()) * state.seconds() - 0.001;
+        let time = state.time(ui.get_position()) - 0.001;
         let part = state
             .parts()
             .into_iter()
             .find(|part| part.start <= time && time < part.end);
-        let next = part.map_or(1.0, |part| part.end / state.seconds());
+        let end = part.map_or(state.seconds(), |part| part.end);
+        let last = end >= state.seconds() - 0.001;
+        let next = end / state.span.max(0.001);
         drop(state);
-        if next >= 0.999 || !ui.get_playing() {
+        if last || !ui.get_playing() {
             ui.set_playing(false);
             return;
         }
@@ -102,10 +106,25 @@ pub fn wire(ui: &App, state: &Shared) {
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_seek(move || {
         if let Some(ui) = weak.upgrade() {
-            ui.set_playing(false);
             seek(&ui, &shared);
         }
     });
+
+    for start in [true, false] {
+        let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+        let scrub = move || {
+            if let Some(ui) = weak.upgrade() {
+                match start {
+                    true => crate::edit::pause(&ui, &shared),
+                    false => crate::edit::resume(&ui, &shared),
+                }
+            }
+        };
+        match start {
+            true => ui.on_scrub_start(scrub),
+            false => ui.on_scrub_done(scrub),
+        }
+    }
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_viewed(move || {
@@ -149,7 +168,11 @@ pub fn wire(ui: &App, state: &Shared) {
     ui.on_play(move || {
         if let Some(ui) = weak.upgrade().filter(|ui| !ui.get_rendering()) {
             ui.set_playing(!ui.get_playing());
-            if ui.get_playing() && ui.get_position() >= 1.0 {
+            let finished = {
+                let state = lock(&shared);
+                state.time(ui.get_position()) >= state.seconds() - 0.001
+            };
+            if ui.get_playing() && finished {
                 ui.set_position(0.0);
             }
             refresh(&ui, &shared);

@@ -1,4 +1,4 @@
-import { Action, Art, Icon, IconButton, Icons, MenuItem, MenuPanel, Piece, Tabs, Theme } from "widgets.slint";
+import { Action, Art, Button, Focus, Icon, IconButton, Icons, MenuItem, MenuPopup, Piece, Popups, Tabs, Theme } from "widgets.slint";
 import { Clip, Note } from "types.slint";
 import { Frame } from "frame.slint";
 
@@ -11,6 +11,7 @@ struct Tip {
 
 component Pane inherits Rectangle {
     in property <image> source;
+    in property <string> name;
     in property <float> scale;
     in property <length> pan-x;
     in property <length> pan-y;
@@ -24,7 +25,7 @@ component Pane inherits Rectangle {
         image-fit: contain;
         image-rendering: min(self.width, self.height * self.source.width / max(1, self.source.height)) > self.source.width * 1px ? pixelated : smooth;
         accessible-role: image;
-        accessible-label: "Preview";
+        accessible-label: "Preview, " + root.name;
     }
 }
 
@@ -76,6 +77,19 @@ export component Stage inherits Rectangle {
         { text: "Alt drag separates video and audio" },
         { text: "Alt drag an edge to trim one clip and not the next" },
         { text: "Alt wheel changes the height of a track" },
+        { text: "Ctrl drag lets a clip overlap and cut another clip" },
+        { text: "Shift drag flips snapping for that one drag" },
+        { text: "N turns snapping on or off" },
+        { text: "Drag a top corner of a clip to fade it" },
+        { text: "Right click near the edge of a clip for its fade" },
+        { text: "Right click a clip to change its speed" },
+        { text: "Double click a slider in a menu to reset it" },
+        { text: "Slow a clip down with interpolation on for real slow motion" },
+        { text: "Shift click selects everything between two clips" },
+        { text: "Drag on empty space to select clips" },
+        { text: "Right click a gap to ripple delete it" },
+        { text: "Shift Delete removes a clip and closes its gap" },
+        { text: "\\ fits the whole timeline in view" },
         { text: "Shift drag an edge of the transform box to stretch" },
         { text: "Close gaps in the Edit menu joins the clips" },
         { text: "A config in the folder of a clip is used for that clip" },
@@ -84,6 +98,9 @@ export component Stage inherits Rectangle {
         { text: "Gamma in Blending keeps bright things bright in the blur" },
         { text: "\"this clip\" in Settings for changes one clip only" },
         { text: "interpolini-cli renders without the window" },
+        { text: "Right click a track name for its options" },
+        { text: "Tab moves between all controls" },
+        { text: "F10 opens the menus" },
         { text: "Also try ", link: "Tuck", url: "https://github.com/aechXIII/Tuck" },
     ];
     property <int> tip: -1;
@@ -118,7 +135,8 @@ export component Stage inherits Rectangle {
     property <string> shown: root.off ? "off" : root.copying ? "result" : root.held ? "original" : root.view;
     property <length> pane: shown == "side" ? (root.width - 1px) / 2 : root.width;
     property <float> ratio: root.preview.height > 0 ? root.preview.width / root.preview.height : 16 / 9;
-    property <length> wide: min(pane, root.height * ratio) * root.scale;
+    property <length> strip: root.clips.length > 0 ? 30px : 0px;
+    property <length> wide: min(pane, (root.height - root.strip) * ratio) * root.scale;
     property <float> divide: 0.5;
     property <float> next;
     out property <length> drawn: wide;
@@ -131,31 +149,31 @@ export component Stage inherits Rectangle {
     callback switched();
     property <length> menu-x;
     property <length> menu-y;
-    menu := PopupWindow {
+    property <bool> menu-shown: menu.is-open;
+    changed menu-shown => {
+        Popups.open += root.menu-shown ? 1 : -1;
+    }
+    menu := MenuPopup {
         x: root.menu-x;
         y: root.menu-y;
         close-policy: close-on-click-outside;
-        MenuPanel {
-            VerticalLayout {
-                padding: 4px;
-                MenuItem {
-                    text: "Preview";
-                    checked: !root.off;
-                    clicked => {
-                        root.off = !root.off;
-                        root.switched();
-                        menu.close();
-                    }
-                }
-                MenuItem {
-                    text: "Save frame";
-                    enabled: !root.off;
-                    hint: "Ctrl Shift E";
-                    clicked => {
-                        root.save-frame();
-                        menu.close();
-                    }
-                }
+        MenuItem {
+            text: "Preview";
+            toggle: true;
+            checked: !root.off;
+            clicked => {
+                root.off = !root.off;
+                root.switched();
+                menu.close();
+            }
+        }
+        MenuItem {
+            text: "Save frame";
+            enabled: !root.off;
+            hint: "Ctrl Shift E";
+            clicked => {
+                root.save-frame();
+                menu.close();
             }
         }
     }
@@ -169,6 +187,8 @@ export component Stage inherits Rectangle {
     in-out property <bool> flash;
     background: Theme.void;
     if root.clips.length > 0: Rectangle {
+        y: root.strip;
+        height: root.height - root.strip;
         clip: true;
         property <bool> panning;
         property <length> from-x;
@@ -198,6 +218,7 @@ export component Stage inherits Rectangle {
         if root.shown != "off": Pane {
             x: 0;
             width: root.pane;
+            name: root.shown == "result" ? "result" : "original";
             source: root.shown == "result" ? root.preview : root.original;
             scale: root.scale;
             pan-x: root.pan-x;
@@ -210,6 +231,7 @@ export component Stage inherits Rectangle {
             Pane {
                 x: -line;
                 width: root.width;
+                name: "result";
                 source: root.preview;
                 scale: root.scale;
                 pan-x: root.pan-x;
@@ -224,6 +246,7 @@ export component Stage inherits Rectangle {
         if root.shown == "side": Pane {
             x: root.pane + 1px;
             width: root.pane;
+            name: "result";
             source: root.preview;
             scale: root.scale;
             pan-x: root.pan-x;
@@ -334,34 +357,39 @@ export component Stage inherits Rectangle {
                 root.flash = false;
             }
         }
-        Rectangle {
+    }
+    if root.clips.length > 0: Rectangle {
+        height: root.strip;
+        y: 0;
+        background: Theme.rack;
+        TouchArea { }
+        if !root.copying: Tabs {
             x: (parent.width - self.width) / 2;
-            y: 8px;
-            width: strip.preferred-width;
-            height: 32px;
-            background: Theme.rack.with-alpha(0.85);
-            TouchArea { }
-            strip := HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                spacing: 14px;
-                if !root.copying: Tabs {
-                    options: ["original", "result", "split", "side"];
-                    value <=> root.view;
-                    changed => {
-                        root.viewed();
-                    }
-                }
-                Action {
-                    text: root.scale == 1 && root.pan-x == 0 && root.pan-y == 0 ? "Fit" : "\{round(root.scale * 10) / 10}×";
-                    clicked => {
-                        root.scale = 1;
-                        root.pan-x = 0;
-                        root.pan-y = 0;
-                        root.viewed();
-                    }
-                }
+            width: self.preferred-width;
+            label: "Preview view";
+            options: ["original", "result", "split", "side"];
+            value <=> root.view;
+            changed => {
+                root.viewed();
             }
+        }
+        Action {
+            property <bool> fit: root.scale == 1 && root.pan-x == 0 && root.pan-y == 0;
+            x: parent.width - self.width - 12px;
+            width: self.preferred-width;
+            text: self.fit ? "Fit" : "\{round(root.scale * 10) / 10}×";
+            accessible: self.fit ? "Zoom, fit" : "Zoom \{round(root.scale * 10) / 10} times";
+            clicked => {
+                root.scale = 1;
+                root.pan-x = 0;
+                root.pan-y = 0;
+                root.viewed();
+            }
+        }
+        Rectangle {
+            y: parent.height - 1px;
+            height: 1px;
+            background: Theme.seam;
         }
     }
     if root.rendering: Rectangle {
@@ -384,6 +412,7 @@ export component Stage inherits Rectangle {
                 color: Theme.muted;
                 font-size: 13px;
                 horizontal-alignment: center;
+                accessible-role: text;
             }
         }
         // at the foot of the screen, apart from the message
@@ -403,15 +432,28 @@ export component Stage inherits Rectangle {
                     color: Theme.faint.with-alpha(0.6);
                     font-size: 11px;
                     vertical-alignment: center;
+                    accessible-role: none;
                 }
                 if tip.link != "": Rectangle {
                     width: word.preferred-width;
+                    accessible-role: button;
+                    accessible-label: "Open " + tip.link;
+                    accessible-action-default => {
+                        root.open(tip.url);
+                    }
+                    Focus {
+                        usable: root.lit;
+                        activate => {
+                            root.open(tip.url);
+                        }
+                    }
                     word := Text {
                         height: 100%;
                         text: tip.link;
                         color: link.has-hover ? Theme.ink : Theme.faint;
                         font-size: 11px;
                         vertical-alignment: center;
+                        accessible-role: none;
                     }
                     Rectangle {
                         y: parent.height - 1px;
@@ -447,7 +489,12 @@ export component Stage inherits Rectangle {
             duration: 200ms;
             easing: ease-out;
         }
-        if root.progress >= 0: Rectangle {
+        if root.progress >= 0 && card.shown: Rectangle {
+            accessible-role: progress-indicator;
+            accessible-label: "Progress";
+            accessible-value: round(clamp(root.progress, 0, 1) * 100) + "";
+            accessible-value-minimum: 0;
+            accessible-value-maximum: 100;
             x: 10px;
             y: parent.height - 4px;
             width: parent.width - 20px;
@@ -485,6 +532,8 @@ export component Stage inherits Rectangle {
                 overflow: elide;
                 max-height: 36px;
                 vertical-alignment: center;
+                accessible-role: text;
+                accessible-live-region: root.kind == Note.warning ? assertive : polite;
             }
             if root.kind == Note.brief && root.shot != "": Action {
                 text: "Show in folder";
@@ -535,21 +584,12 @@ export component Stage inherits Rectangle {
         }
         HorizontalLayout {
             alignment: center;
-            Rectangle {
-                width: 108px;
+            Button {
                 height: 30px;
-                border-width: 1px;
-                border-color: Theme.accent;
-                background: browse.has-hover ? Theme.ghost : transparent;
-                Text {
-                    text: "Add clips";
-                    color: Theme.ink;
-                }
-                browse := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        root.add-clips();
-                    }
+                text: "Add clips";
+                main: true;
+                clicked => {
+                    root.add-clips();
                 }
             }
         }

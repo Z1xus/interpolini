@@ -88,6 +88,15 @@ impl Plan {
         }
     }
 
+    pub fn output(&self, source: (i64, i64), config: &Config) -> (i64, i64) {
+        match (self.blended, self.interpolate, self.pre) {
+            (true, _, _) => (i64::from(config.blending.fps), 1),
+            (_, true, _) => (i64::from(self.fps), 1),
+            (_, _, Some(pre)) => (i64::from(pre), 1),
+            _ => source,
+        }
+    }
+
     fn plain(&self, config: &Config) -> bool {
         !config.dedup.enabled && self.pre.is_none() && !self.interpolate
     }

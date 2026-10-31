@@ -11,7 +11,7 @@ use crate::copy::copy;
 use crate::decode::{Meta, Probe, damage, probe};
 use crate::dedup::{differences, threshold};
 use crate::encode::{Encoder, Plan};
-use crate::graph::lossless;
+use crate::graph::{Plan as Shape, lossless};
 use crate::segments::Made;
 use crate::timeline::{Fade, Part, Placed, parts};
 use crate::upscale::Upscaler;
@@ -37,6 +37,7 @@ pub struct Job {
     pub fade: Fade,
     // the seconds that the last picture stays after the end
     pub hold: f64,
+    pub speed: f64,
     pub folder: Option<PathBuf>,
 }
 
@@ -79,7 +80,7 @@ pub(crate) fn kept(job: &Job, probe: &Probe) -> f64 {
         Some((start, end)) => end.min(probe.seconds) - start,
         None => probe.seconds,
     };
-    length + job.hold
+    length / job.speed + job.hold
 }
 
 pub fn sounds(jobs: &[Job]) -> Result<Vec<Sound>> {
@@ -94,6 +95,7 @@ pub fn sounds(jobs: &[Job]) -> Result<Vec<Sound>> {
                 length: kept(job, &probe),
                 at: job.at,
                 track: stream,
+                speed: job.speed,
                 gain: 1.0,
                 fade: Fade::default(),
             });
@@ -198,7 +200,7 @@ fn encode(
         if timeline.is_some() {
             sink(Event::Start { clip: index });
         }
-        let mut config = job.config.clone();
+        let mut config = job.config.retimed(job.speed);
         if config.dedup.enabled && config.dedup.threshold == 0.0 && !probes[clip].still {
             let (from, to) = job.cut.unwrap_or((0.0, f64::MAX));
             let share = config.dedup.repeats / 100.0;
@@ -214,6 +216,10 @@ fn encode(
     let first = open(base)?;
     let graph = first.graph().ok_or("the timeline has no video")?;
     let (mut fps, mut meta) = (graph.info.fps, graph.meta);
+    let (job, fps_in) = (jobs[base].1, probes[base].fps);
+    if job.speed != 1.0 {
+        fps = Shape::new(fps_in, &job.config).output(rational(fps_in), &job.config);
+    }
     if let Some(size) = setup.size {
         (meta.width, meta.height) = size;
     }
@@ -230,12 +236,12 @@ fn encode(
         return Err("the cut has no picture".into());
     }
 
-    let job = jobs[base].1;
     let config = &job.config.output;
     let start = job.cut.map_or(0.0, |cut| cut.0);
     let (mix, sized) = (config.audio == Audio::Mix, config.target == Target::Size);
     let plan = match timeline {
         Some(sounds) => Plan::Mix(Mixer::new(sounds, mix)),
+        None if job.speed != 1.0 => Plan::Mix(Mixer::new(&sounds(std::slice::from_ref(job))?, mix)),
         // sound that is copied has no known size
         None if sized || (mix && most > 1) => Plan::Encode {
             lanes: if mix { most.min(1) } else { most },
@@ -276,7 +282,7 @@ fn encode(
         encoder.name
     )));
     let from = ((start - job.at) * rate).round().max(0.0) as i32;
-    let alone = timeline.is_none() && upscaler.is_none() && job.fade.none();
+    let alone = timeline.is_none() && upscaler.is_none() && job.fade.none() && job.speed == 1.0;
     let alone = alone && job.place == Place::default();
     let fused = match first.graph() {
         Some(graph) if alone && graph.packs() => encoder
@@ -340,7 +346,7 @@ fn encode(
                         .rposition(|clip| fills(clip) && level(clip) >= 1.0);
                     for clip in &shown[top.unwrap_or(0)..] {
                         let job = jobs[*clip].1;
-                        let inside = job.cut.map_or(0.0, |cut| cut.0) + time - job.at;
+                        let inside = job.cut.map_or(0.0, |cut| cut.0) + (time - job.at) * job.speed;
                         if let Some(source) = sources.get_mut(clip) {
                             layers.push((
                                 source.at(inside, cancel)?,
@@ -449,7 +455,8 @@ fn render(job: &Job, clip: usize, output: &Path, sink: Sink, cancel: &Cancel) ->
         ..job.clone()
     };
     let untouched = job.place == Place::default();
-    if job.copy || (untouched && lossless(probe(&job.clip)?.fps, &job.config)) {
+    let plain = untouched && job.speed == 1.0;
+    if job.copy || (plain && lossless(probe(&job.clip)?.fps, &job.config)) {
         return copy(job, output, sink, cancel);
     }
     fit(

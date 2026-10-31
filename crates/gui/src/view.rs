@@ -10,7 +10,7 @@ use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::settings::settings;
 use crate::state::{Shared, Span, State, lock};
-use crate::{App, Clip, Fact, Lane, preview};
+use crate::{App, Clip, Lane, preview};
 
 // the rows hold the place and the cut of each clip, and this brings the rest in line
 pub fn layout(ui: &App, state: &mut State) -> Vec<Span> {
@@ -20,6 +20,7 @@ pub fn layout(ui: &App, state: &mut State) -> Vec<Span> {
             continue;
         };
         entry.cut = (row.cut_in, row.cut_out);
+        entry.speed = row.speed;
         entry.at = f64::from(row.at);
         entry.track = row.track as usize;
         entry.gain = row.gain;
@@ -33,7 +34,7 @@ pub fn layout(ui: &App, state: &mut State) -> Vec<Span> {
             scale: [row.zoom_x, row.zoom_y],
             crop: [row.crop_left, row.crop_top, row.crop_right, row.crop_bottom],
         };
-        let size = (entry.kept() as f32, entry.seconds as f32);
+        let size = (entry.kept() as f32, entry.length() as f32);
         if (row.kept, row.length) != size {
             (row.kept, row.length) = size;
             rows.set_row_data(index, row);
@@ -65,14 +66,29 @@ pub fn layout(ui: &App, state: &mut State) -> Vec<Span> {
             rows.set_row_data(index, row);
         }
     }
-    // the playhead stays at its time when the timeline gets longer or shorter
-    let time = ui.get_position() * ui.get_seconds();
-    let seconds = state.seconds() as f32;
-    if seconds != ui.get_seconds() {
-        ui.set_seconds(seconds);
-        ui.set_position((time / seconds.max(0.001)).min(1.0));
+    let seconds = state.seconds();
+    if seconds > state.span {
+        let (time, was) = (state.time(ui.get_position()), state.span.max(1.0));
+        state.span = seconds * 1.1;
+        ui.set_position((time / state.span) as f32);
+        ui.invoke_stretch((state.span.max(1.0) / was) as f32);
     }
+    publish(ui, state);
     spans
+}
+
+fn publish(ui: &App, state: &State) {
+    ui.set_seconds(state.span as f32);
+    ui.set_extent(state.span.max(1.0) as f32);
+    ui.set_end((state.seconds() / state.span.max(0.001)) as f32);
+}
+
+pub fn refit(ui: &App, state: &mut State) {
+    let time = state.time(ui.get_position());
+    state.span = state.seconds() * 1.1;
+    ui.set_position((time / state.span.max(0.001)).min(1.0) as f32);
+    publish(ui, state);
+    ui.invoke_fitted();
 }
 
 pub fn lanes(ui: &App, state: &State) {
@@ -109,13 +125,17 @@ pub fn lanes(ui: &App, state: &State) {
 pub fn fit(ui: &App, shared: &Shared) {
     let mut state = lock(shared);
     layout(ui, &mut state);
-    if state.entries.is_empty() && !state.project.look.chosen {
-        state.project.look.size = None;
+    if state.entries.is_empty() {
+        if !state.project.look.chosen {
+            state.project.look.size = None;
+        }
+        if state.span > 0.0 {
+            refit(ui, &mut state);
+        }
     }
     let missing = state.entries.iter().filter(|entry| entry.missing);
     let missing: std::collections::HashSet<_> = missing.map(|entry| &entry.clip).collect();
     ui.set_missing(missing.len() as i32);
-    ui.set_extent(state.seconds().max(1.0) as f32);
     lanes(ui, &state);
     drop(state);
     crate::clips::measure(ui, shared);
@@ -185,44 +205,43 @@ pub fn curve(ui: &App, state: &mut State) {
 // what the timeline has that a copy does not keep
 fn left(ui: &App, state: &State) {
     let video = |entry: &&crate::state::Entry| entry.audio.is_none() && !entry.still;
-    let count = |name: &str, found: usize| {
-        (found > 0).then(|| Fact {
-            name: name.into(),
-            value: found.to_string().into(),
-        })
-    };
     let entries = || state.entries.iter();
     let faded = |entry: &&crate::state::Entry| entry.fade != (0.0, 0.0) || entry.cross > 0.0;
-    let mut fades: Vec<u64> = entries().filter(faded).map(|entry| entry.link).collect();
-    fades.dedup();
     let early = |entry: &&crate::state::Entry| {
         let start = f64::from(entry.cut.0) * entry.seconds;
         !entry.keys.is_empty() && entry.key(start, start - 0.005, start + 0.005).is_none()
     };
-    let facts = [
-        count("Images", entries().filter(|entry| entry.still).count()),
-        count("Fades", fades.len()),
-        count(
-            "Transform",
+    let lost = [
+        ("images", entries().any(|entry| entry.still)),
+        ("fades", entries().any(|entry| faded(&entry))),
+        (
+            "transform",
             entries()
                 .filter(video)
-                .filter(|entry| entry.place != Place::default())
-                .count(),
+                .any(|entry| entry.place != Place::default()),
         ),
-        count("Gain", entries().filter(|entry| entry.gain != 0.0).count()),
-        count(
-            "Exact starts",
-            entries().filter(video).filter(early).count(),
+        (
+            "speed",
+            entries().filter(video).any(|entry| entry.speed != 1.0),
+        ),
+        ("gain", entries().any(|entry| entry.gain != 0.0)),
+        (
+            "exact starts",
+            entries().filter(video).any(|entry| early(&entry)),
         ),
     ];
-    let facts: Vec<Fact> = facts.into_iter().flatten().collect();
-    ui.set_left(ModelRc::new(VecModel::from(facts)));
+    let names: Vec<&str> = lost
+        .iter()
+        .filter(|fact| fact.1)
+        .map(|fact| fact.0)
+        .collect();
+    ui.set_left(names.join(", ").into());
 }
 
 pub fn timecode(ui: &App, state: &Shared) {
-    let total = lock(state).seconds();
-    let now = f64::from(ui.get_position()) * total;
-    ui.set_timecode(format!("{} / {}", clock(now), clock(total)).into());
+    let state = lock(state);
+    ui.set_timecode(clock(state.time(ui.get_position())).into());
+    ui.set_duration(clock(state.seconds()).into());
 }
 
 // the model list follows the backend, and a model that the backend does not have gives way
@@ -354,7 +373,7 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
             view: preview::View::Result,
             width: 0,
             size: (0, 0),
-            total: 0.0,
+            span: 0.0,
             save: None,
         });
         if ui.get_preview_off() {
@@ -375,8 +394,7 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
         ui.set_preview_note("".into());
     };
     let all = state.parts_in(&spans);
-    let seconds = state.seconds();
-    let time = (f64::from(ui.get_position()) * seconds).min(seconds - 0.001);
+    let time = state.frame(ui.get_position());
     let inside = |part: &&Part| part.start <= time && time < part.end;
     let shown = all.iter().find(inside).map(|part| (time, part.clone()));
     let shown = shown.filter(|shown| !shown.1.clips.is_empty());
@@ -422,21 +440,23 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
             .filter(|index| !copying || !state.entries[**index].still);
         let layer = |index: &usize| {
             let (entry, span) = (&state.entries[*index], &spans[*index]);
+            let speed = f64::from(entry.speed);
             preview::Layer {
                 clip: entry.clip.clone(),
                 config: preview::shown(Config {
                     shrink,
                     ..match copying {
                         true => preview::source(&entry.config),
-                        false => entry.settled(),
+                        false => entry.settled().retimed(speed),
                     }
                 }),
                 still: entry.still || entry.missing,
                 missing: entry.missing.then_some(entry.size),
                 place: place(entry),
-                start: span.start + time - span.at,
+                start: span.start + (time - span.at) * speed,
                 inside: time - span.at,
                 length: span.length,
+                speed,
                 fade: match copying {
                     true => Fade::default(),
                     false => span.picture(),
@@ -470,7 +490,7 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
             view,
             width: (width as u32).min(canvas.0 / shrink),
             size: canvas,
-            total: state.seconds(),
+            span: state.span,
             save,
         };
         preview::show(request);
@@ -480,7 +500,7 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
         empty();
         let walk = ui.get_playing();
         if walk {
-            let time = f64::from(ui.get_position()) * state.seconds();
+            let time = state.time(ui.get_position());
             let gap = all.iter().find(|part| part.end > time).cloned();
             let next = gap.map(|gap| after(gap.end).map(|part| stretch(&part, part.start)));
             ask(
@@ -528,10 +548,10 @@ pub fn idle(ui: &App, shared: &Shared) {
                 return;
             };
             let state = lock(&shared);
-            let next =
-                f64::from(ui.get_position()) + STEP.as_secs_f64() / state.seconds().max(0.001);
-            let over = next >= 1.0 || !ui.get_playing();
-            let clip = !ui.get_preview_off() && state.locate(next as f32).is_some();
+            let next = state.time(ui.get_position()) + STEP.as_secs_f64();
+            let position = (next / state.span.max(0.001)) as f32;
+            let over = next >= state.seconds() || !ui.get_playing();
+            let clip = !ui.get_preview_off() && state.locate(position).is_some();
             drop(state);
             if over || clip {
                 WALK.with(slint::Timer::stop);
@@ -540,7 +560,7 @@ pub fn idle(ui: &App, shared: &Shared) {
                 ui.set_playing(false);
                 return;
             }
-            ui.set_position(next.min(1.0) as f32);
+            ui.set_position(position.min(1.0));
             timecode(&ui, &shared);
             if clip {
                 seek(&ui, &shared);

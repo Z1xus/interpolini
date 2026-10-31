@@ -20,110 +20,129 @@ export component Update inherits Window {
     callback cancel();
     callback restart();
     title: "Update";
+    forward-focus: act;
     icon: @image-url("../../../assets/interpolini.svg");
     background: Theme.rack;
     default-font-size: 12px;
     width: 420px;
     property <length> notes: min(notes.content-height, 220px);
     height: 136px + (root.changes.length > 0 ? root.notes + 12px : 0px);
-    VerticalLayout {
-        padding: 16px;
-        HorizontalLayout {
-            spacing: 12px;
-            Image {
-                width: 36px;
-                height: 36px;
-                source: @image-url("../../../assets/interpolini.svg");
+    FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close();
+                return accept;
             }
-            VerticalLayout {
-                alignment: center;
-                spacing: 2px;
-                Text {
-                    text: "interpolini \{root.version}";
-                    color: Theme.ink;
-                    font-size: 13px;
-                }
-                Text {
-                    text: "You have \{root.current}";
-                    color: Theme.faint;
-                    font-size: 11px;
-                }
-            }
+            reject
         }
         VerticalLayout {
-            padding-top: root.changes.length > 0 ? 12px : 0px;
-            Rectangle {
-                height: root.notes;
-                notes := Scroll {
-                    for change in root.changes: HorizontalLayout {
-                        padding-top: change.heading ? 6px : 0px;
-                        spacing: 8px;
-                        if change.heading: Text {
-                            height: 20px;
-                            text: change.text;
-                            color: Theme.faint;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                        }
-                        if !change.heading: Text {
-                            width: 52px;
-                            text: change.kind;
-                            color: Theme.muted;
-                            font-size: 11px;
-                        }
-                        // a wrapped text gets its height from a fixed width, the window less the padding and the kind
-                        if !change.heading: Text {
-                            width: root.width - 92px;
-                            text: change.text;
-                            color: Theme.ink;
-                            wrap: word-wrap;
-                        }
+            padding: 16px;
+            HorizontalLayout {
+                spacing: 12px;
+                Image {
+                    width: 36px;
+                    height: 36px;
+                    source: @image-url("../../../assets/interpolini.svg");
+                    accessible-role: none;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: "interpolini \{root.version}";
+                        color: Theme.ink;
+                        font-size: 13px;
+                    }
+                    Text {
+                        text: "You have \{root.current}";
+                        color: Theme.faint;
+                        font-size: 11px;
                     }
                 }
-                if notes.more: Rectangle {
-                    y: parent.height - self.height;
-                    height: 32px;
-                    background: @linear-gradient(180deg, Theme.rack.with-alpha(0) 0%, Theme.rack 100%);
+            }
+            VerticalLayout {
+                padding-top: root.changes.length > 0 ? 12px : 0px;
+                Rectangle {
+                    height: root.notes;
+                    notes := Scroll {
+                        keyboard: true;
+                        for change in root.changes: HorizontalLayout {
+                            padding-top: change.heading ? 6px : 0px;
+                            spacing: 8px;
+                            if change.heading: Text {
+                                height: 20px;
+                                text: change.text;
+                                color: Theme.faint;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                            if !change.heading: Text {
+                                width: 52px;
+                                text: change.kind;
+                                color: Theme.muted;
+                                font-size: 11px;
+                            }
+                            // wrapped text needs a fixed width
+                            if !change.heading: Text {
+                                width: root.width - 92px;
+                                text: change.text;
+                                color: Theme.ink;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    if notes.more: Rectangle {
+                        y: parent.height - self.height;
+                        height: 32px;
+                        background: @linear-gradient(180deg, Theme.rack.with-alpha(0) 0%, Theme.rack 100%);
+                    }
                 }
             }
-        }
-        if root.status: VerticalLayout {
-            padding-top: 10px;
-            Text {
-                height: 16px;
-                text: root.busy ? root.progress : root.note != "" ? root.note : "Installed";
-                color: root.busy ? Theme.ink : root.note != "" ? Theme.accent : Theme.ok;
-                font-size: 11px;
-                vertical-alignment: center;
-                overflow: elide;
+            if root.status: VerticalLayout {
+                padding-top: 10px;
+                Text {
+                    height: 16px;
+                    text: root.busy ? root.progress : root.note != "" ? root.note : "Installed";
+                    color: root.busy ? Theme.ink : root.note != "" ? Theme.ink : Theme.ok;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    accessible-live-region: polite;
+                }
+                if root.busy: Rectangle {
+                    height: 2px;
+                    background: Theme.seam;
+                    accessible-role: progress-indicator;
+                    accessible-label: "Download progress";
+                    accessible-value: round(root.fraction * 100) + "";
+                    accessible-value-minimum: 0;
+                    accessible-value-maximum: 100;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * root.fraction;
+                        background: Theme.accent;
+                    }
+                }
             }
             Rectangle {
-                height: 2px;
-                background: root.busy ? Theme.seam : transparent;
-                Rectangle {
-                    x: 0;
-                    width: root.busy ? parent.width * root.fraction : 0;
-                    background: Theme.accent;
-                }
+                vertical-stretch: 1;
             }
-        }
-        Rectangle {
-            vertical-stretch: 1;
-        }
-        HorizontalLayout {
-            alignment: end;
-            Button {
-                height: 26px;
-                text: root.busy ? "Cancel" : root.done ? "Restart" : root.note != "" ? "Try Again" : "Update";
-                main: !root.busy;
-                enabled: !root.busy || root.fraction < 1;
-                clicked => {
-                    if root.busy {
-                        root.cancel();
-                    } else if root.done {
-                        root.restart();
-                    } else {
-                        root.install();
+            HorizontalLayout {
+                alignment: end;
+                act := Button {
+                    height: 26px;
+                    text: root.busy ? "Cancel" : root.done ? "Restart" : root.note != "" ? "Try Again" : "Update";
+                    main: !root.busy;
+                    enabled: !root.busy || root.fraction < 1;
+                    clicked => {
+                        if root.busy {
+                            root.cancel();
+                        } else if root.done {
+                            root.restart();
+                        } else {
+                            root.install();
+                        }
                     }
                 }
             }

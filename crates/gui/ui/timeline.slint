@@ -1,4 +1,4 @@
-import { Action, Art, MenuItem, MenuPanel, MenuRow, MenuSlider, Piece, Segment, Theme } from "widgets.slint";
+import { Action, Art, Clock, IconButton, Icons, MenuItem, MenuPopup, MenuRow, MenuSeparator, MenuSlider, Piece, Popups, Segment, Theme } from "widgets.slint";
 import { Clip, Ghost, Lane } from "types.slint";
 
 global Curves {
@@ -11,9 +11,9 @@ global Curves {
 component Fade inherits Rectangle {
     in property <bool> out;
     in property <string> curve;
-    in property <brush> edge;
     // the fade is there but not in use
     in property <bool> off;
+    in property <bool> hot;
     // in pixels, so the corner is as wide as the fade
     property <float> wide: self.width / 1px;
     property <float> high: self.height / 1px;
@@ -22,13 +22,13 @@ component Fade inherits Rectangle {
         viewbox-width: root.wide;
         viewbox-height: root.high;
         commands: root.line + (root.out ? "V0z" : "H0z");
-        fill: root.off ? transparent : Theme.rack;
+        fill: root.off ? transparent : Theme.void.with-alpha(0.5);
     }
     Path {
         viewbox-width: root.wide;
         viewbox-height: root.high;
         commands: root.line;
-        stroke: root.off ? Theme.faint.with-alpha(0.7) : root.edge;
+        stroke: root.off ? Theme.faint.with-alpha(0.7) : root.hot ? Theme.ink : Theme.ink.with-alpha(0.55);
         stroke-width: 1px;
     }
 }
@@ -77,9 +77,39 @@ component Cross inherits Rectangle {
     }
 }
 
+component Crossing inherits VerticalLayout {
+    in property <Clip> item;
+    callback tune(float);
+    callback curve(string);
+    MenuSlider {
+        text: "Crossfade";
+        maximum: 5;
+        value: root.item.cross;
+        shown: round(self.value * 10) / 10 + " s";
+        changed(value) => {
+            root.tune(value);
+        }
+    }
+    MenuRow {
+        text: "Curve";
+        Segment {
+            horizontal-stretch: 1;
+            label: "Crossfade curve";
+            options: ["linear", "smooth", "ease in", "ease out"];
+            value: root.item.ease-cross;
+            changed(value) => {
+                root.curve(value);
+            }
+        }
+    }
+}
+
 export component Timeline inherits Rectangle {
     in-out property <[Clip]> clips;
     in property <bool> copying;
+    in property <bool> snapping;
+    callback toggle();
+    in property <float> snapped: -1;
     in property <[Lane]> video;
     in property <[Lane]> audio;
     in property <[Ghost]> ghosts;
@@ -93,37 +123,53 @@ export component Timeline inherits Rectangle {
     in property <float> seconds;
     in-out property <float> position;
     callback seek();
+    callback scrub-start();
+    callback scrub-done();
     callback select(int);
     // adds a clip to the selected ones, or takes it out
     callback extend(int);
+    callback range(int);
+    callback lasso-start(bool);
+    callback lasso(float, float, length, length);
+    callback lasso-end();
+    callback gap(float, length) -> bool;
+    callback close-gap(float, length);
     // the clip, the time under the pointer, and if the clip moves without the other clips of its file
     callback grab(int, float, bool);
-    callback drag(float, length, float);
+    callback drag(float, length, float, bool);
     callback release();
     callback trim-start();
     // the clip, how near in seconds an edge must be to hold it, and if the clip next to it stays as it is
-    callback trimmed(int, float, bool);
+    callback trimmed(int, float, bool, bool);
     // the clip, a setting and its value, and if the other clips of the file stay as they are
     callback tune(int, string, float, bool);
     // the clip, the fade, its curve, and if the other clips of the file stay as they are
     callback curve(int, string, string, bool);
+    callback retime(int, float);
     // the clip that starts where this edge of a clip touches another clip, or -1
     callback joint(int, bool) -> int;
     callback mark(string);
+    callback select-track(bool, int);
     callback remove-clip();
+    callback ripple-clip();
     callback replace-clip(int);
     property <int> chosen;
     // with alt the menu is for one clip, without the other clips of its file
     property <bool> solo;
-    function open(index: int, x: length, y: length, seam: bool, solo: bool) {
+    property <int> edge;
+    property <bool> joined;
+    // 0 clip, 1 crossfade, 2 fade in, 3 fade out, 4 both fades
+    function open(index: int, x: length, y: length, kind: int, solo: bool) {
         root.chosen = index;
         root.solo = solo;
         root.menu-x = x - root.absolute-position.x;
         root.menu-y = y - root.absolute-position.y;
-        if seam && root.copying {
+        root.edge = root.copying ? 0 : kind;
+        root.joined = kind == 4 && !root.copying && root.joint(index, true) >= 0;
+        if kind == 1 && root.copying {
             return;
         }
-        if seam {
+        if kind == 1 {
             join.show();
         } else {
             menu.show();
@@ -131,6 +177,39 @@ export component Timeline inherits Rectangle {
     }
     property <length> menu-x;
     property <length> menu-y;
+    property <bool> lane-audio;
+    property <int> lane-index;
+    property <bool> shown: join.is-open || menu.is-open || hole.is-open || lane-menu.is-open;
+    changed shown => {
+        Popups.open += root.shown ? 1 : -1;
+    }
+    pure function lane-middle(audio: bool, index: int) -> length {
+        root.absolute-position.y + root.ruler + (audio ? root.audio[index].y - root.under + root.audio[index].height / 2 : root.video[index].y - root.over + root.video[index].height / 2)
+    }
+    function open-lane(audio: bool, index: int, x: length, y: length) {
+        root.lane-audio = audio;
+        root.lane-index = index;
+        root.menu-x = x - root.absolute-position.x;
+        root.menu-y = y - root.absolute-position.y;
+        lane-menu.show();
+    }
+    public function open-selected() {
+        if root.selected < 0 {
+            return;
+        }
+        let clip = root.clips[root.selected];
+        root.open(root.selected, clamp(inner.absolute-position.x + clip.at / root.extent * inner.width + 12px, area.absolute-position.x + 8px, area.absolute-position.x + area.width - 8px), clamp(root.lane-middle(clip.audio, clip.track), root.absolute-position.y + root.ruler, root.absolute-position.y + root.height - 8px), 4, false);
+    }
+    public function open-track() {
+        let audio = root.selected >= 0 && root.clips[root.selected].audio;
+        let index = root.selected >= 0 ? root.clips[root.selected].track : 0;
+        root.open-lane(audio, index, root.absolute-position.x + 24px, clamp(root.lane-middle(audio, index), root.absolute-position.y + root.ruler, root.absolute-position.y + root.height - 8px));
+    }
+    property <float> gap-time;
+    property <length> gap-depth;
+    pure function slack(shift: bool) -> float {
+        shift == root.snapping ? 0 : 8px / inner.width * root.extent
+    }
     // the clip whose edge is under the pointer, and if it is its start
     property <int> held: -1;
     property <bool> held-head;
@@ -176,8 +255,22 @@ export component Timeline inherits Rectangle {
         root.position = clamp(x / (area.width * root.zoom) * root.extent / root.seconds, 0, 1);
         root.seek();
     }
+    function jump(time: float) {
+        root.scrub-start();
+        root.position = clamp(time / max(0.001, root.seconds), 0, 1);
+        root.seek();
+        root.scrub-done();
+    }
     public function magnify(factor: float) {
         root.grow(factor, root.head);
+    }
+    public function stretch(factor: float) {
+        root.zoom = min(root.zoom * factor, 200);
+        root.scroll = root.scroll / factor;
+    }
+    public function reset() {
+        root.zoom = 1;
+        root.scroll = 0;
     }
     // the time and the depth below the ruler of a point in the window
     public pure function time-at(x: length) -> float {
@@ -220,9 +313,12 @@ export component Timeline inherits Rectangle {
             root.roll(y, event.delta-y);
         }
     }
+    property <float> parked;
     // the view follows the playhead when it leaves
     changed position => {
-        if root.head < root.scroll || root.head > root.scroll + 1 / root.zoom {
+        let moved = abs(root.position * root.seconds - root.parked) > 0.001;
+        root.parked = root.position * root.seconds;
+        if moved && (root.head < root.scroll || root.head > root.scroll + 1 / root.zoom) {
             root.scroll = clamp(root.head - 0.1 / root.zoom, 0, max(0, 1 - 1 / root.zoom));
         }
     }
@@ -230,126 +326,161 @@ export component Timeline inherits Rectangle {
     background: Theme.rack;
     clip: true;
 
-    join := PopupWindow {
+    join := MenuPopup {
         x: root.menu-x;
         y: root.menu-y - self.height;
         close-policy: close-on-click-outside;
-        MenuPanel {
-            VerticalLayout {
-                padding: 4px;
-                MenuSlider {
-                    text: "Crossfade";
-                    maximum: 5;
-                    value: root.clips[root.chosen].cross;
-                    shown: round(self.value * 10) / 10 + " s";
-                    changed(value) => {
-                        root.tune(root.chosen, "crossfade", value, root.solo);
-                    }
-                }
-                MenuRow {
-                    text: "Curve";
-                    Segment {
-                        horizontal-stretch: 1;
-                        options: ["linear", "smooth", "ease in", "ease out"];
-                        value: root.clips[root.chosen].ease-cross;
-                        changed(value) => {
-                            root.curve(root.chosen, "crossfade", value, root.solo);
-                        }
-                    }
-                }
+        Crossing {
+            item: root.clips[root.chosen];
+            tune(value) => {
+                root.tune(root.chosen, "crossfade", value, root.solo);
+            }
+            curve(value) => {
+                root.curve(root.chosen, "crossfade", value, root.solo);
             }
         }
     }
 
-    menu := PopupWindow {
+    menu := MenuPopup {
         x: root.menu-x;
         // the timeline is at the bottom of the window, so the menu opens upward
         y: root.menu-y - self.height;
         close-policy: close-on-click-outside;
-        MenuPanel {
-            VerticalLayout {
-                padding: 4px;
-                if root.clips[root.chosen].audio && !root.copying: MenuSlider {
-                    text: "Gain";
-                    minimum: -24;
-                    maximum: 24;
-                    step: 0.5;
-                    value: root.clips[root.chosen].gain;
-                    shown: (self.value > 0 ? "+" : "") + round(self.value * 10) / 10 + " dB";
+        for side in root.edge == 4 ? [2, 3] : root.edge > 1 ? [root.edge] : []: VerticalLayout {
+            MenuSlider {
+                text: side == 3 ? "Fade out" : "Fade in";
+                maximum: 5;
+                value: side == 3 ? root.clips[root.chosen].fade-out : root.clips[root.chosen].fade-in;
+                shown: round(self.value * 10) / 10 + " s";
+                changed(value) => {
+                    root.tune(root.chosen, side == 3 ? "fade out" : "fade in", value, root.solo);
+                }
+            }
+            MenuRow {
+                text: "Curve";
+                Segment {
+                    horizontal-stretch: 1;
+                    label: side == 3 ? "Fade out curve" : "Fade in curve";
+                    options: ["linear", "smooth", "ease in", "ease out"];
+                    value: side == 3 ? root.clips[root.chosen].ease-out : root.clips[root.chosen].ease-in;
                     changed(value) => {
-                        root.tune(root.chosen, "gain", value, root.solo);
+                        root.curve(root.chosen, side == 3 ? "fade out" : "fade in", value, root.solo);
                     }
                 }
-                if !root.copying: MenuSlider {
-                    text: "Fade in";
-                    maximum: 5;
-                    value: root.clips[root.chosen].fade-in;
-                    shown: round(self.value * 10) / 10 + " s";
-                    changed(value) => {
-                        root.tune(root.chosen, "fade in", value, root.solo);
-                    }
-                }
-                if !root.copying: MenuRow {
-                    text: "";
-                    Segment {
-                        horizontal-stretch: 1;
-                        options: ["linear", "smooth", "ease in", "ease out"];
-                        value: root.clips[root.chosen].ease-in;
-                        changed(value) => {
-                            root.curve(root.chosen, "fade in", value, root.solo);
-                        }
-                    }
-                }
-                if !root.copying: MenuSlider {
-                    text: "Fade out";
-                    maximum: 5;
-                    value: root.clips[root.chosen].fade-out;
-                    shown: round(self.value * 10) / 10 + " s";
-                    changed(value) => {
-                        root.tune(root.chosen, "fade out", value, root.solo);
-                    }
-                }
-                if !root.copying: MenuRow {
-                    text: "";
-                    Segment {
-                        horizontal-stretch: 1;
-                        options: ["linear", "smooth", "ease in", "ease out"];
-                        value: root.clips[root.chosen].ease-out;
-                        changed(value) => {
-                            root.curve(root.chosen, "fade out", value, root.solo);
-                        }
-                    }
-                }
-                if !root.copying: Rectangle {
-                    height: 9px;
-                    Rectangle {
-                        height: 1px;
-                        background: Theme.seam;
-                    }
-                }
-                MenuItem {
-                    text: "Split";
-                    hint: "S";
-                    clicked => {
-                        root.mark("split");
-                        menu.close();
-                    }
-                }
-                MenuItem {
-                    text: "Replace…";
-                    clicked => {
-                        root.replace-clip(root.chosen);
-                        menu.close();
-                    }
-                }
-                MenuItem {
-                    text: "Remove clip";
-                    hint: "Delete";
-                    clicked => {
-                        root.remove-clip();
-                        menu.close();
-                    }
-                }
+            }
+        }
+        if root.joined: Crossing {
+            item: root.clips[root.chosen];
+            tune(value) => {
+                root.tune(root.chosen, "crossfade", value, root.solo);
+            }
+            curve(value) => {
+                root.curve(root.chosen, "crossfade", value, root.solo);
+            }
+        }
+        if !root.clips[root.chosen].still && !root.copying: MenuSlider {
+            text: "Speed";
+            minimum: -3;
+            maximum: 3;
+            step: 0.05;
+            value: log(root.clips[root.chosen].speed, 2);
+            shown: round(pow(2, self.value) * 100) / 100 + "x";
+            changed(value) => {
+                root.retime(root.chosen, round(pow(2, value) * 100) / 100);
+            }
+        }
+        if root.clips[root.chosen].audio && !root.copying: MenuSlider {
+            text: "Gain";
+            minimum: -24;
+            maximum: 24;
+            step: 0.5;
+            value: root.clips[root.chosen].gain;
+            shown: (self.value > 0 ? "+" : "") + round(self.value * 10) / 10 + " dB";
+            changed(value) => {
+                root.tune(root.chosen, "gain", value, root.solo);
+            }
+        }
+        if (!root.clips[root.chosen].still || root.clips[root.chosen].audio) && !root.copying: MenuSeparator { }
+        MenuItem {
+            text: "Split";
+            hint: "S";
+            clicked => {
+                root.mark("split");
+                menu.close();
+            }
+        }
+        MenuItem {
+            text: "Replace…";
+            clicked => {
+                root.replace-clip(root.chosen);
+                menu.close();
+            }
+        }
+        MenuItem {
+            text: "Remove clip";
+            hint: "Delete";
+            clicked => {
+                root.remove-clip();
+                menu.close();
+            }
+        }
+        MenuItem {
+            text: "Ripple delete";
+            hint: "Shift Delete";
+            clicked => {
+                root.ripple-clip();
+                menu.close();
+            }
+        }
+    }
+
+    hole := MenuPopup {
+        x: root.menu-x;
+        y: root.menu-y - self.height;
+        close-policy: close-on-click-outside;
+        MenuItem {
+            text: "Ripple delete";
+            clicked => {
+                root.close-gap(root.gap-time, root.gap-depth);
+                hole.close();
+            }
+        }
+    }
+
+    lane-menu := MenuPopup {
+        x: root.menu-x;
+        y: root.menu-y - self.height;
+        close-policy: close-on-click-outside;
+        MenuItem {
+            text: "Add track";
+            clicked => {
+                root.add-lane(root.lane-audio);
+                lane-menu.close();
+            }
+        }
+        if root.lane-audio: MenuItem {
+            text: "Mute track";
+            toggle: true;
+            checked: root.audio[root.lane-index].muted;
+            clicked => {
+                root.mute-lane(root.lane-index);
+                lane-menu.close();
+            }
+        }
+        MenuItem {
+            text: "Select clips on track";
+            clicked => {
+                root.select-track(root.lane-audio, root.lane-index);
+                lane-menu.close();
+            }
+        }
+        MenuSeparator { }
+        MenuItem {
+            text: "Remove track";
+            enabled: root.lane-audio || root.video.length > 1;
+            clicked => {
+                root.remove-lane(root.lane-audio, root.lane-index);
+                lane-menu.close();
             }
         }
     }
@@ -383,6 +514,18 @@ export component Timeline inherits Rectangle {
             for lane[index] in root.video: Rectangle {
                 y: lane.y - root.over;
                 height: lane.height;
+                accessible-role: groupbox;
+                accessible-label: "Video track " + lane.name;
+                accessible-action-default => {
+                    root.open-lane(false, index, self.absolute-position.x + 24px, self.absolute-position.y + self.height / 2);
+                }
+                TouchArea {
+                    pointer-event(event) => {
+                        if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                            root.open-lane(false, index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
+                }
                 Text {
                     x: 12px;
                     text: lane.name;
@@ -390,11 +533,16 @@ export component Timeline inherits Rectangle {
                     font-size: 11px;
                     font-family: "monospace";
                     vertical-alignment: center;
+                    accessible-role: none;
                 }
                 if root.video.length > 1: Action {
-                    x: parent.width - 30px;
-                    width: 18px;
+                    x: parent.width - self.width - 12px;
+                    width: self.preferred-width;
                     text: "×";
+                    accessible: "Remove track " + lane.name;
+                    context(x, y) => {
+                        root.open-lane(false, index, x, y);
+                    }
                     clicked => {
                         root.remove-lane(false, index);
                     }
@@ -417,7 +565,9 @@ export component Timeline inherits Rectangle {
                     height: 9px;
                     mouse-cursor: row-resize;
                     pointer-event(event) => {
-                        if event.kind == PointerEventKind.down {
+                        if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                            root.open-lane(false, index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        } else if event.kind == PointerEventKind.down {
                             self.anchor = self.absolute-position.y + self.mouse-y;
                             self.base = lane.height;
                         }
@@ -437,6 +587,18 @@ export component Timeline inherits Rectangle {
             for lane[index] in root.audio: Rectangle {
                 y: lane.y - root.under - root.divide;
                 height: lane.height;
+                accessible-role: groupbox;
+                accessible-label: "Audio track " + lane.name + (lane.muted ? ", muted" : "");
+                accessible-action-default => {
+                    root.open-lane(true, index, self.absolute-position.x + 24px, self.absolute-position.y + self.height / 2);
+                }
+                TouchArea {
+                    pointer-event(event) => {
+                        if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                            root.open-lane(true, index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
+                }
                 HorizontalLayout {
                     x: 12px;
                     width: parent.width - 24px;
@@ -447,9 +609,15 @@ export component Timeline inherits Rectangle {
                         font-size: 11px;
                         font-family: "monospace";
                         vertical-alignment: center;
+                        accessible-role: none;
                     }
                     Action {
                         text: "M";
+                        accessible: "Mute track " + lane.name;
+                        toggle: true;
+                        context(x, y) => {
+                            root.open-lane(true, index, x, y);
+                        }
                         active: lane.muted;
                         clicked => {
                             root.mute-lane(index);
@@ -459,8 +627,11 @@ export component Timeline inherits Rectangle {
                         horizontal-stretch: 1;
                     }
                     Action {
-                        width: 18px;
                         text: "×";
+                        accessible: "Remove track " + lane.name;
+                        context(x, y) => {
+                            root.open-lane(true, index, x, y);
+                        }
                         clicked => {
                             root.remove-lane(true, index);
                         }
@@ -484,7 +655,9 @@ export component Timeline inherits Rectangle {
                     height: 9px;
                     mouse-cursor: row-resize;
                     pointer-event(event) => {
-                        if event.kind == PointerEventKind.down {
+                        if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                            root.open-lane(true, index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        } else if event.kind == PointerEventKind.down {
                             self.anchor = self.absolute-position.y + self.mouse-y;
                             self.base = lane.height;
                         }
@@ -499,27 +672,36 @@ export component Timeline inherits Rectangle {
         }
     }
     HorizontalLayout {
-        x: 12px;
+        x: 6px;
         y: 0;
-        width: root.gutter - 20px;
+        width: root.gutter - 18px;
         height: root.ruler;
         spacing: 10px;
-        Text {
+        IconButton {
+            width: 24px;
+            height: 24px;
+            shape: Icons.magnet;
+            label: "Snapping";
+            keys: ["N"];
+            toggle: true;
+            active: root.snapping;
+            clicked => {
+                root.toggle();
+            }
+        }
+        Rectangle {
             horizontal-stretch: 1;
-            text: "TIMELINE";
-            color: Theme.faint;
-            font-size: 10px;
-            letter-spacing: 1px;
-            vertical-alignment: center;
         }
         Action {
             text: "+V";
+            accessible: "Add video track";
             clicked => {
                 root.add-lane(false);
             }
         }
         Action {
             text: "+A";
+            accessible: "Add audio track";
             clicked => {
                 root.add-lane(true);
             }
@@ -547,11 +729,39 @@ export component Timeline inherits Rectangle {
                 width: max(parent.width, area.width);
                 height: parent.height - root.ruler;
                 clip: true;
+                accessible-role: list;
+                accessible-label: "Clips";
 
-                TouchArea {
+                empty := TouchArea {
+                    property <bool> boxed;
+                    property <length> from-x;
+                    property <length> from-y;
                     pointer-event(event) => {
                         if event.kind == PointerEventKind.down {
-                            root.select(-1);
+                            let add = event.button == PointerEventButton.left && (event.modifiers.control || event.modifiers.shift);
+                            if !add {
+                                root.select(-1);
+                            }
+                            if event.button == PointerEventButton.left {
+                                self.boxed = true;
+                                self.from-x = self.mouse-x;
+                                self.from-y = self.mouse-y;
+                                root.lasso-start(add);
+                            } else if event.button == PointerEventButton.right && root.gap(self.mouse-x / inner.width * root.extent, root.depth(self.mouse-y)) {
+                                root.gap-time = self.mouse-x / inner.width * root.extent;
+                                root.gap-depth = root.depth(self.mouse-y);
+                                root.menu-x = self.absolute-position.x + self.mouse-x - root.absolute-position.x;
+                                root.menu-y = self.absolute-position.y + self.mouse-y - root.absolute-position.y;
+                                hole.show();
+                            }
+                        } else if event.kind == PointerEventKind.up && self.boxed {
+                            self.boxed = false;
+                            root.lasso-end();
+                        }
+                    }
+                    moved => {
+                        if self.boxed {
+                            root.lasso(min(self.from-x, self.mouse-x) / inner.width * root.extent, max(self.from-x, self.mouse-x) / inner.width * root.extent, root.depth(min(self.from-y, self.mouse-y)), root.depth(max(self.from-y, self.mouse-y)));
                         }
                     }
                     scroll-event(event) => {
@@ -579,6 +789,7 @@ export component Timeline inherits Rectangle {
                 for clip[index] in root.clips: Rectangle {
                     property <bool> current: index == root.selected;
                     property <bool> linked: clip.link == root.link;
+                    property <string> spoken: clip.name + ", " + (clip.audio ? "audio" : clip.still ? "image" : "video") + ", " + lane.name + ", from " + Clock.text(clip.at) + " to " + Clock.text(clip.at + clip.kept) + (clip.speed == 1 ? "" : ", speed " + round(clip.speed * 100) / 100 + "x") + (clip.state == "" ? "" : ", " + clip.state.to-lowercase()) + (clip.fade-in > 0 ? ", fade in " + round(clip.fade-in * 10) / 10 + " s" : "") + (clip.fade-out > 0 ? ", fade out " + round(clip.fade-out * 10) / 10 + " s" : "") + (clip.cross-in > 0 ? ", crossfade in " + round(clip.cross-in * 10) / 10 + " s" : "") + (clip.cross-out > 0 ? ", crossfade out " + round(clip.cross-out * 10) / 10 + " s" : "");
                     property <Lane> lane: clip.audio ? root.audio[clip.track] : root.video[clip.track];
                     // a trim starts from these, so the edge follows the pointer and not the layout
                     property <length> anchor;
@@ -601,10 +812,15 @@ export component Timeline inherits Rectangle {
                     property <length> whole: clip.length / root.extent * inner.width;
                     property <length> start: clip.at / root.extent * inner.width;
                     property <length> full: clip.kept / root.extent * inner.width;
+                    property <length> fin: min(full - 2px, clip.fade-in / root.extent * inner.width);
+                    property <length> fout: min(full - 2px, clip.fade-out / root.extent * inner.width);
+                    property <bool> hot-in: fade-in.has-hover || fade-in.pressed;
+                    property <bool> hot-out: fade-out.has-hover || fade-out.pressed;
+                    property <length> reach: min(full / 3, 60px);
                     property <length> skip: clamp(root.left - 2px - start, 0, full);
                     property <length> shown: clamp(root.left + area.width + 2px - start, 0, full) - skip;
                     // the keyframes are 3px apart or more
-                    property <int> detail: clamp(ceil(log(max(1.0, 3px * clip.length / (0.025 * max(1px, whole))), 2)), 0, max(0, clip.keys.length - 1));
+                    property <int> detail: clamp(ceil(log(max(1.0, 3px * clip.length * clip.speed / (0.025 * max(1px, whole))), 2)), 0, max(0, clip.keys.length - 1));
                     pure function time(x: length) -> float {
                         (x - inner.absolute-position.x) / inner.width * root.extent
                     }
@@ -626,6 +842,15 @@ export component Timeline inherits Rectangle {
                             width: max(0px, shown - 2px);
                             // a solid base, so a clip under this one does not show through
                             background: clip.audio ? Theme.rack : Theme.raised;
+                            accessible-role: list-item;
+                            accessible-label: spoken;
+                            accessible-item-selectable: true;
+                            accessible-item-selected: current || clip.picked;
+                            accessible-item-index: index;
+                            accessible-item-count: root.clips.length;
+                            accessible-action-default => {
+                                root.select(index);
+                            }
                             border-width: 1px;
                             border-color: current || clip.picked ? Theme.accent : linked ? Theme.accent.with-alpha(0.5) : Theme.seam;
                             opacity: root.copying && clip.still ? 0.3 : 1;
@@ -639,6 +864,7 @@ export component Timeline inherits Rectangle {
                                 width: self.height * clip.ratio;
                                 height: parent.height - 17px;
                                 source: clip.thumbs[0];
+                                accessible-role: none;
                             }
                             if !clip.audio && !clip.still: Rectangle {
                                 x: -clip.cut-in * whole - skip;
@@ -651,6 +877,7 @@ export component Timeline inherits Rectangle {
                                     height: parent.height;
                                     source: thumb;
                                     image-fit: cover;
+                                    accessible-role: none;
                                 }
                             }
                             if clip.audio: Image {
@@ -659,22 +886,23 @@ export component Timeline inherits Rectangle {
                                 height: parent.height * (root.copying ? 1 : pow(10, clip.gain / 20));
                                 y: (parent.height - self.height) / 2;
                                 source: clip.wave;
+                                accessible-role: none;
                                 image-fit: fill;
                                 image-rendering: pixelated;
                                 colorize: lane.muted ? Theme.faint : Theme.accent.with-alpha(0.7);
                             }
-                            if clip.fade-in > 0 && clip.cross-in == 0: Fade {
+                            if (clip.fade-in > 0 || hot-in) && clip.cross-in == 0: Fade {
                                 x: -skip;
-                                width: min(full - 2px, clip.fade-in / root.extent * inner.width);
+                                width: clip.fade-in > 0 ? fin : 16px;
                                 curve: clip.ease-in;
-                                edge: parent.border-color;
+                                hot: hot-in;
                                 off: root.copying;
                             }
-                            if clip.fade-out > 0 && clip.cross-out == 0: Fade {
+                            if (clip.fade-out > 0 || hot-out) && clip.cross-out == 0: Fade {
                                 x: full - 2px - self.width - skip;
-                                width: min(full - 2px, clip.fade-out / root.extent * inner.width);
+                                width: clip.fade-out > 0 ? fout : 16px;
                                 curve: clip.ease-out;
-                                edge: parent.border-color;
+                                hot: hot-out;
                                 off: root.copying;
                                 out: true;
                             }
@@ -700,14 +928,15 @@ export component Timeline inherits Rectangle {
                                 height: 10px;
                                 background: Theme.void.with-alpha(0.75);
                                 Rectangle {
-                                    x: -clip.cut-in * whole - skip;
+                                    // 1px for the border
+                                    x: -clip.cut-in * whole - skip - 1px;
                                     width: whole;
                                     for key in clip.keys[detail]: Rectangle {
-                                        x: key / clip.length * parent.width;
+                                        x: key / clip.speed / clip.length * parent.width;
                                         y: 1px;
                                         width: 1px;
                                         height: 8px;
-                                        background: Theme.ink;
+                                        background: Theme.ink.with-alpha(0.55);
                                     }
                                 }
                             }
@@ -721,13 +950,17 @@ export component Timeline inherits Rectangle {
                                 y: 1px;
                                 width: parent.width - 10px;
                                 height: 14px;
-                                text: clip.state == "" ? clip.name : clip.state + "  " + clip.name;
-                                color: clip.state == "Done" ? Theme.ok : clip.state == "Missing" ? Theme.accent : current ? Theme.ink : Theme.muted;
+                                text: (clip.state == "" ? "" : clip.state + "  ") + (clip.speed == 1 ? "" : round(clip.speed * 100) / 100 + "x  ") + clip.name;
+                                color: clip.state == "Done" ? Theme.ok : current || clip.state == "Missing" ? Theme.ink : Theme.muted;
                                 font-size: 10px;
                                 overflow: elide;
                                 vertical-alignment: center;
+                                accessible-role: none;
                             }
-                            TouchArea {
+                            body := TouchArea {
+                                property <bool> dragged;
+                                property <length> from-x;
+                                property <length> from-y;
                                 mouse-cursor: move;
                                 pointer-event(event) => {
                                     if event.button == PointerEventButton.right {
@@ -737,27 +970,41 @@ export component Timeline inherits Rectangle {
                                             }
                                             // on a crossfade the menu is for the crossfade
                                             if clip.cross-in > 0 && self.mouse-x + skip < before {
-                                                root.open(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, true, event.modifiers.alt);
+                                                root.open(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, 1, event.modifiers.alt);
                                             } else if clip.cross-out > 0 && self.mouse-x + skip > full - 2px - after {
-                                                root.open(root.joint(index, false), self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, true, event.modifiers.alt);
+                                                root.open(root.joint(index, false), self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, 1, event.modifiers.alt);
+                                            } else if self.mouse-x + skip < max(fin, reach) {
+                                                root.open(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, 2, event.modifiers.alt);
+                                            } else if self.mouse-x + skip > full - 2px - max(fout, reach) {
+                                                root.open(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, 3, event.modifiers.alt);
                                             } else {
-                                                root.open(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, false, event.modifiers.alt);
+                                                root.open(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, 0, event.modifiers.alt);
                                             }
                                         }
                                     } else if event.kind == PointerEventKind.down {
                                         if event.modifiers.control {
                                             root.extend(index);
+                                        } else if event.modifiers.shift {
+                                            root.range(index);
                                         } else if !clip.picked {
                                             root.select(index);
                                         }
+                                        self.dragged = false;
+                                        self.from-x = self.absolute-position.x + self.mouse-x;
+                                        self.from-y = self.absolute-position.y + self.mouse-y;
                                         root.grab(index, time(self.absolute-position.x + self.mouse-x), event.modifiers.alt);
                                     } else if event.kind == PointerEventKind.up {
                                         root.release();
-                                    }
-                                }
-                                moved => {
-                                    if self.pressed {
-                                        root.drag(time(self.absolute-position.x + self.mouse-x), root.depth-at(self.absolute-position.y + self.mouse-y), 8px / inner.width * root.extent);
+                                        if !self.dragged && !event.modifiers.control && !event.modifiers.shift && clip.picked {
+                                            root.select(index);
+                                        }
+                                    } else if event.kind == PointerEventKind.move && self.pressed {
+                                        let x = self.absolute-position.x + self.mouse-x;
+                                        let y = self.absolute-position.y + self.mouse-y;
+                                        self.dragged = self.dragged || abs(x - self.from-x) >= 3px || abs(y - self.from-y) >= 3px;
+                                        if self.dragged {
+                                            root.drag(time(x), root.depth-at(y), root.slack(event.modifiers.shift), event.modifiers.control);
+                                        }
                                     }
                                 }
                                 scroll-event(event) => {
@@ -770,15 +1017,15 @@ export component Timeline inherits Rectangle {
                         Rectangle {
                             x: 0;
                             width: 7px;
-                            accessible-role: slider;
-                            accessible-label: "Start of " + clip.name;
-                            accessible-value: clip.cut-in;
                             head := TouchArea {
                                 mouse-cursor: col-resize;
                                 pointer-event(event) => {
                                     if event.button == PointerEventButton.right {
-                                        if event.kind == PointerEventKind.down && root.joint(index, true) >= 0 {
-                                            root.open(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, true, event.modifiers.alt);
+                                        if event.kind == PointerEventKind.down {
+                                            if !clip.picked {
+                                                root.select(index);
+                                            }
+                                            root.open(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, root.joint(index, true) >= 0 ? 1 : 2, event.modifiers.alt);
                                         }
                                     } else if event.kind == PointerEventKind.down {
                                         root.select(index);
@@ -789,14 +1036,11 @@ export component Timeline inherits Rectangle {
                                         origin = clip.at;
                                     } else if event.kind == PointerEventKind.up {
                                         root.trim-done();
-                                    }
-                                }
-                                moved => {
-                                    if self.pressed {
+                                    } else if event.kind == PointerEventKind.move && self.pressed {
                                         // the end of the clip stays where it is
                                         clip.cut-in = clamp(base + (self.absolute-position.x + self.mouse-x - anchor) / whole, max(0, base - origin / clip.length), clip.cut-out - 0.1 / clip.length);
                                         clip.at = origin + (clip.cut-in - base) * clip.length;
-                                        root.trimmed(index, 8px / inner.width * root.extent, alone);
+                                        root.trimmed(index, root.slack(event.modifiers.shift), alone, event.modifiers.control);
                                     }
                                 }
                             }
@@ -809,15 +1053,16 @@ export component Timeline inherits Rectangle {
                         Rectangle {
                             x: parent.width - self.width;
                             width: 7px;
-                            accessible-role: slider;
-                            accessible-label: "End of " + clip.name;
-                            accessible-value: clip.cut-out;
                             tail := TouchArea {
                                 mouse-cursor: col-resize;
                                 pointer-event(event) => {
                                     if event.button == PointerEventButton.right {
-                                        if event.kind == PointerEventKind.down && root.joint(index, false) >= 0 {
-                                            root.open(root.joint(index, false), self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, true, event.modifiers.alt);
+                                        if event.kind == PointerEventKind.down {
+                                            if !clip.picked {
+                                                root.select(index);
+                                            }
+                                            let next = root.joint(index, false);
+                                            root.open(next >= 0 ? next : index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, next >= 0 ? 1 : 3, event.modifiers.alt);
                                         }
                                     } else if event.kind == PointerEventKind.down {
                                         root.select(index);
@@ -827,12 +1072,9 @@ export component Timeline inherits Rectangle {
                                         base = clip.cut-out;
                                     } else if event.kind == PointerEventKind.up {
                                         root.trim-done();
-                                    }
-                                }
-                                moved => {
-                                    if self.pressed {
+                                    } else if event.kind == PointerEventKind.move && self.pressed {
                                         clip.cut-out = clamp(base + (self.absolute-position.x + self.mouse-x - anchor) / whole, clip.cut-in + 0.1 / clip.length, 1);
-                                        root.trimmed(index, 8px / inner.width * root.extent, alone);
+                                        root.trimmed(index, root.slack(event.modifiers.shift), alone, event.modifiers.control);
                                     }
                                 }
                             }
@@ -840,6 +1082,87 @@ export component Timeline inherits Rectangle {
                                 x: parent.width - 4px;
                                 width: 3px;
                                 background: tail.has-hover || tail.pressed || root.touches(index, false) ? Theme.accent : transparent;
+                            }
+                        }
+                        // 15px is the title strip
+                        fade-in := TouchArea {
+                            x: max(0px, fin - 7px);
+                            y: 0;
+                            width: 14px;
+                            height: 15px;
+                            visible: !root.copying && full >= 40px && clip.cross-in == 0;
+                            mouse-cursor: ew-resize;
+                            pointer-event(event) => {
+                                if event.button == PointerEventButton.right {
+                                    if event.kind == PointerEventKind.down {
+                                        if !clip.picked {
+                                            root.select(index);
+                                        }
+                                        root.open(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, 2, event.modifiers.alt);
+                                    }
+                                } else if event.kind == PointerEventKind.down {
+                                    if !clip.picked {
+                                        root.select(index);
+                                    }
+                                    anchor = self.absolute-position.x + self.mouse-x;
+                                    base = clip.fade-in;
+                                } else if event.kind == PointerEventKind.move && self.pressed {
+                                    root.tune(index, "fade in", round(clamp(base + (self.absolute-position.x + self.mouse-x - anchor) / inner.width * root.extent, 0, min(5, clip.kept)) * 20) / 20, event.modifiers.alt);
+                                }
+                            }
+                        }
+                        fade-out := TouchArea {
+                            x: parent.width - 14px - max(0px, fout - 7px);
+                            y: 0;
+                            width: 14px;
+                            height: 15px;
+                            visible: !root.copying && full >= 40px && clip.cross-out == 0;
+                            mouse-cursor: ew-resize;
+                            pointer-event(event) => {
+                                if event.button == PointerEventButton.right {
+                                    if event.kind == PointerEventKind.down {
+                                        if !clip.picked {
+                                            root.select(index);
+                                        }
+                                        root.open(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, 3, event.modifiers.alt);
+                                    }
+                                } else if event.kind == PointerEventKind.down {
+                                    if !clip.picked {
+                                        root.select(index);
+                                    }
+                                    anchor = self.absolute-position.x + self.mouse-x;
+                                    base = clip.fade-out;
+                                } else if event.kind == PointerEventKind.move && self.pressed {
+                                    root.tune(index, "fade out", round(clamp(base - (self.absolute-position.x + self.mouse-x - anchor) / inner.width * root.extent, 0, min(5, clip.kept)) * 20) / 20, event.modifiers.alt);
+                                }
+                            }
+                        }
+                        if fade-in.pressed: Rectangle {
+                            x: fin + 4px;
+                            y: 4px;
+                            width: readout-in.preferred-width + 6px;
+                            height: 14px;
+                            background: Theme.raised;
+                            readout-in := Text {
+                                text: clip.fade-in.to-fixed(abs(clip.fade-in * 10 - round(clip.fade-in * 10)) < 0.01 ? 1 : 2) + " s";
+                                color: Theme.ink;
+                                font-size: 10px;
+                                font-family: "monospace";
+                                accessible-role: none;
+                            }
+                        }
+                        if fade-out.pressed: Rectangle {
+                            x: full - fout - 4px - self.width;
+                            y: 4px;
+                            width: readout-out.preferred-width + 6px;
+                            height: 14px;
+                            background: Theme.raised;
+                            readout-out := Text {
+                                text: clip.fade-out.to-fixed(abs(clip.fade-out * 10 - round(clip.fade-out * 10)) < 0.01 ? 1 : 2) + " s";
+                                color: Theme.ink;
+                                font-size: 10px;
+                                font-family: "monospace";
+                                accessible-role: none;
                             }
                         }
                     }
@@ -858,6 +1181,24 @@ export component Timeline inherits Rectangle {
                     border-width: 1px;
                     border-color: Theme.accent;
                     background: Theme.ghost;
+                }
+
+                if root.snapped >= 0: Rectangle {
+                    x: root.snapped / root.extent * inner.width;
+                    width: 1px;
+                    z: 3;
+                    background: Theme.accent;
+                }
+
+                if empty.boxed: Rectangle {
+                    x: min(empty.from-x, empty.mouse-x);
+                    y: min(empty.from-y, empty.mouse-y);
+                    width: abs(empty.mouse-x - empty.from-x);
+                    height: abs(empty.mouse-y - empty.from-y);
+                    z: 3;
+                    border-width: 1px;
+                    border-color: Theme.accent;
+                    background: Theme.accent.with-alpha(0.12);
                 }
 
                 // the line between video and audio moves the split, and the tracks keep their heights
@@ -894,6 +1235,21 @@ export component Timeline inherits Rectangle {
                 x: 0;
                 width: max(parent.width, area.width);
                 height: root.ruler;
+                accessible-role: slider;
+                accessible-label: "Playhead";
+                accessible-value: Clock.text(root.position * root.seconds);
+                accessible-value-minimum: 0;
+                accessible-value-maximum: root.seconds;
+                accessible-value-step: 1;
+                accessible-action-increment => {
+                    root.jump(root.position * root.seconds + 1);
+                }
+                accessible-action-decrement => {
+                    root.jump(root.position * root.seconds - 1);
+                }
+                accessible-action-set-value(text) => {
+                    root.jump(text.to-float());
+                }
                 Rectangle {
                     x: root.left;
                     width: area.width;
@@ -909,17 +1265,21 @@ export component Timeline inherits Rectangle {
                     Text {
                         x: 4px;
                         y: 5px;
-                        text: floor(time / 60) + ":" + (mod(time, 60) < 10 ? "0" : "") + mod(time, 60);
+                        text: Clock.text(time);
                         color: Theme.faint;
                         font-size: 10px;
                         font-family: "monospace";
+                        accessible-role: none;
                     }
                 }
                 scrub := TouchArea {
                     mouse-cursor: ew-resize;
                     pointer-event(event) => {
                         if event.kind == PointerEventKind.down {
+                            root.scrub-start();
                             root.pick(self.mouse-x);
+                        } else if event.kind == PointerEventKind.up {
+                            root.scrub-done();
                         }
                     }
                     moved => {
@@ -944,10 +1304,11 @@ export component Timeline inherits Rectangle {
                         height: 14px;
                         background: Theme.raised;
                         label := Text {
-                            text: floor(time / 60) + ":" + (mod(floor(time), 60) < 10 ? "0" : "") + mod(floor(time), 60) + "." + floor(mod(time, 1) * 10);
+                            text: Clock.text(time) + "." + floor(mod(time, 1) * 10);
                             color: Theme.ink;
                             font-size: 10px;
                             font-family: "monospace";
+                            accessible-role: none;
                         }
                     }
                 }
@@ -961,7 +1322,7 @@ export component Timeline inherits Rectangle {
             }
 
             Rectangle {
-                x: root.head * (inner.width - 1px);
+                x: root.head * inner.width;
                 width: 1px;
                 background: Theme.accent;
                 Path {

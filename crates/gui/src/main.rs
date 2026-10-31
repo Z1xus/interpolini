@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use interpolini_core::config::{self, Config};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
-use settings::{preferences, settings, smooth_scroll};
+use settings::{preferences, settings};
 use state::{Entry, Saved, Shared, State, Tracks, lock};
 use view::{fit, select};
 
@@ -61,7 +61,15 @@ fn main() -> Result<(), slint::PlatformError> {
     config::create();
     let _ = slint::set_xdg_app_id("interpolini");
     let ui = App::new()?;
-    ui.global::<System>().set_smooth_scroll(smooth_scroll());
+    let weak = ui.as_weak();
+    ui.global::<Keyboard>().on_step(move |back| {
+        use slint::platform::{Key, WindowEvent};
+        let text = if back { Key::Backtab } else { Key::Tab };
+        let _ = weak.upgrade_in_event_loop(move |ui| {
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: text.into() });
+        });
+    });
     ui.set_clips(ModelRc::new(VecModel::<Clip>::default()));
     ui.set_settings(settings(&Config::default()));
     ui.set_version(VERSION.into());
@@ -141,38 +149,60 @@ fn main() -> Result<(), slint::PlatformError> {
 
     const SHORTCUTS: [&[(&str, &str)]; 2] = [
         &[
-            ("Project", ""),
-            ("New, open", "Ctrl N, O"),
-            ("Save, save as", "Ctrl S, Ctrl Shift S"),
             ("Playback", ""),
             ("Play or pause", "Space, K"),
             ("Back or forward 1 second", "J, L"),
             ("Step 1 frame", "Left, Right"),
-            ("Move 1 second", "Shift Left, Right"),
-            ("Step to a keyframe, in lossless cut", "Alt Left, Right"),
+            ("Move 1 second", "Shift Left, Shift Right"),
+            ("Step to a keyframe", "Alt Left, Alt Right"),
+            ("Go to start or end", "Home, End"),
             ("Volume", "Up, Down"),
             ("Mute", "M"),
-            ("Go to start or end", "Home, End"),
+            ("Editing", ""),
+            ("Set start or end", "I, O"),
+            ("Split", "S, Ctrl K, Ctrl B"),
+            ("Remove clip", "Delete, Backspace"),
+            ("Ripple delete", "Shift Delete"),
+            ("Restore full length", "X"),
+            ("Close the gap", "G"),
+            ("Undo", "Ctrl Z"),
+            ("Redo", "Ctrl Shift Z, Ctrl Y"),
             ("Preview", ""),
             ("Show the original", "Hold `"),
-            ("Stretch", "Shift, drag an edge"),
+            ("Stretch", "Shift drag an edge"),
             ("Save the frame", "Ctrl Shift E"),
         ],
         &[
-            ("Timeline", ""),
-            ("Zoom the timeline", "Ctrl wheel, Ctrl + and -"),
-            ("Scroll the timeline", "Shift wheel"),
-            ("Track height", "Alt wheel"),
-            ("Separate video and audio", "Alt, drag"),
-            ("Trim one clip of two", "Alt, drag an edge"),
-            ("Change only one clip of a file", "Alt right click"),
-            ("Editing", ""),
-            ("Set start or end", "I, O"),
-            ("Restore full length", "X"),
-            ("Split", "S, Ctrl K, Ctrl B"),
-            ("Remove clip", "Delete, Backspace"),
-            ("Undo, redo", "Ctrl Z, Ctrl Y"),
+            ("Selection", ""),
             ("Select more clips", "Ctrl click"),
+            ("Select a range", "Shift click"),
+            ("Select an area", "Drag on empty space"),
+            ("Select all", "Ctrl A"),
+            ("Clear selection", "Esc"),
+            ("Next or previous clip", "], ["),
+            ("Timeline", ""),
+            ("Fit the timeline", "\\"),
+            ("Zoom", "Ctrl wheel, Ctrl +, Ctrl -"),
+            ("Scroll", "Shift wheel"),
+            ("Track height", "Alt wheel"),
+            ("Snapping", "N"),
+            ("Track menu", "T"),
+            ("Clips", ""),
+            ("Clip menu", "Menu, Shift F10"),
+            ("Move a clip 1 frame", "Comma, Period"),
+            ("Move a clip 1 second", "Shift Comma, Shift Period"),
+            ("Fade", "Drag a top corner"),
+            ("Overwrite other clips", "Ctrl drag"),
+            ("Snapping for one drag", "Shift drag"),
+            ("Separate video and audio", "Alt drag"),
+            ("Trim without the next clip", "Alt drag an edge"),
+            ("Change only one clip of a file", "Alt right click"),
+            ("Project", ""),
+            ("New, open", "Ctrl N, Ctrl O"),
+            ("Save, save as", "Ctrl S, Ctrl Shift S"),
+            ("Interface", ""),
+            ("Menus", "F10"),
+            ("Move between controls", "Tab, Shift Tab"),
         ],
     ];
     const CREDITS: [&[(&str, &str)]; 1] = [&[
@@ -205,10 +235,18 @@ fn main() -> Result<(), slint::PlatformError> {
         } else {
             &SHORTCUTS
         };
-        // slint sorts the fields of the row by name, so the note comes first
+        // slint sorts the row fields by name
+        let credits = heading == "Credits";
         let column = |lines: &[(&str, &str)]| {
-            let rows = lines.iter().map(|line| (line.1.into(), line.0.into()));
-            ModelRc::new(VecModel::from_iter(rows))
+            let row = |line: &(&str, &str)| {
+                let (text, keys) = *line;
+                let plain = credits || keys.starts_with("Drag");
+                let caps = keys.split(", ").filter(|key| !plain && !key.is_empty());
+                let caps: Vec<slint::SharedString> = caps.map(Into::into).collect();
+                let note = if plain { keys } else { "" };
+                (ModelRc::new(VecModel::from(caps)), note.into(), text.into())
+            };
+            ModelRc::new(VecModel::from_iter(lines.iter().map(row)))
         };
         sheet.set_left(column(columns[0]));
         sheet.set_right(column(columns.get(1).copied().unwrap_or_default()));
@@ -218,6 +256,7 @@ fn main() -> Result<(), slint::PlatformError> {
         });
         sheet.set_heading(heading);
         themes::paint(&sheet.global::<Theme>(), &ui.get_theme(), ui.get_light());
+        settings::share_scroll(&ui, &sheet.global::<System>());
         let _ = sheet.show();
         #[cfg(target_os = "linux")]
         {
@@ -242,9 +281,13 @@ fn main() -> Result<(), slint::PlatformError> {
         tracks: Tracks::default(),
         project: project::Project::default(),
         snap: false,
+        span: 0.0,
         ids: 0,
         held: None,
         touched: None,
+        cutting: false,
+        resume: false,
+        lasso: Vec::new(),
         spare: None,
     }));
     fit(&ui, &state);

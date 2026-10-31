@@ -711,7 +711,9 @@ impl Encoder {
 
     pub fn begin(&mut self, clip: &Path, start: f64, muted: &[usize]) -> Result<()> {
         if !self.lanes.is_empty() && self.mixer.is_none() {
-            self.source = Some(Source::open(clip, start, |track| !muted.contains(&track))?);
+            self.source = Some(Source::open(clip, start, 1.0, |track| {
+                !muted.contains(&track)
+            })?);
         }
         Ok(())
     }

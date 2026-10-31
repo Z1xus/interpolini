@@ -16,6 +16,7 @@ export component Transport inherits Rectangle {
     property <string> full: root.details + (root.speed != "" ? "  |  " + root.speed : "");
     property <string> part: root.speed != "" ? root.speed : root.rate;
     in property <string> timecode;
+    in property <string> duration;
     callback step(int, float);
     callback play();
     callback loudness();
@@ -25,237 +26,262 @@ export component Transport inherits Rectangle {
     callback remove-clip();
     height: 36px;
     background: Theme.rack;
-    HorizontalLayout {
-        padding-left: 6px;
-        padding-right: 12px;
-        spacing: 2px;
-        VerticalLayout {
-            alignment: center;
+    edit := HorizontalLayout {
+        x: 4px;
+        y: 4px;
+        width: self.preferred-width;
+        height: 28px;
+        IconButton {
+            shape: Icons.plus;
+            label: "Import";
+            clicked => {
+                root.add-clips();
+            }
+        }
+        IconButton {
+            shape: Icons.trash;
+            label: "Remove clip";
+            keys: ["Delete"];
+            enabled: !root.rendering;
+            clicked => {
+                root.remove-clip();
+            }
+        }
+    }
+    // lines up with the ruler text
+    marks := HorizontalLayout {
+        x: 147px;
+        y: 4px;
+        width: self.preferred-width;
+        height: 28px;
+        if !root.copying: IconButton {
+            shape: Icons.mark-in;
+            label: "Set start";
+            keys: ["I"];
+            clicked => {
+                root.mark("start");
+            }
+        }
+        if !root.copying: IconButton {
+            shape: Icons.mark-out;
+            label: "Set end";
+            keys: ["O"];
+            clicked => {
+                root.mark("end");
+            }
+        }
+        IconButton {
+            shape: Icons.split;
+            label: "Split";
+            keys: ["S", "Ctrl K"];
+            clicked => {
+                root.mark("split");
+            }
+        }
+        IconButton {
+            shape: Icons.clear;
+            label: "Restore full length";
+            keys: ["X"];
+            clicked => {
+                root.mark("clear");
+            }
+        }
+    }
+    playback := HorizontalLayout {
+        x: max(marks.x + marks.width + 12px, min((root.width - self.width) / 2, tools.x - self.width - 12px));
+        y: 4px;
+        width: self.preferred-width;
+        height: 28px;
+        Text {
+            width: 60px;
+            text: root.timecode;
+            accessible-label: "Time " + root.timecode;
+            color: Theme.ink;
+            font-size: 12px;
+            font-family: "monospace";
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            width: 6px;
+        }
+        if root.copying: IconButton {
+            shape: Icons.mark-in;
+            label: "Set start";
+            keys: ["I"];
+            clicked => {
+                root.mark("start");
+            }
+        }
+        if root.copying: IconButton {
+            shape: Icons.key-back;
+            label: "Previous keyframe";
+            keys: ["Alt Left"];
+            clicked => {
+                root.hop(false);
+            }
+        }
+        IconButton {
+            shape: Icons.step-back;
+            label: "Step back";
+            keys: ["Left"];
+            clicked => {
+                root.step(-1, 0);
+            }
+        }
+        IconButton {
+            shape: root.playing ? Icons.pause : Icons.play;
+            filled: !root.playing;
+            strong: true;
+            label: root.playing ? "Pause" : "Play";
+            keys: ["Space", "K"];
+            active: root.playing;
+            clicked => {
+                root.play();
+            }
+        }
+        IconButton {
+            shape: Icons.step-forward;
+            label: "Step forward";
+            keys: ["Right"];
+            clicked => {
+                root.step(1, 0);
+            }
+        }
+
+        if root.copying: IconButton {
+            shape: Icons.key-forward;
+            label: "Next keyframe";
+            keys: ["Alt Right"];
+            clicked => {
+                root.hop(true);
+            }
+        }
+        if root.copying: IconButton {
+            shape: Icons.mark-out;
+            label: "Set end";
+            keys: ["O"];
+            clicked => {
+                root.mark("end");
+            }
+        }
+        Rectangle {
+            width: 6px;
+        }
+        Text {
+            width: 60px;
+            text: root.duration;
+            accessible-label: "Length " + root.duration;
+            color: Theme.faint;
+            font-size: 12px;
+            font-family: "monospace";
+            horizontal-alignment: left;
+            vertical-alignment: center;
+        }
+    }
+    Rectangle {
+        x: playback.x + playback.width + 12px;
+        width: max(0px, tools.x - self.x - 12px);
+        whole := Text {
+            x: parent.width - self.width;
+            width: self.preferred-width;
+            height: parent.height;
+            text: root.full;
+            visible: self.width <= parent.width;
+            color: Theme.faint;
+            font-size: 11px;
+            font-family: "monospace";
+            vertical-alignment: center;
+        }
+        Text {
+            x: parent.width - self.width;
+            width: self.preferred-width;
+            height: parent.height;
+            text: root.part;
+            visible: !whole.visible && self.width <= parent.width;
+            color: Theme.faint;
+            font-size: 11px;
+            font-family: "monospace";
+            vertical-alignment: center;
+        }
+
+    }
+    tools := HorizontalLayout {
+        x: root.width - self.width - 12px;
+        y: 4px;
+        width: self.preferred-width;
+        height: 28px;
+        spacing: 12px;
+        TouchArea {
+            width: 80px;
+            scroll-event(event) => {
+                root.volume = clamp(root.volume + (event.delta-y > 0 ? 0.05 : -0.05), 0, 1);
+                root.muted = false;
+                root.loudness();
+                accept
+            }
             HorizontalLayout {
+                spacing: 4px;
                 IconButton {
-                    shape: Icons.frame;
-                    label: "Transform";
-                    enabled: !root.copying;
-                    active: root.transform;
+                    shape: root.muted || root.volume == 0 ? Icons.volume-off : root.volume < 0.5 ? Icons.volume-low : Icons.volume;
+                    label: root.muted ? "Unmute" : "Mute";
+                    keys: ["M"];
                     clicked => {
-                        root.transform = !root.transform;
+                        root.muted = !root.muted;
+                        root.loudness();
                     }
                 }
-                IconButton {
-                    shape: Icons.camera;
-                    label: "Save frame";
-                    keys: ["Ctrl Shift E"];
-                    enabled: !root.rendering;
-                    clicked => {
-                        root.save-frame();
-                    }
-                }
-                Rectangle {
-                    width: 17px;
-                    Rectangle {
-                        width: 1px;
-                        height: 16px;
-                        background: Theme.seam;
-                    }
-                }
-                IconButton {
-                    shape: Icons.step-back;
-                    label: "Step back";
-                    keys: ["Left"];
-                    clicked => {
-                        root.step(-1, 0);
-                    }
-                }
-                IconButton {
-                    shape: root.playing ? Icons.pause : Icons.play;
-                    label: root.playing ? "Pause" : "Play";
-                    keys: ["Space", "K"];
-                    active: root.playing;
-                    clicked => {
-                        root.play();
-                    }
-                }
-                IconButton {
-                    shape: Icons.step-forward;
-                    label: "Step forward";
-                    keys: ["Right"];
-                    clicked => {
-                        root.step(1, 0);
-                    }
-                }
-                if root.copying: IconButton {
-                    shape: Icons.key-back;
-                    label: "Previous keyframe";
-                    keys: ["Alt Left"];
-                    clicked => {
-                        root.hop(false);
-                    }
-                }
-                if root.copying: IconButton {
-                    shape: Icons.key-forward;
-                    label: "Next keyframe";
-                    keys: ["Alt Right"];
-                    clicked => {
-                        root.hop(true);
-                    }
-                }
-                Rectangle {
-                    width: 17px;
-                    Rectangle {
-                        width: 1px;
-                        height: 16px;
-                        background: Theme.seam;
-                    }
-                }
-                TouchArea {
-                    scroll-event(event) => {
-                        root.volume = clamp(root.volume + (event.delta-y > 0 ? 0.05 : -0.05), 0, 1);
+                Slider {
+                    width: 48px;
+                    opacity: root.muted ? 0.4 : 1;
+                    step: 0.01;
+                    label: "Volume";
+                    readout: round(root.volume * 100) + "%";
+                    value <=> root.volume;
+                    changed => {
                         root.muted = false;
                         root.loudness();
-                        accept
-                    }
-                    HorizontalLayout {
-                        spacing: 4px;
-                        IconButton {
-                            shape: root.muted || root.volume == 0 ? Icons.volume-off : root.volume < 0.5 ? Icons.volume-low : Icons.volume;
-                            label: root.muted ? "Unmute" : "Mute";
-                            keys: ["M"];
-                            clicked => {
-                                root.muted = !root.muted;
-                                root.loudness();
-                            }
-                        }
-                        Slider {
-                            width: 48px;
-                            opacity: root.muted ? 0.4 : 1;
-                            step: 0.01;
-                            label: "Volume";
-                            value <=> root.volume;
-                            changed => {
-                                root.muted = false;
-                                root.loudness();
-                            }
-                        }
-                    }
-                }
-                Rectangle {
-                    width: 17px;
-                    Rectangle {
-                        width: 1px;
-                        height: 16px;
-                        background: Theme.seam;
-                    }
-                }
-                IconButton {
-                    shape: Icons.mark-in;
-                    label: "Set start";
-                    keys: ["I"];
-                    clicked => {
-                        root.mark("start");
-                    }
-                }
-                IconButton {
-                    shape: Icons.mark-out;
-                    label: "Set end";
-                    keys: ["O"];
-                    clicked => {
-                        root.mark("end");
-                    }
-                }
-                IconButton {
-                    shape: Icons.split;
-                    label: "Split";
-                    keys: ["S", "Ctrl K"];
-                    clicked => {
-                        root.mark("split");
-                    }
-                }
-                IconButton {
-                    shape: Icons.clear;
-                    label: "Restore full length";
-                    keys: ["X"];
-                    clicked => {
-                        root.mark("clear");
-                    }
-                }
-                Rectangle {
-                    width: 17px;
-                    Rectangle {
-                        width: 1px;
-                        height: 16px;
-                        background: Theme.seam;
-                    }
-                }
-                IconButton {
-                    shape: Icons.plus;
-                    label: "Import";
-                    clicked => {
-                        root.add-clips();
-                    }
-                }
-                IconButton {
-                    shape: Icons.trash;
-                    label: "Remove clip";
-                    keys: ["Delete"];
-                    enabled: !root.rendering;
-                    clicked => {
-                        root.remove-clip();
                     }
                 }
             }
         }
+
         HorizontalLayout {
-            horizontal-stretch: 1;
-            spacing: 14px;
-            Rectangle {
-                horizontal-stretch: 1;
-                min-width: 0;
-                preferred-width: 0;
-                max-width: 2000px;
-                whole := Text {
-                    x: parent.width - self.width;
-                    width: self.preferred-width;
-                    height: parent.height;
-                    text: root.full;
-                    visible: self.width <= parent.width;
-                    color: Theme.faint;
-                    font-size: 11px;
-                    font-family: "monospace";
-                    vertical-alignment: center;
-                }
-                Text {
-                    x: parent.width - self.width;
-                    width: self.preferred-width;
-                    height: parent.height;
-                    text: root.part;
-                    visible: !whole.visible && self.width <= parent.width;
-                    color: Theme.faint;
-                    font-size: 11px;
-                    font-family: "monospace";
-                    vertical-alignment: center;
+            IconButton {
+                shape: Icons.frame;
+                label: "Transform";
+                toggle: true;
+                enabled: !root.copying;
+                active: root.transform;
+                clicked => {
+                    root.transform = !root.transform;
                 }
             }
-            VerticalLayout {
-                alignment: center;
-                Dropdown {
-                    width: 56px;
-                    height: 24px;
-                    up: true;
-                    label: "Playback resolution";
-                    options: ["Auto", "Full", "1/2", "1/4"];
-                    value <=> root.resolution;
-                    changed => {
-                        root.switched();
-                    }
+            IconButton {
+                shape: Icons.camera;
+                label: "Save frame";
+                keys: ["Ctrl Shift E"];
+                enabled: !root.rendering;
+                clicked => {
+                    root.save-frame();
                 }
-            }
-            Text {
-                text: root.timecode;
-                color: Theme.ink;
-                font-size: 11px;
-                font-family: "monospace";
-                vertical-alignment: center;
             }
         }
+        VerticalLayout {
+            alignment: center;
+            Dropdown {
+                width: 56px;
+                height: 24px;
+                up: true;
+                label: "Playback resolution";
+                options: ["Auto", "Full", "1/2", "1/4"];
+                value <=> root.resolution;
+                changed => {
+                    root.switched();
+                }
+            }
+
+        }
+
     }
 }

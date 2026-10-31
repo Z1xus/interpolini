@@ -38,6 +38,8 @@ export component Frame inherits Rectangle {
     callback edit(Clip);
     // the other buttons of the pointer go on to the preview
     callback pass(PointerEvent, length, length);
+    accessible-role: groupbox;
+    accessible-label: "Transform box";
     property <Clip> base;
     property <Clip> next;
     property <length> from-x;

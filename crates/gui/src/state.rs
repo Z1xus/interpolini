@@ -29,6 +29,7 @@ pub struct Saved {
     pub origin: Option<config::Entry>,
     pub cut: (f32, f32),
     pub seconds: f64,
+    pub speed: f32,
     pub fps: f64,
     pub at: f64,
     pub track: usize,
@@ -56,6 +57,7 @@ impl Default for Saved {
             origin: None,
             cut: (0.0, 1.0),
             seconds: 0.0,
+            speed: 1.0,
             fps: 0.0,
             at: 0.0,
             track: 0,
@@ -158,10 +160,14 @@ pub struct State {
     pub held: Option<(u64, f64, f64)>,
     // the link of the clips that the pointer moves or trims
     pub touched: Option<u64>,
+    pub cutting: bool,
+    pub resume: bool,
+    pub lasso: Vec<u64>,
     // a drag past the last track makes a new track, of video or of audio, which goes away again without a clip
     pub spare: Option<bool>,
     // the next picture also goes to a file
     pub snap: bool,
+    pub span: f64,
 }
 
 impl State {
@@ -203,7 +209,7 @@ impl State {
         let next = after.filter(|_| tail > 0.0);
         Span {
             at: entry.at - lead,
-            start: f64::from(entry.cut.0) * entry.seconds - lead,
+            start: f64::from(entry.cut.0) * entry.seconds - lead * f64::from(entry.speed),
             length: entry.kept() + lead + tail,
             // a crossfade takes the place of the fade at its end of the clip
             fade: Fade {
@@ -283,8 +289,20 @@ impl State {
         parts.into_iter().map(shown).collect()
     }
 
+    pub fn time(&self, position: f32) -> f64 {
+        f64::from(position) * self.span
+    }
+
+    pub fn frame(&self, position: f32) -> f64 {
+        let (time, seconds) = (self.time(position), self.seconds());
+        match (time - seconds).abs() < 0.001 {
+            true => seconds - 0.001,
+            false => time,
+        }
+    }
+
     pub fn part(&self, position: f32) -> Option<(f64, Part)> {
-        let time = (f64::from(position) * self.seconds()).min(self.seconds() - 0.001);
+        let time = self.frame(position);
         let inside = |part: &Part| part.start <= time && time < part.end;
         Some((time, self.parts().into_iter().find(inside)?))
     }
@@ -391,8 +409,12 @@ impl State {
 }
 
 impl Entry {
+    pub fn length(&self) -> f64 {
+        self.seconds / f64::from(self.speed)
+    }
+
     pub fn kept(&self) -> f64 {
-        self.seconds * f64::from(self.cut.1 - self.cut.0)
+        self.length() * f64::from(self.cut.1 - self.cut.0)
     }
 
     // the keyframe that is nearest to a time in the source, between two times
@@ -428,6 +450,7 @@ pub fn sounds(state: &State) -> Vec<Sound> {
             stream: entry.audio.unwrap_or(0),
             start: span.start,
             length: span.length,
+            speed: f64::from(entry.speed),
             at: span.at,
             track: entry.track,
             gain: 10f32.powf(entry.gain / 20.0),

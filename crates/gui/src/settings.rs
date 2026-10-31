@@ -13,7 +13,7 @@ use crate::history::record;
 use crate::project::SESSION;
 use crate::state::{Shared, State, lock};
 use crate::view::{label, models, refresh, select, selected, stale, unsaved};
-use crate::{App, Code, Preferences, Prefs, Settings, themes};
+use crate::{App, Code, Preferences, Prefs, Settings, System, themes};
 
 const LOOKS: [(Algorithm, &str); 3] = [
     (Algorithm::Sharp, "sharp"),
@@ -212,7 +212,7 @@ pub fn save_preferences(ui: &App) {
         .collect();
     let prefs = ui.get_prefs();
     let mut text = format!(
-        "theme: {}\nmaximized: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\nprojects: {}\nautosave: {}\nasksave: {}\nreopen: {}\nconfirm: {}\nmemory: {}\nzoom: {}\nfolder: {}\npreset: {}\n",
+        "theme: {}\nmaximized: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\nprojects: {}\nautosave: {}\nasksave: {}\nreopen: {}\nconfirm: {}\nmemory: {}\nzoom: {}\nfolder: {}\npreset: {}\nsnapping: {}\nscrolling: {}\n",
         ui.get_theme(),
         yes(ui.window().is_maximized()),
         yes(ui.get_light()),
@@ -233,6 +233,8 @@ pub fn save_preferences(ui: &App) {
         prefs.zoom,
         prefs.folder,
         prefs.preset,
+        yes(prefs.snapping),
+        prefs.scrolling,
     );
     SESSION.with_borrow(|session| {
         for path in &session.recent {
@@ -266,7 +268,10 @@ pub fn load_prefs(ui: &App, saved: &str) {
             .clamp(0.1, 4.0),
         folder: value("folder: ").unwrap_or_default().into(),
         preset: value("preset: ").unwrap_or("default").into(),
+        snapping: value("snapping: ") != Some("no"),
+        scrolling: value("scrolling: ").unwrap_or("system").into(),
     });
+    apply_scroll(ui);
     SESSION.with_borrow_mut(|session| {
         session.recent = lines("recent: ").map(PathBuf::from).collect();
         session.recovery = value("recovery: ").map(PathBuf::from);
@@ -287,11 +292,18 @@ fn limit(ui: &App) {
 }
 
 pub fn attach(ui: &App, window: &Preferences) {
+    share_scroll(ui, &window.global::<System>());
     let (weak, shown) = (ui.as_weak(), window.as_weak());
     window.on_changed(move || {
         if let (Some(ui), Some(window)) = (weak.upgrade(), shown.upgrade()) {
-            ui.set_prefs(window.get_prefs());
+            let snapping = ui.get_prefs().snapping;
+            ui.set_prefs(Prefs {
+                snapping,
+                ..window.get_prefs()
+            });
             ui.set_updates(window.get_updates());
+            apply_scroll(&ui);
+            share_scroll(&ui, &window.global::<System>());
             ui.invoke_prefs_changed();
         }
     });
@@ -310,11 +322,86 @@ pub fn attach(ui: &App, window: &Preferences) {
     });
 }
 
-pub fn smooth_scroll() -> bool {
-    // kde keeps this in kdeglobals and no other desktop has the setting
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let text = home.and_then(|home| std::fs::read_to_string(home.join(".config/kdeglobals")).ok());
-    !text.is_some_and(|text| text.lines().any(|line| line.trim() == "SmoothScroll=false"))
+#[cfg(windows)]
+fn system_scroll() -> bool {
+    const LIST_BOX_SCROLL: u32 = 0x1006;
+    const ANIMATION_EFFECTS: u32 = 0x1042;
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn SystemParametersInfoW(
+            action: u32,
+            parameter: u32,
+            value: *mut std::ffi::c_void,
+            write: u32,
+        ) -> i32;
+    }
+    let on = |action| {
+        let mut value = 1i32;
+        unsafe { SystemParametersInfoW(action, 0, (&raw mut value).cast(), 0) };
+        value != 0
+    };
+    on(LIST_BOX_SCROLL) && on(ANIMATION_EFFECTS)
+}
+
+#[cfg(target_os = "macos")]
+fn system_scroll() -> bool {
+    let read = |domain: &str, key: &str| {
+        let output = std::process::Command::new("defaults")
+            .args(["read", domain, key])
+            .output();
+        output.map_or(String::new(), |output| {
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        })
+    };
+    read("-g", "NSScrollAnimationEnabled") != "0"
+        && read("com.apple.universalaccess", "reduceMotion") != "1"
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn system_scroll() -> bool {
+    let home = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config"));
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or(home)
+        .unwrap_or_default();
+    let read = |file: &str| std::fs::read_to_string(config.join(file)).unwrap_or_default();
+    let line = |text: String, key: &str, off: &[&str]| {
+        let value = |line: &str| Some(line.split_once('=')?.1.trim().to_owned());
+        let lines = text
+            .lines()
+            .filter(|line| line.trim_start().starts_with(key));
+        !lines
+            .filter_map(value)
+            .any(|value| off.contains(&value.as_str()))
+    };
+    let kde = read("kdeglobals");
+    let gtk = |file| line(read(file), "gtk-enable-animations", &["0", "false"]);
+    let gnome = || {
+        let output = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+            .output();
+        output.map_or(true, |output| output.stdout.trim_ascii() != b"false")
+    };
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    line(kde.clone(), "SmoothScroll", &["false"])
+        && line(kde, "AnimationDurationFactor", &["0"])
+        && gtk("gtk-3.0/settings.ini")
+        && gtk("gtk-4.0/settings.ini")
+        && (desktop.contains("KDE") || gnome())
+}
+
+pub fn apply_scroll(ui: &App) {
+    static SYSTEM: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = match ui.get_prefs().scrolling.as_str() {
+        "on" => true,
+        "off" => false,
+        _ => *SYSTEM.get_or_init(system_scroll),
+    };
+    ui.global::<System>().set_smooth_scroll(on);
+}
+
+pub fn share_scroll(ui: &App, system: &System<'_>) {
+    system.set_smooth_scroll(ui.global::<System>().get_smooth_scroll());
 }
 
 pub fn wire(ui: &App, state: &Shared) {

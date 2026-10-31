@@ -29,6 +29,7 @@ struct Track {
     samples: [VecDeque<f32>; 2],
     // the samples before the start of the cut that are still to drop
     skip: Option<usize>,
+    rate: u32,
 }
 
 pub struct Source {
@@ -64,7 +65,7 @@ impl Track {
                 decoded.rate(),
                 FORMAT,
                 ChannelLayout::STEREO,
-                RATE,
+                self.rate,
             )?;
             self.resampler = Some(resampler);
         }
@@ -74,17 +75,17 @@ impl Track {
             let whole = ticks as f64 * f64::from(base) * f64::from(decoded.rate());
             time += (whole - decoded.samples() as f64).max(0.0) / f64::from(decoded.rate());
             // sound that starts after the picture gets silence before it
-            let late = ((time - start).max(0.0) * f64::from(RATE)) as usize;
+            let late = ((time - start).max(0.0) * f64::from(self.rate)) as usize;
             for samples in &mut self.samples {
                 samples.extend(std::iter::repeat_n(0.0, late));
             }
         }
         self.skip
-            .get_or_insert(((start - time).max(0.0) * f64::from(RATE)) as usize);
+            .get_or_insert(((start - time).max(0.0) * f64::from(self.rate)) as usize);
         if let Some(resampler) = &mut self.resampler {
             // the default room is the input size, so a higher rate leaves samples behind
             let held = resampler.delay().map_or(0, |delay| delay.output as usize);
-            let made = decoded.samples() * RATE as usize / decoded.rate() as usize;
+            let made = decoded.samples() * self.rate as usize / decoded.rate() as usize;
             let mut output = frame::Audio::new(FORMAT, held + made + 1, ChannelLayout::STEREO);
             resampler.run(decoded, &mut output)?;
             self.keep(&output);
@@ -114,7 +115,7 @@ impl Track {
 
 impl Source {
     // keep says which audio tracks of the clip to decode, by their number
-    pub fn open(clip: &Path, start: f64, keep: impl Fn(usize) -> bool) -> Result<Self> {
+    pub fn open(clip: &Path, start: f64, speed: f64, keep: impl Fn(usize) -> bool) -> Result<Self> {
         let mut input = format::input(clip)?;
         let mut tracks = Vec::new();
         let mut number = 0;
@@ -135,6 +136,7 @@ impl Source {
                 resampler: None,
                 samples: Default::default(),
                 skip: None,
+                rate: (f64::from(RATE) / speed).round() as u32,
             });
         }
         let start = unsafe {
@@ -208,7 +210,7 @@ impl Source {
 }
 
 pub fn peaks(clip: &Path, seconds: f64, count: usize, cancel: &Cancel) -> Result<Vec<Vec<f32>>> {
-    let mut source = Source::open(clip, 0.0, |_| true)?;
+    let mut source = Source::open(clip, 0.0, 1.0, |_| true)?;
     let slice = ((seconds * f64::from(RATE)) as usize / count).max(1);
     let mut tracks = vec![Vec::with_capacity(count); source.tracks.len()];
     for _ in 0..count {
@@ -225,7 +227,7 @@ pub fn peaks(clip: &Path, seconds: f64, count: usize, cancel: &Cancel) -> Result
 }
 
 fn signals(clip: &Path, streams: &[usize]) -> Result<Vec<Vec<f32>>> {
-    let mut source = Source::open(clip, 0.0, |track| streams.contains(&track))?;
+    let mut source = Source::open(clip, 0.0, 1.0, |track| streams.contains(&track))?;
     let mut signals = vec![Vec::new(); source.tracks.len()];
     for _ in 0..WINDOW {
         for (track, signal) in signals.iter_mut().enumerate() {
@@ -312,6 +314,7 @@ pub struct Sound {
     // the place in the source and how much of it plays, in seconds
     pub start: f64,
     pub length: f64,
+    pub speed: f64,
     pub at: f64,
     pub track: usize,
     pub gain: f32,
@@ -387,10 +390,12 @@ impl Mixer {
             let source = match &mut playing.source {
                 Some(source) => source,
                 None => {
-                    let start = sound.start + (from - first) as f64 / rate;
+                    let start = sound.start + (from - first) as f64 / rate * sound.speed;
                     playing
                         .source
-                        .insert(Source::open(&sound.clip, start, |track| track == stream)?)
+                        .insert(Source::open(&sound.clip, start, sound.speed, |track| {
+                            track == stream
+                        })?)
                 }
             };
             let samples = source.take(None, (to - from) as usize)?;
