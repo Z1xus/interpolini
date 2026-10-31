@@ -212,7 +212,7 @@ pub fn save_preferences(ui: &App) {
         .collect();
     let prefs = ui.get_prefs();
     let mut text = format!(
-        "theme: {}\nmaximized: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\nprojects: {}\nautosave: {}\nasksave: {}\nreopen: {}\nconfirm: {}\nmemory: {}\nzoom: {}\nfolder: {}\npreset: {}\nsnapping: {}\nscrolling: {}\n",
+        "theme: {}\nmaximized: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\nprojects: {}\nautosave: {}\nasksave: {}\nreopen: {}\nconfirm: {}\nmemory: {}\nzoom: {}\nfolder: {}\npreset: {}\nsnapping: {}\nautofit: {}\nripple: {}\nscrolling: {}\n",
         ui.get_theme(),
         yes(ui.window().is_maximized()),
         yes(ui.get_light()),
@@ -234,6 +234,8 @@ pub fn save_preferences(ui: &App) {
         prefs.folder,
         prefs.preset,
         yes(prefs.snapping),
+        yes(prefs.autofit),
+        yes(prefs.ripple),
         prefs.scrolling,
     );
     SESSION.with_borrow(|session| {
@@ -269,6 +271,8 @@ pub fn load_prefs(ui: &App, saved: &str) {
         folder: value("folder: ").unwrap_or_default().into(),
         preset: value("preset: ").unwrap_or("default").into(),
         snapping: value("snapping: ") != Some("no"),
+        autofit: value("autofit: ") == Some("yes"),
+        ripple: value("ripple: ") == Some("yes"),
         scrolling: value("scrolling: ").unwrap_or("system").into(),
     });
     apply_scroll(ui);
@@ -539,6 +543,9 @@ pub fn wire(ui: &App, state: &Shared) {
     ui.on_prefs_changed(move || {
         if let Some(ui) = weak.upgrade() {
             limit(&ui);
+            if ui.get_prefs().autofit {
+                crate::view::fit(&ui, &shared);
+            }
             crate::project::schedule(&ui, &shared);
             save_preferences(&ui);
         }

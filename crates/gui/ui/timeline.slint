@@ -108,6 +108,7 @@ export component Timeline inherits Rectangle {
     in-out property <[Clip]> clips;
     in property <bool> copying;
     in property <bool> snapping;
+    in property <bool> ripple;
     callback toggle();
     in property <float> snapped: -1;
     in property <[Lane]> video;
@@ -418,7 +419,7 @@ export component Timeline inherits Rectangle {
         }
         MenuItem {
             text: "Remove clip";
-            hint: "Delete";
+            hint: root.ripple ? "Shift Delete" : "Delete";
             clicked => {
                 root.remove-clip();
                 menu.close();
@@ -426,7 +427,7 @@ export component Timeline inherits Rectangle {
         }
         MenuItem {
             text: "Ripple delete";
-            hint: "Shift Delete";
+            hint: root.ripple ? "Delete" : "Shift Delete";
             clicked => {
                 root.ripple-clip();
                 menu.close();
@@ -1322,7 +1323,7 @@ export component Timeline inherits Rectangle {
             }
 
             Rectangle {
-                x: root.head * inner.width;
+                x: min(root.head * inner.width, inner.width - 1px);
                 width: 1px;
                 background: Theme.accent;
                 Path {

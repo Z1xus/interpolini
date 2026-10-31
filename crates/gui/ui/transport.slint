@@ -4,6 +4,7 @@ export component Transport inherits Rectangle {
     in-out property <bool> transform;
     in property <bool> playing;
     in property <bool> copying;
+    in property <bool> ripple;
     in-out property <string> resolution;
     callback switched();
     callback hop(bool);
@@ -40,7 +41,7 @@ export component Transport inherits Rectangle {
         }
         IconButton {
             shape: Icons.trash;
-            label: "Remove clip";
+            label: root.ripple ? "Ripple delete" : "Remove clip";
             keys: ["Delete"];
             enabled: !root.rendering;
             clicked => {

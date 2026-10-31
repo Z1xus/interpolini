@@ -11,6 +11,7 @@ export component Menu inherits Rectangle {
     in property <bool> projects;
     in property <[Recent]> recent;
     in property <int> missing;
+    in property <bool> ripple;
     in-out property <bool> separate;
     in property <bool> copying;
     in-out property <bool> preview-off;
@@ -388,7 +389,7 @@ export component Menu inherits Rectangle {
                 }
                 MenuItem {
                     text: "Remove clip";
-                    hint: "Delete";
+                    hint: root.ripple ? "Shift Delete" : "Delete";
                     enabled: root.clips.length > 0 && !root.rendering;
                     clicked => {
                         root.remove-clip();
@@ -397,7 +398,7 @@ export component Menu inherits Rectangle {
                 }
                 MenuItem {
                     text: "Ripple delete";
-                    hint: "Shift Delete";
+                    hint: root.ripple ? "Delete" : "Shift Delete";
                     enabled: root.clips.length > 0 && !root.rendering;
                     clicked => {
                         root.ripple-clip();

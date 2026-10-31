@@ -85,7 +85,7 @@ fn publish(ui: &App, state: &State) {
 
 pub fn refit(ui: &App, state: &mut State) {
     let time = state.time(ui.get_position());
-    state.span = state.seconds() * 1.1;
+    state.span = state.seconds();
     ui.set_position((time / state.span.max(0.001)).min(1.0) as f32);
     publish(ui, state);
     ui.invoke_fitted();
@@ -125,13 +125,11 @@ pub fn lanes(ui: &App, state: &State) {
 pub fn fit(ui: &App, shared: &Shared) {
     let mut state = lock(shared);
     layout(ui, &mut state);
-    if state.entries.is_empty() {
-        if !state.project.look.chosen {
-            state.project.look.size = None;
-        }
-        if state.span > 0.0 {
-            refit(ui, &mut state);
-        }
+    if state.entries.is_empty() && !state.project.look.chosen {
+        state.project.look.size = None;
+    }
+    if state.span != state.seconds() && (state.entries.is_empty() || ui.get_prefs().autofit) {
+        refit(ui, &mut state);
     }
     let missing = state.entries.iter().filter(|entry| entry.missing);
     let missing: std::collections::HashSet<_> = missing.map(|entry| &entry.clip).collect();

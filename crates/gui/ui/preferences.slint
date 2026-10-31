@@ -187,6 +187,32 @@ export component Preferences inherits Window {
                         }
                     }
                 }
+                FormRow {
+                    label: "Auto fit timeline to clips";
+                    Cell {
+                        Switch {
+                            label: "Auto fit timeline to clips";
+                            checked: root.prefs.autofit;
+                            toggled(on) => {
+                                root.prefs.autofit = on;
+                                root.changed();
+                            }
+                        }
+                    }
+                }
+                FormRow {
+                    label: "Ripple delete by default";
+                    Cell {
+                        Switch {
+                            label: "Ripple delete by default";
+                            checked: root.prefs.ripple;
+                            toggled(on) => {
+                                root.prefs.ripple = on;
+                                root.changed();
+                            }
+                        }
+                    }
+                }
             }
             if root.section == "Projects": VerticalLayout {
                 padding-top: 8px;

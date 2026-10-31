@@ -240,6 +240,11 @@ fn main() -> Result<(), slint::PlatformError> {
         let column = |lines: &[(&str, &str)]| {
             let row = |line: &(&str, &str)| {
                 let (text, keys) = *line;
+                let keys = match (text, ui.get_prefs().ripple) {
+                    ("Remove clip", true) => "Shift Delete",
+                    ("Ripple delete", true) => "Delete, Backspace",
+                    _ => keys,
+                };
                 let plain = credits || keys.starts_with("Drag");
                 let caps = keys.split(", ").filter(|key| !plain && !key.is_empty());
                 let caps: Vec<slint::SharedString> = caps.map(Into::into).collect();
