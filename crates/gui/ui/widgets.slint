@@ -823,6 +823,7 @@ export component Action inherits Rectangle {
     in property <length> size: 11px;
     in property <bool> active;
     in property <bool> toggle;
+    in property <bool> accent;
     callback clicked <=> touch.clicked;
     callback context(length, length);
     accessible-role: button;
@@ -840,7 +841,7 @@ export component Action inherits Rectangle {
     HorizontalLayout {
         Text {
             text: root.text;
-            color: root.active || touch.has-hover ? Theme.ink : Theme.faint;
+            color: root.accent ? Theme.accent : root.active || touch.has-hover ? Theme.ink : Theme.faint;
             font-size: root.size;
             font-weight: root.active ? 700 : 400;
             vertical-alignment: center;
