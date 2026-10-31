@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.28
+- New: Auto fit timeline
+- New: Ripple delete by default
+- Changed: Timeline fits exactly
+
 ## 0.1.27
 - New: Clip speed
 - New: Box and range selection
