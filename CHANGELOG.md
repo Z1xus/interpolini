@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.29
+- Fixed: Peel artifacts
+- Fixed: SVP falling back to the CPU with RIFE on
+- Fixed: Blending failing when VRAM runs out
+- Changed: SVP returns to the GPU when VRAM frees up
+
 ## 0.1.28
 - New: Auto fit timeline
 - New: Ripple delete by default
