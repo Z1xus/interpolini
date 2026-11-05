@@ -469,39 +469,47 @@ fn render(job: &Job, clip: usize, output: &Path, sink: Sink, cancel: &Cancel) ->
     )
 }
 
-// with join, all clips go into one file in their order
 pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, setup: &Setup, sink: Sink, cancel: &Cancel) {
-    if let Some(sounds) = timeline.filter(|_| !jobs.is_empty()) {
-        let started = Instant::now();
-        let all: Vec<(usize, &Job)> = jobs.iter().enumerate().collect();
-        let named = &jobs[base(&all).unwrap_or(0)];
-        let output = target(named, named.config.output.container.name());
-        let _partial = work::partial(&output);
-        match fit(&all, Some(sounds), setup, &output, sink, cancel) {
-            Ok(()) => {
-                let seconds = started.elapsed().as_secs_f32();
-                for clip in 0..jobs.len() {
-                    let output = output.clone();
-                    sink(Event::Done {
-                        clip,
-                        output,
-                        seconds,
-                    });
-                }
-            }
-            Err(error) => {
-                let _ = std::fs::remove_file(&output);
-                match cancel.stopped() {
-                    true => sink(Event::Warning("stopped".into())),
-                    false => sink(Event::Failed {
-                        clip: 0,
-                        error: error.to_string(),
-                    }),
-                }
+    match timeline.filter(|_| !jobs.is_empty()) {
+        Some(sounds) => joined(jobs, sounds, setup, sink, cancel),
+        None => separate(jobs, sink, cancel),
+    }
+    crate::rife::rest();
+}
+
+// with join, all clips go into one file in their order
+fn joined(jobs: &[Job], sounds: &[Sound], setup: &Setup, sink: Sink, cancel: &Cancel) {
+    let started = Instant::now();
+    let all: Vec<(usize, &Job)> = jobs.iter().enumerate().collect();
+    let named = &jobs[base(&all).unwrap_or(0)];
+    let output = target(named, named.config.output.container.name());
+    let _partial = work::partial(&output);
+    match fit(&all, Some(sounds), setup, &output, sink, cancel) {
+        Ok(()) => {
+            let seconds = started.elapsed().as_secs_f32();
+            for clip in 0..jobs.len() {
+                let output = output.clone();
+                sink(Event::Done {
+                    clip,
+                    output,
+                    seconds,
+                });
             }
         }
-        return;
+        Err(error) => {
+            let _ = std::fs::remove_file(&output);
+            match cancel.stopped() {
+                true => sink(Event::Warning("stopped".into())),
+                false => sink(Event::Failed {
+                    clip: 0,
+                    error: error.to_string(),
+                }),
+            }
+        }
     }
+}
+
+fn separate(jobs: &[Job], sink: Sink, cancel: &Cancel) {
     for (clip, job) in jobs.iter().enumerate() {
         if cancel.stopped() {
             break;

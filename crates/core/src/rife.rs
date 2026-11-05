@@ -139,6 +139,10 @@ fn idle() -> MutexGuard<'static, Vec<Engine>> {
     IDLE.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
+pub(crate) fn rest() {
+    idle().clear();
+}
+
 pub fn shutdown() {
     idle().clear();
     for api in [&VULKAN, &TENSORRT] {
