@@ -1,5 +1,7 @@
 # <img src="assets/interpolini.svg" alt="" width="36" height="36" align="absmiddle"> interpolini
 
+<picture><source media="(prefers-color-scheme: dark)" srcset="https://www.shieldcn.dev/github/downloads/Z1xus/interpolini.svg?variant=secondary&amp;size=xs&amp;mode=dark"><img alt="Total downloads" src="https://www.shieldcn.dev/github/downloads/Z1xus/interpolini.svg?variant=secondary&amp;size=xs&amp;mode=light"></picture>
+
 Yet another [svpaghetti](https://github.com/Z1xus/open-svpflow) and [rifatoni](https://github.com/TNTwise/rife-ncnn-vulkan) frontend, this time faster.
 
 ![interpolini](https://github.com/Z1xus/interpolini/blob/assets/mockup.png?raw=true)
@@ -12,11 +14,15 @@ It's also a wannabe NLE. There is a timeline with video and audio tracks where y
 
 ### Portable
 
-Get the zip for your system from the [releases page](https://github.com/Z1xus/interpolini/releases) and unzip it into any folder.
+<a href="https://github.com/Z1xus/interpolini/releases/latest/download/interpolini-windows-x86_64.zip"><picture><source media="(prefers-color-scheme: dark)" srcset="https://www.shieldcn.dev/badge/Windows.svg?variant=default&amp;size=sm&amp;mode=dark"><img alt="Windows" src="https://www.shieldcn.dev/badge/Windows.svg?variant=default&amp;size=sm&amp;mode=light"></picture></a> <a href="https://github.com/Z1xus/interpolini/releases/latest/download/interpolini-macos-arm64.zip"><picture><source media="(prefers-color-scheme: dark)" srcset="https://www.shieldcn.dev/badge/macOS%20%28Apple%20Silicon%29.svg?variant=default&amp;size=sm&amp;mode=dark"><img alt="macOS (Apple Silicon)" src="https://www.shieldcn.dev/badge/macOS%20%28Apple%20Silicon%29.svg?variant=default&amp;size=sm&amp;mode=light"></picture></a> <a href="https://github.com/Z1xus/interpolini/releases/latest/download/interpolini-macos-x86_64.zip"><picture><source media="(prefers-color-scheme: dark)" srcset="https://www.shieldcn.dev/badge/macOS%20%28Intel%29.svg?variant=default&amp;size=sm&amp;mode=dark"><img alt="macOS (Intel)" src="https://www.shieldcn.dev/badge/macOS%20%28Intel%29.svg?variant=default&amp;size=sm&amp;mode=light"></picture></a> <a href="https://github.com/Z1xus/interpolini/releases/latest/download/interpolini-linux-x86_64.zip"><picture><source media="(prefers-color-scheme: dark)" srcset="https://www.shieldcn.dev/badge/Linux.svg?variant=default&amp;size=sm&amp;mode=dark"><img alt="Linux" src="https://www.shieldcn.dev/badge/Linux.svg?variant=default&amp;size=sm&amp;mode=light"></picture></a>
+
+Unzip it into any folder.
 
 ### Install (Windows only)
 
-If you're on Windows and you'd rather install it, good news, you can download `interpolini-windows-x86_64-setup.exe` from the same page. It also comes with a nice addition of Send to options: right click a clip in Explorer and render it without opening the app, or open it in the app to cut it first.
+<a href="https://github.com/Z1xus/interpolini/releases/latest/download/interpolini-windows-x86_64-setup.exe"><picture><source media="(prefers-color-scheme: dark)" srcset="https://www.shieldcn.dev/badge/Windows%20installer.svg?variant=default&amp;size=sm&amp;mode=dark"><img alt="Windows installer" src="https://www.shieldcn.dev/badge/Windows%20installer.svg?variant=default&amp;size=sm&amp;mode=light"></picture></a>
+
+It comes with a nice addition of Send to options: right click a clip in Explorer and render it without opening the app, or open it in the app to cut it first.
 
 Uninstalling deletes the whole folder, including your configs and downloaded models.
 
