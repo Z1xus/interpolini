@@ -65,6 +65,7 @@ component Need inherits HorizontalLayout {
     }
     if root.fixable: Action {
         text: "Install…";
+        accent: true;
         clicked => {
             root.install();
         }
@@ -203,7 +204,7 @@ export component Panel inherits Rectangle {
             Action {
                 text: root.done == "Saved" ? "Saved" : root.unsaved ? "Save*" : "Save";
                 accessible: "Save config";
-                active: root.unsaved;
+                accent: root.unsaved;
                 clicked => {
                     if root.naming {
                         root.naming = false;
@@ -224,7 +225,7 @@ export component Panel inherits Rectangle {
             Action {
                 text: root.done == "Deleted" ? "Deleted" : root.confirming ? "Delete?" : "Delete";
                 accessible: root.confirming ? "Confirm delete config" : "Delete config";
-                active: root.confirming;
+                accent: root.confirming;
                 clicked => {
                     if root.confirming {
                         root.delete-config();

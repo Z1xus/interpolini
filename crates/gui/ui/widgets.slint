@@ -689,7 +689,7 @@ export component Dropdown inherits Rectangle {
                     Text {
                         x: 8px;
                         text: root.action;
-                        color: Theme.muted;
+                        color: Theme.accent;
                         font-size: 12px;
                         vertical-alignment: center;
                         accessible-role: none;
@@ -903,7 +903,7 @@ export component Button inherits Rectangle {
     }
     label := Text {
         text: root.text;
-        color: root.enabled ? Theme.ink : Theme.faint;
+        color: !root.enabled ? Theme.faint : root.main ? Theme.accent : Theme.ink;
         font-size: 12px;
         accessible-role: none;
     }

@@ -544,6 +544,7 @@ export component Stage inherits Rectangle {
             }
             if root.kind == Note.notice && root.action != "": Action {
                 text: root.action;
+                accent: true;
                 size: 12px;
                 clicked => {
                     root.act();
