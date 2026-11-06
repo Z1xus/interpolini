@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.30
+- Faster: TensorRT
+- Faster: RIFE on Vulkan
+- Faster: TensorRT setup
+- Fixed: Blurry TensorRT output
+- Changed: One model list
+- Changed: Accented main buttons
+
 ## 0.1.29
 - Fixed: Peel artifacts
 - Fixed: SVP falling back to the CPU with RIFE on
