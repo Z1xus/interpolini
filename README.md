@@ -4,7 +4,7 @@ Yet another [svpaghetti](https://github.com/Z1xus/open-svpflow) and [rifatoni](h
 
 ![interpolini](https://github.com/Z1xus/interpolini/blob/assets/mockup.png?raw=true)
 
-It does the same thing as [smoothie](https://github.com/couleur-tweak-tips/smoothie-rs) and [blur](https://github.com/f0e/blur) (interpolates the clip to a high frame rate and blends it back down for motion blur), just without [VapourSynth](https://www.vapoursynth.com) or Python.
+It does the same thing as [<img src="https://github.com/Z1xus/interpolini/blob/assets/icons/smoothie.png?raw=true" width="16" height="16" align="absmiddle"> smoothie](https://github.com/couleur-tweak-tips/smoothie-rs) and [<img src="https://github.com/Z1xus/interpolini/blob/assets/icons/blur.png?raw=true" width="16" height="16" align="absmiddle"> blur](https://github.com/f0e/blur) (interpolates the clip to a high frame rate and blends it back down for motion blur), just without [<img src="https://github.com/vapoursynth.png?size=32" width="16" height="16" align="absmiddle"> VapourSynth](https://www.vapoursynth.com) or Python.
 
 It's also a wannabe NLE. There is a timeline with video and audio tracks where you can cut, split and layer clips, drop images on top, move, scale and crop things on the preview, and give each clip its own settings.
 
@@ -43,10 +43,10 @@ On Linux you can also [add it to the app menu](docs/linux.md).
 
 - Interpolation and blending both happen on the GPU inside [open-svpflow](https://github.com/Z1xus/open-svpflow), so only the blended frames come back to the CPU.
 - There is no VapourSynth, so frames don't go through a frame server and Python between the filters.
-- [FFmpeg](https://ffmpeg.org) is linked into the app instead of being piped to. The decoder writes into the buffer that the interpolator reads from, and the encoder reads the interpolator's output without a copy.
+- [<img src="https://cdn.simpleicons.org/ffmpeg" width="16" height="16" align="absmiddle"> FFmpeg](https://ffmpeg.org) is linked into the app instead of being piped to. The decoder writes into the buffer that the interpolator reads from, and the encoder reads the interpolator's output without a copy.
 - The motion search uses a half-size frame by default (Drawback is it costs a bit of quality).
 - RIFE runs on our own faster graph instead of the stock ncnn one.
-- Optional [TensorRT](https://developer.nvidia.com/tensorrt) support for RIFE, which smoothie doesn't have.
+- Optional [<img src="https://cdn.simpleicons.org/nvidia" width="16" height="16" align="absmiddle"> TensorRT](https://developer.nvidia.com/tensorrt) support for RIFE, which smoothie doesn't have.
 
 ## Build
 
