@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 
 use libloading::Library;
 
-use crate::config::{self, Backend};
+use crate::config;
 
 #[cfg(windows)]
 const DRIVER: &str = "nvcuda.dll";
@@ -44,17 +44,15 @@ pub fn plugin() -> bool {
 }
 
 #[cfg(windows)]
-const LIBRARIES: [&str; 4] = [
+const LIBRARIES: [&str; 3] = [
     "cudart64_12.dll",
     "nvinfer_10.dll",
-    "nvonnxparser_10.dll",
     "nvinfer_builder_resource_10.dll",
 ];
 #[cfg(not(windows))]
-const LIBRARIES: [&str; 4] = [
+const LIBRARIES: [&str; 3] = [
     "libcudart.so.12",
     "libnvinfer.so.10",
-    "libnvonnxparser.so.10",
     "libnvinfer_builder_resource.so.10",
 ];
 
@@ -97,7 +95,7 @@ pub fn support() -> Support {
         // the libraries are made for cuda 12
         Some(cuda) if *cuda < 12000 => Support::Driver,
         Some(_) if !libraries() => Support::Libraries,
-        Some(_) if config::models(Backend::Tensorrt).is_empty() => Support::Models,
+        Some(_) if config::models().is_empty() => Support::Models,
         Some(_) => Support::Ready,
     }
 }

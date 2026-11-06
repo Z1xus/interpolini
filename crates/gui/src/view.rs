@@ -242,10 +242,14 @@ pub fn timecode(ui: &App, state: &Shared) {
     ui.set_duration(clock(state.seconds()).into());
 }
 
-// the model list follows the backend, and a model that the backend does not have gives way
 pub fn models(ui: &App, rife: &mut config::Rife) {
-    let models = config::models(rife.backend);
-    if let Some(first) = models.first().filter(|_| !models.contains(&rife.model)) {
+    let models = config::models();
+    // the ncnn files of an onnx model are on their way
+    let coming = crate::components::unfinished(&rife.model);
+    if let Some(first) = models
+        .first()
+        .filter(|_| !coming && !models.contains(&rife.model))
+    {
         rife.model = first.clone();
     }
     let models: Vec<slint::SharedString> = models.into_iter().map(Into::into).collect();

@@ -32,7 +32,7 @@ use slint::{ComponentHandle, ModelRc, VecModel};
 
 use settings::{preferences, settings};
 use state::{Entry, Saved, Shared, State, Tracks, lock};
-use view::{fit, select};
+use view::{fit, load, select};
 
 slint::include_modules!();
 
@@ -212,7 +212,6 @@ fn main() -> Result<(), slint::PlatformError> {
         ("RIFE", "MIT"),
         ("rife-ncnn-vulkan (nihui, TNTwise)", "MIT"),
         ("ncnn", "BSD-3-Clause"),
-        ("vs-mlrt (TensorRT models)", "GPL-3.0"),
         ("TensorRT, CUDA", "NVIDIA"),
         ("Slint", "GPL-3.0"),
         ("smoothie-rs", "GPL-3.0"),
@@ -302,6 +301,13 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_select(move |index| {
         if let Some(ui) = weak.upgrade() {
             select(&ui, &shared, index);
+        }
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(&state));
+    ui.on_reload(move || {
+        if let Some(ui) = weak.upgrade() {
+            load(&ui, &mut lock(&shared));
         }
     });
 

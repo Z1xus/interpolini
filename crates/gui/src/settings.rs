@@ -626,7 +626,7 @@ pub fn wire(ui: &App, state: &Shared) {
                 let rife = config.interpolation.enabled
                     && config.interpolation.engine == Engine::Rife
                     || config.pre.enabled;
-                let missing = rife && !config::models(config.rife.backend).contains(model);
+                let missing = rife && !config::models().contains(model);
                 let missing = if missing {
                     format!(". {model} isn't installed.")
                 } else {

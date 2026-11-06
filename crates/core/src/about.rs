@@ -3,7 +3,7 @@ use std::process::Command;
 use ffmpeg_next::encoder;
 
 use crate::budget::{self, Class};
-use crate::config::{self, Backend};
+use crate::config;
 use crate::work;
 
 const ENCODERS: [&str; 19] = [
@@ -200,7 +200,7 @@ pub fn about() -> String {
             "rife on vulkan",
             installed(present("interpolini_rife")).into(),
         ),
-        ("vulkan models", config::models(Backend::Vulkan).join(" ")),
+        ("rife models", config::models().join(" ")),
         (
             "rife on tensorrt",
             installed(present("interpolini_rife_trt")).into(),
@@ -208,10 +208,6 @@ pub fn about() -> String {
         (
             "tensorrt libraries",
             installed(crate::tensorrt::libraries()).into(),
-        ),
-        (
-            "tensorrt models",
-            config::models(Backend::Tensorrt).join(" "),
         ),
     ]);
     let lines = lines.into_iter().filter(|line| !line.1.trim().is_empty());

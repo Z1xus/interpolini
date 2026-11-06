@@ -196,7 +196,7 @@ impl Rife {
         }
         let (model, tensorrt) = (&rife.model, backend == Backend::Tensorrt);
         let models = directory.join("rife").join(model);
-        if !models.join(backend.model()).exists() {
+        if !models.join(config::MODEL).exists() {
             return Err(format!("there is no rife model \"{model}\"").into());
         }
         let (api, name) = match tensorrt {

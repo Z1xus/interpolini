@@ -753,23 +753,15 @@ impl Resolution {
     }
 }
 
-impl Backend {
-    // the file that makes a folder in rife/ a model for this backend
-    pub fn model(self) -> &'static str {
-        match self {
-            Self::Vulkan => "flownet.param",
-            Self::Tensorrt => "rife.onnx",
-        }
-    }
-}
+pub const MODEL: &str = "flownet.param";
 
-pub fn models(backend: Backend) -> Vec<String> {
+pub fn models() -> Vec<String> {
     let folders = std::fs::read_dir(app_dir().join("rife"))
         .into_iter()
         .flatten()
         .flatten();
     let mut models: Vec<String> = folders
-        .filter(|folder| folder.path().join(backend.model()).exists())
+        .filter(|folder| folder.path().join(MODEL).exists())
         .filter_map(|folder| folder.file_name().into_string().ok())
         .collect();
     models.sort();

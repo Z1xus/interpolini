@@ -3,11 +3,11 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use interpolini_core::config::{self, Backend};
+use interpolini_core::config;
 use interpolini_core::work::Cancel;
-use sevenz_rust2::{ArchiveReader, Password};
 use sha2::{Digest, Sha256};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
@@ -15,44 +15,9 @@ use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 use crate::icon;
 use crate::{App, Download, Preferences, Theme, ffmpeg, services, settings, themes};
 
-const MODELS_URL: &str =
-    "https://github.com/AmusementClub/vs-mlrt/releases/download/external-models/";
-// the folder in rife/, the archive, the file in it, and the sha256 of the archive
-const MODELS: [(&str, &str, &str, &str); 5] = [
-    (
-        "rife-v4.6",
-        "rife_v2_v4.7z",
-        "rife_v2/rife_v4.6.onnx",
-        "c9999d6af6800365f4f3d716dbaa51f5954e05f38424f83b705b055d754c71cc",
-    ),
-    (
-        "rife-v4.15-lite",
-        "rife_v4.15_lite.7z",
-        "rife_v2/rife_v4.15_lite.onnx",
-        "9c894bccb7dbd5bd0ff9d99616360285628230de81374181b97a69124f73d1a9",
-    ),
-    (
-        "rife-v4.22-lite",
-        "rife_v4.22_lite.7z",
-        "rife_v2/rife_v4.22_lite.onnx",
-        "e7c3872fd217663911f0b89a5940bdc314f5a061fd5fa8639fd1674d31d2f1cf",
-    ),
-    (
-        "rife-v4.25",
-        "rife_v4.25.7z",
-        "rife_v2/rife_v4.25.onnx",
-        "172fe975c1775134bb87108e4ec6d1a89e861cc5d3be2ac23bf08afe5ed626b8",
-    ),
-    (
-        "rife-v4.26",
-        "rife_v4.26.7z",
-        "rife_v2/rife_v4.26.onnx",
-        "dfdabd84a2a3db773f87604b8cc255e94a6a72f13550d910ccd3b4ee2606cd4f",
-    ),
-];
-const VULKAN_URL: &str = "https://raw.githubusercontent.com/TNTwise/rife-ncnn-vulkan/13338e38debe2e400b3eeecf6792312d01a692f9/models/";
+const MODELS_URL: &str = "https://raw.githubusercontent.com/TNTwise/rife-ncnn-vulkan/13338e38debe2e400b3eeecf6792312d01a692f9/models/";
 // the folder in rife/, and the sha256 of its flownet.bin and flownet.param
-const VULKAN: [(&str, &str, &str); 6] = [
+const MODELS: [(&str, &str, &str); 6] = [
     (
         "rife-v4.6",
         "f334ed2260149ce0188a6dcf049844e8b0cdd912e01cbcfb63553157d2508958",
@@ -93,7 +58,6 @@ const WHEELS: &[Wheel] = &[
         "4a82f0bda2874596f202f6edc8dae99b86a3c4ec2fa142a9c847c4d3a57864a0",
         &[
             "tensorrt_libs/libnvinfer.so.10",
-            "tensorrt_libs/libnvonnxparser.so.10",
             "tensorrt_libs/libnvinfer_builder_resource.so.10.9.0",
             "tensorrt_cu12_libs-10.9.0.34.dist-info/LICENSE.txt",
         ],
@@ -114,7 +78,6 @@ const WHEELS: &[Wheel] = &[
         "e43d38cc380d615bf8afab637c265f01a9452dc23deb9b9dd47b7662edf24531",
         &[
             "tensorrt_libs/nvinfer_10.dll",
-            "tensorrt_libs/nvonnxparser_10.dll",
             "tensorrt_libs/nvinfer_builder_resource_10.dll",
             "tensorrt_cu12_libs-10.9.0.34.dist-info/LICENSE.txt",
         ],
@@ -139,14 +102,34 @@ pub fn text(error: impl ToString) -> String {
 }
 
 pub fn download(url: &str, sha: &str, to: &Path, report: Report, stop: &Cancel) -> Outcome {
-    let part = to.with_extension("part");
-    let mut response = ureq::get(url).call().map_err(text)?;
+    // two copies of the app can download the same file
+    let part = to.with_extension(format!("{}.part", std::process::id()));
+    let outcome =
+        fetch(url, sha, &part, report, stop).and_then(|()| fs::rename(&part, to).map_err(text));
+    if outcome.is_err() {
+        let _ = fs::remove_file(&part);
+    }
+    outcome
+}
+
+fn fetch(url: &str, sha: &str, part: &Path, report: Report, stop: &Cancel) -> Outcome {
+    // a stalled connection fails, so a closing app does not wait for it
+    let config = ureq::Agent::config_builder()
+        .timeout_resolve(Some(Duration::from_secs(15)))
+        .timeout_connect(Some(Duration::from_secs(15)))
+        .timeout_recv_response(Some(Duration::from_secs(30)))
+        .timeout_per_read(Some(Duration::from_secs(30)))
+        .build();
+    let mut response = ureq::Agent::new_with_config(config)
+        .get(url)
+        .call()
+        .map_err(text)?;
     let length = response.headers().get("content-length");
     let total = length
         .and_then(|length| length.to_str().ok()?.parse::<u64>().ok())
         .unwrap_or(0);
     let mut reader = response.body_mut().as_reader();
-    let mut file = File::create(&part).map_err(text)?;
+    let mut file = File::create(part).map_err(text)?;
     let mut hash = Sha256::new();
     let mut buffer = vec![0; 1 << 20];
     let started = Instant::now();
@@ -177,13 +160,25 @@ pub fn download(url: &str, sha: &str, to: &Path, report: Report, stop: &Cancel) 
     }
     let hash = hex(&hash.finalize());
     if stop.stopped() || hash != sha {
-        let _ = fs::remove_file(&part);
         return Err(match stop.stopped() {
             true => String::new(),
             false => "The download is damaged. Try again.".into(),
         });
     }
-    fs::rename(part, to).map_err(text)
+    Ok(())
+}
+
+// a download writes at least every 30 s, so an older part is left from a copy of the app that stopped
+fn abandoned(folder: &Path) {
+    for file in fs::read_dir(folder).into_iter().flatten().flatten() {
+        let old = file
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|time| time.elapsed().unwrap_or_default() > Duration::from_secs(120));
+        if old && file.path().extension().is_some_and(|kind| kind == "part") {
+            let _ = fs::remove_file(file.path());
+        }
+    }
 }
 
 pub fn hex(bytes: &[u8]) -> String {
@@ -191,31 +186,12 @@ pub fn hex(bytes: &[u8]) -> String {
 }
 
 fn install_model(name: &str, report: Report, stop: &Cancel) -> Outcome {
-    let (_, archive, file, sha) = MODELS.into_iter().find(|model| model.0 == name).ok_or("")?;
-    let folder = config::app_dir().join("rife").join(name);
-    fs::create_dir_all(&folder).map_err(text)?;
-    let packed = folder.join("model.7z");
-    download(
-        &format!("{MODELS_URL}{archive}"),
-        sha,
-        &packed,
-        report,
-        stop,
-    )?;
-    report(1.0, "Unpacking…".into());
-    let mut reader = ArchiveReader::open(&packed, Password::empty()).map_err(text)?;
-    let model = reader.read_file(file).map_err(text)?;
-    fs::write(folder.join(Backend::Tensorrt.model()), model).map_err(text)?;
-    fs::remove_file(packed).map_err(text)
-}
-
-fn install_vulkan(name: &str, report: Report, stop: &Cancel) -> Outcome {
-    let (_, weights, graph) = VULKAN.into_iter().find(|model| model.0 == name).ok_or("")?;
+    let (_, weights, graph) = MODELS.into_iter().find(|model| model.0 == name).ok_or("")?;
     let folder = config::app_dir().join("rife").join(name);
     fs::create_dir_all(&folder).map_err(text)?;
     // the file that marks the model as installed comes last
-    for (file, sha) in [("flownet.bin", weights), (Backend::Vulkan.model(), graph)] {
-        let url = format!("{VULKAN_URL}{name}/{file}");
+    for (file, sha) in [("flownet.bin", weights), (config::MODEL, graph)] {
+        let url = format!("{MODELS_URL}{name}/{file}");
         download(&url, sha, &folder.join(file), report, stop)?;
     }
     Ok(())
@@ -263,36 +239,80 @@ fn install_tensorrt(report: Report, stop: &Cancel) -> Outcome {
     }
     done?;
     // tensorrt is of no use without a model
-    match config::models(Backend::Tensorrt).is_empty() {
+    match config::models().is_empty() {
         true => install_model(MODELS[0].0, report, stop),
         false => Ok(()),
     }
 }
 
-// a name is tensorrt, or a backend and a model, like vulkan/rife-v4.6
 fn remove(name: &str) -> Outcome {
     let app = config::app_dir();
-    let Some((backend, model)) = name.split_once('/') else {
+    if name == "tensorrt" {
         return fs::remove_dir_all(app.join("tensorrt")).map_err(text);
-    };
-    let folder = app.join("rife").join(model);
+    }
+    let folder = app.join("rife").join(name);
     for file in fs::read_dir(&folder).map_err(text)?.flatten() {
         let path = file.path();
-        let gone = match backend {
-            "vulkan" => path.file_stem().is_some_and(|name| name == "flownet"),
-            // the engines that tensorrt made for the model go with it
-            _ => {
-                let engine = path.extension().is_some_and(|kind| kind == "engine");
-                engine || path.ends_with(Backend::Tensorrt.model())
-            }
-        };
-        if gone {
+        let engine = path.extension().is_some_and(|kind| kind == "engine");
+        if engine || file.file_name().to_string_lossy().starts_with("flownet.") {
             fs::remove_file(path).map_err(text)?;
         }
     }
-    // the folder stays when it also holds the model for the other backend
+    forget(name);
     let _ = fs::remove_dir(folder);
     Ok(())
+}
+
+// a model of the old tensorrt keeps its files until its ncnn files are in
+pub fn unfinished(name: &str) -> bool {
+    let folder = config::app_dir().join("rife").join(name);
+    MODELS.iter().any(|model| model.0 == name)
+        && folder.join("rife.onnx").exists()
+        && !folder.join(config::MODEL).exists()
+}
+
+fn forget(name: &str) {
+    let folder = config::app_dir().join("rife").join(name);
+    for old in ["rife.onnx", "rife.engine", "model.7z"] {
+        let _ = fs::remove_file(folder.join(old));
+    }
+}
+
+fn clean() {
+    let app = config::app_dir();
+    for model in MODELS.iter().filter(|model| !unfinished(model.0)) {
+        forget(model.0);
+    }
+    for model in MODELS {
+        abandoned(&app.join("rife").join(model.0));
+    }
+    abandoned(&app.join("tensorrt"));
+    for file in fs::read_dir(app.join("tensorrt"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        if file.file_name().to_string_lossy().contains("nvonnxparser") {
+            let _ = fs::remove_file(file.path());
+        }
+    }
+}
+
+// runs on the install slot after each download, so a cancelled one goes on with the next
+fn replace(ui: Weak<App>, stop: &Cancel) {
+    let mut replaced = false;
+    for model in MODELS.iter().filter(|model| unfinished(model.0)) {
+        if stop.stopped() {
+            break;
+        }
+        if install_model(model.0, &|_, _| {}, stop).is_ok() {
+            forget(model.0);
+            replaced = true;
+        }
+    }
+    if replaced {
+        let _ = ui.upgrade_in_event_loop(|ui| ui.invoke_models_changed());
+    }
 }
 
 fn installed() -> bool {
@@ -306,18 +326,12 @@ fn show(ui: &App) {
 }
 
 fn refresh(ui: &App, window: &Preferences) {
-    let list = |backend: Backend, names: Vec<&str>| {
-        let have = config::models(backend);
-        let models = names.into_iter().map(|name| Download {
-            name: name.into(),
-            installed: have.iter().any(|model| model == name),
-        });
-        ModelRc::new(VecModel::from_iter(models))
-    };
-    let vulkan = VULKAN.iter().map(|model| model.0).collect();
-    window.set_vulkan(list(Backend::Vulkan, vulkan));
-    let tensorrt = MODELS.iter().map(|model| model.0).collect();
-    window.set_models(list(Backend::Tensorrt, tensorrt));
+    let have = config::models();
+    let models = MODELS.iter().map(|model| Download {
+        name: model.0.into(),
+        installed: have.iter().any(|name| name == model.0),
+    });
+    window.set_models(ModelRc::new(VecModel::from_iter(models)));
     window.set_tensorrt(installed());
     window.set_tensorrt_shipped(interpolini_core::plugin());
     let support = interpolini_core::support();
@@ -326,7 +340,7 @@ fn refresh(ui: &App, window: &Preferences) {
     ffmpeg::show(window);
     show(ui);
     // the model list of the settings follows what is installed
-    ui.invoke_select(ui.get_selected());
+    ui.invoke_reload();
 }
 
 pub fn finish(ui: &App, window: &Preferences, outcome: Outcome) {
@@ -337,11 +351,17 @@ pub fn finish(ui: &App, window: &Preferences, outcome: Outcome) {
 
 pub fn wire(ui: &App) {
     ffmpeg::clean();
+    clean();
     let weak = ui.as_weak();
     services::task("support", move |_| {
         interpolini_core::support();
         let _ = weak.upgrade_in_event_loop(|ui| show(&ui));
     });
+    if MODELS.iter().any(|model| unfinished(model.0)) {
+        let weak = ui.as_weak();
+        // the downloads of the window share this slot, so two never write the same file
+        services::with(|services| services.install.submit(move |stop| replace(weak, stop)));
+    }
     // the window is made when it first shows: a window that waits hidden is in the task bar of the desktop
     let made: Rc<RefCell<Option<Preferences>>> = Rc::default();
     for section in [None, Some("Components")] {
@@ -374,6 +394,23 @@ pub fn wire(ui: &App) {
             None => ui.on_show_preferences(open),
         }
     }
+    let weak = ui.as_weak();
+    ui.on_models_changed(move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        match made
+            .borrow()
+            .as_ref()
+            .filter(|window| window.window().is_visible())
+        {
+            Some(window) => refresh(&ui, window),
+            None => {
+                show(&ui);
+                ui.invoke_reload();
+            }
+        }
+    });
 }
 
 // slint keeps the size limits of a hidden window, and wayland makes the window again
@@ -415,26 +452,32 @@ pub fn restart(ui: &App) {
 }
 
 // the things that the window can do
+// the download that the window shows, a cancelled one still running must not change it
+static JOB: AtomicU64 = AtomicU64::new(0);
+
 fn attach(ui: &App, window: &Preferences) {
     let job = {
         let (weak, shown) = (ui.as_weak(), window.as_weak());
         move |name: String| {
             let (weak, shown) = (weak.clone(), shown.clone());
+            let id = JOB.fetch_add(1, Ordering::Relaxed) + 1;
             services::with(|services| {
                 services.install.submit(move |stop| {
                     let told = shown.clone();
                     let report = move |done: f32, progress: String| {
                         let _ = told.upgrade_in_event_loop(move |window| {
-                            window.set_fraction(done);
-                            window.set_progress(progress.into());
+                            if JOB.load(Ordering::Relaxed) == id {
+                                window.set_fraction(done);
+                                window.set_progress(progress.into());
+                            }
                         });
                     };
-                    let outcome = match name.split_once('/') {
-                        Some(("vulkan", model)) => install_vulkan(model, &report, stop),
-                        Some((_, model)) => install_model(model, &report, stop),
-                        None => install_tensorrt(&report, stop),
+                    let outcome = match name.as_str() {
+                        "tensorrt" => install_tensorrt(&report, stop),
+                        model => install_model(model, &report, stop),
                     };
-                    done(weak, shown, outcome);
+                    done(weak.clone(), shown, outcome, id);
+                    replace(weak, stop);
                 })
             });
         }
@@ -456,17 +499,26 @@ fn attach(ui: &App, window: &Preferences) {
         }
     });
 
-    window.on_cancel(|| {
+    // a download that waits behind another one is dropped and never finishes
+    let (weak, shown) = (ui.as_weak(), window.as_weak());
+    window.on_cancel(move || {
+        JOB.fetch_add(1, Ordering::Relaxed);
         services::with(|services| services.install.cancel());
+        if let (Some(ui), Some(window)) = (weak.upgrade(), shown.upgrade()) {
+            finish(&ui, &window, Ok(()));
+        }
     });
 
     ffmpeg::wire(ui, window);
     settings::attach(ui, window);
 }
 
-fn done(ui: Weak<App>, window: Weak<Preferences>, outcome: Outcome) {
+fn done(ui: Weak<App>, window: Weak<Preferences>, outcome: Outcome, id: u64) {
     let _ = ui.upgrade_in_event_loop(move |ui| {
-        if let Some(window) = window.upgrade() {
+        if let Some(window) = window
+            .upgrade()
+            .filter(|_| JOB.load(Ordering::Relaxed) == id)
+        {
             finish(&ui, &window, outcome);
         }
     });

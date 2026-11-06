@@ -1,4 +1,4 @@
-import { Button, FormRow, Segment, Tabs, Theme } from "widgets.slint";
+import { Button, FormRow, Segment, Theme } from "widgets.slint";
 
 export struct Download {
     name: string,
@@ -7,8 +7,6 @@ export struct Download {
 
 component Group inherits VerticalLayout {
     in property <string> title;
-    in property <[string]> tabs;
-    in-out property <string> tab;
     Rectangle {
         height: 36px;
         Text {
@@ -17,13 +15,6 @@ component Group inherits VerticalLayout {
             color: Theme.ink;
             font-size: 13px;
             vertical-alignment: center;
-        }
-        Tabs {
-            x: parent.width - self.preferred-width - 16px;
-            width: self.preferred-width;
-            label: "Backend";
-            options: root.tabs;
-            value <=> root.tab;
         }
     }
     @children
@@ -137,10 +128,7 @@ export component Parts inherits VerticalLayout {
     // the app has its part for tensorrt on this system
     in property <bool> tensorrt-shipped;
     in property <string> tensorrt-need;
-    in property <[Download]> vulkan;
     in property <[Download]> models;
-    in-out property <string> backend: "vulkan";
-    property <[Download]> shown: root.backend == "vulkan" ? root.vulkan : root.models;
     // the name of the thing that downloads now
     in property <string> busy;
     in property <string> progress;
@@ -208,9 +196,24 @@ export component Parts inherits VerticalLayout {
         }
         Group {
             title: "RIFE";
-            tabs: root.tensorrt-shipped ? ["vulkan", "tensorrt"] : [];
-            tab <=> root.backend;
-            if root.backend == "tensorrt": Item {
+            for model in root.models: Item {
+                name: model.name;
+                label: model.name;
+                installed: model.installed;
+                busy: root.busy;
+                progress: root.progress;
+                fraction: root.fraction;
+                install => {
+                    root.install(self.name);
+                }
+                remove => {
+                    root.remove(self.name);
+                }
+                cancel => {
+                    root.cancel();
+                }
+            }
+            if root.tensorrt-shipped: Item {
                 name: "tensorrt";
                 label: "TensorRT";
                 installed: root.tensorrt;
@@ -229,27 +232,9 @@ export component Parts inherits VerticalLayout {
                     root.cancel();
                 }
             }
-            if root.backend == "tensorrt" && root.tensorrt-need != "": Hint {
+            if root.tensorrt-shipped && root.tensorrt-need != "": Hint {
                 text: root.tensorrt-need;
                 alert: true;
-            }
-            for model in root.shown: Item {
-                name: root.backend + "/" + model.name;
-                label: model.name;
-                installed: model.installed;
-                enabled: root.backend == "vulkan" || root.tensorrt;
-                busy: root.busy;
-                progress: root.progress;
-                fraction: root.fraction;
-                install => {
-                    root.install(self.name);
-                }
-                remove => {
-                    root.remove(self.name);
-                }
-                cancel => {
-                    root.cancel();
-                }
             }
         }
         if root.note != "": Hint {

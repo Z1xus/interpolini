@@ -170,6 +170,7 @@ export component App inherits Window {
         }
     }
     callback select(int);
+    callback reload();
     callback extend(int);
     callback range(int);
     callback select-all();
@@ -200,6 +201,7 @@ export component App inherits Window {
     callback show-sheet(string);
     callback show-preferences();
     callback show-components();
+    callback models-changed();
     callback new-project();
     callback open-project();
     callback open-recent(string);
