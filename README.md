@@ -45,7 +45,8 @@ On Linux you can also [add it to the app menu](docs/linux.md).
 - There is no VapourSynth, so frames don't go through a frame server and Python between the filters.
 - [FFmpeg](https://ffmpeg.org) is linked into the app instead of being piped to. The decoder writes into the buffer that the interpolator reads from, and the encoder reads the interpolator's output without a copy.
 - The motion search uses a half-size frame by default (Drawback is it costs a bit of quality).
-- Optional [TensorRT](https://developer.nvidia.com/tensorrt) support for RIFE (it uses Vulkan by default).
+- RIFE runs on our own faster graph instead of the stock ncnn one.
+- Optional [TensorRT](https://developer.nvidia.com/tensorrt) support for RIFE, which smoothie doesn't have.
 
 ## Build
 
