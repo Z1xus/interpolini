@@ -90,8 +90,8 @@ jobs:
           merge-multiple: true
       - uses: actions/checkout@v7.0.1
         with:
-          fetch-depth: 0
-          persist-credentials: false
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
           path: source
       - name: Package
         env:
@@ -114,26 +114,11 @@ jobs:
             source/CHANGELOG.md > notes.md
           notes=(--generate-notes)
           [[ -n "$(tr -d '[:space:]' < notes.md)" ]] && notes=(--notes-file notes.md)
-          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 ||
-            gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.exe dist/SHA256SUMS source/CHANGELOG.md \
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.exe dist/SHA256SUMS source/CHANGELOG.md \
             --verify-tag --title "$GITHUB_REF_NAME" "${notes[@]}"
-      - name: Codeberg
-        shell: bash
-        env:
-          TOKEN: ${{ secrets.CODEBERG_TOKEN }}
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          api=https://codeberg.org/api/v1/repos/Z1xus/interpolini
-          auth=(-H "Authorization: token $TOKEN")
-          git -C source push "https://Z1xus:$TOKEN@codeberg.org/Z1xus/interpolini.git" \
-            'refs/remotes/origin/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
-          curl -sS "${auth[@]}" -X DELETE "$api/releases/tags/$GITHUB_REF_NAME" > /dev/null
-          id=$(gh release view "$GITHUB_REF_NAME" --json tagName,body --jq '{tag_name: .tagName, name: .tagName, body}' |
-            curl -fsS "${auth[@]}" -H 'Content-Type: application/json' -d @- "$api/releases" | jq .id)
-          for file in dist/*.zip dist/*.exe dist/SHA256SUMS source/CHANGELOG.md; do
-            curl -fsS "${auth[@]}" -F "attachment=@$file" "$api/releases/$id/assets?name=${file##*/}" > /dev/null
-          done
-          curl -fsS "${auth[@]}" "$api/releases?limit=50" | jq -r '.[5:][].tag_name' | while read -r tag; do
-            curl -fsS "${auth[@]}" -X DELETE "$api/releases/tags/$tag"
-          done
+  mirror:
+    needs: release
+    uses: ./.github/workflows/mirror.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit
