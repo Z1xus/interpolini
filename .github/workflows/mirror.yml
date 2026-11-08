@@ -36,10 +36,10 @@ jobs:
             'refs/remotes/origin/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
           curl -sS "${auth[@]}" -X DELETE "$api/releases/tags/$TAG" > /dev/null
           id=$(gh release view "$TAG" --json tagName,body --jq '{tag_name: .tagName, name: .tagName, body}' |
-            curl -fsS "${auth[@]}" -H 'Content-Type: application/json' -d @- "$api/releases" | jq .id)
+            curl -sS --fail-with-body "${auth[@]}" -H 'Content-Type: application/json' -d @- "$api/releases" | jq .id)
           for file in "$RUNNER_TEMP"/dist/*; do
-            curl -fsS "${auth[@]}" -F "attachment=@$file" "$api/releases/$id/assets?name=${file##*/}" > /dev/null
+            curl -sS --fail-with-body "${auth[@]}" -F "attachment=@$file" "$api/releases/$id/assets?name=${file##*/}" > /dev/null
           done
-          curl -fsS "${auth[@]}" "$api/releases?limit=50" | jq -r '.[5:][].tag_name' | while read -r tag; do
-            curl -fsS "${auth[@]}" -X DELETE "$api/releases/tags/$tag"
+          curl -sS --fail-with-body "${auth[@]}" "$api/releases?limit=50" | jq -r '.[5:][].tag_name' | while read -r tag; do
+            curl -sS --fail-with-body "${auth[@]}" -X DELETE "$api/releases/tags/$tag"
           done
