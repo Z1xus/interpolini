@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.31
+- New: Secret quality options
+
 ## 0.1.30
 - Faster: TensorRT
 - Faster: RIFE on Vulkan
