@@ -6,6 +6,7 @@ use crate::compose::{Canvas, Setup, Source, Sources};
 use crate::config::Audio;
 use crate::decode::{Meta, probe};
 use crate::encode::{Encoder, GOP, Plan};
+use crate::munch::Muncher;
 use crate::queue::{Job, kept};
 use crate::upscale::Upscaler;
 use crate::work::Cancel;
@@ -33,12 +34,31 @@ fn encode(
     meta: Meta,
     fps: (i64, i64),
     job: &Job,
+    setup: &Setup,
     mut picture: impl FnMut(i32) -> Result<frame::Video>,
     cancel: &Cancel,
 ) -> Result<f64> {
     let rate = fps.0 as f64 / fps.1 as f64;
     let upscaler = Upscaler::new(&meta, &job.config.upscale);
-    let encoded = upscaler.as_ref().map_or(meta, |upscaler| upscaler.meta);
+    let mut encoded = upscaler.as_ref().map_or(meta, |upscaler| upscaler.meta);
+    // the canvas gives the size of a munch
+    let mut muncher = setup
+        .munch
+        .map(|munch| {
+            let size = setup.size.unwrap_or((encoded.width, encoded.height));
+            Muncher::new(
+                &Meta {
+                    width: size.0,
+                    height: size.1,
+                    ..encoded
+                },
+                &munch,
+            )
+        })
+        .transpose()?;
+    if let Some(muncher) = &muncher {
+        encoded = muncher.meta;
+    }
     let plan = Plan::Encode { lanes: 0 };
     let mut encoder = Encoder::open(void()?, &encoded, fps, &job.config.output, None, plan)?;
     for n in 0..FRAMES {
@@ -46,6 +66,10 @@ fn encode(
         let picture = picture(n)?;
         let picture = match &upscaler {
             Some(upscaler) => upscaler.run(&picture)?,
+            None => picture,
+        };
+        let picture = match &mut muncher {
+            Some(muncher) => muncher.run(&picture)?,
             None => picture,
         };
         encoder.write(picture, n)?;
@@ -57,13 +81,23 @@ fn encode(
     Ok(rate * (mean(rest) + mean(keys) / f64::from(GOP)))
 }
 
-fn sample(source: &mut Source, job: &Job, time: f64, end: f64, cancel: &Cancel) -> Result<f64> {
+fn sample(
+    source: &mut Source,
+    job: &Job,
+    setup: &Setup,
+    time: f64,
+    end: f64,
+    cancel: &Cancel,
+) -> Result<f64> {
     let graph = source.graph().ok_or("the clip has no video")?;
-    let (fps, meta) = (graph.info.fps, graph.meta);
+    let (mut fps, meta) = (graph.info.fps, graph.meta);
+    if let Some(rate) = setup.munch.and_then(|munch| munch.fps) {
+        fps = (i64::from(rate), 1);
+    }
     let rate = fps.0 as f64 / fps.1 as f64;
     let time = time.min(end - f64::from(FRAMES) / rate);
     let picture = |n| Ok(source.at(time + f64::from(n) / rate, cancel)?.0);
-    Ok(encode(meta, fps, job, picture, cancel)? * job.speed)
+    Ok(encode(meta, fps, job, setup, picture, cancel)? * job.speed)
 }
 
 pub fn estimate(
@@ -73,6 +107,14 @@ pub fn estimate(
     cancel: &Cancel,
     sources: &mut Sources,
 ) -> Result<u64> {
+    // a render of single clips has the size of each clip
+    let setup = &match timeline {
+        Some(_) => *setup,
+        None => Setup {
+            munch: setup.munch,
+            ..Setup::default()
+        },
+    };
     let mut videos = Vec::new();
     let (mut end, mut heard) = (0.0, 0.0);
     for job in jobs {
@@ -118,7 +160,7 @@ pub fn estimate(
                 let graph = source.graph().ok_or("the clip has no video")?;
                 let grow = setup
                     .size
-                    .filter(|_| timeline.is_some())
+                    .filter(|_| setup.munch.is_none())
                     .map_or(1.0, |size| {
                         f64::from(size.0) * f64::from(size.1)
                             / (f64::from(graph.meta.width) * f64::from(graph.meta.height)).max(1.0)
@@ -126,14 +168,14 @@ pub fn estimate(
                 if timeline.is_some() && black == 0.0 && end > shown {
                     let (meta, fps) = (graph.meta, graph.info.fps);
                     let picture = Canvas::new(meta, [0; 3]).black((meta.width, meta.height));
-                    black =
-                        grow * encode(meta, fps, job, |_| Ok(picture.clone()), cancel)? * job.speed;
+                    let picture = |_| Ok(picture.clone());
+                    black = grow * encode(meta, fps, job, setup, picture, cancel)? * job.speed;
                 }
                 let start = job.cut.map_or(0.0, |cut| cut.0);
                 let end = start + length * job.speed;
                 for time in spots {
                     let time = start + time * job.speed;
-                    rates.push(grow * sample(source, job, time, end, cancel)?);
+                    rates.push(grow * sample(source, job, setup, time, end, cancel)?);
                 }
                 Ok(())
             },

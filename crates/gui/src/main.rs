@@ -216,6 +216,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ("Slint", "GPL-3.0"),
         ("smoothie-rs", "GPL-3.0"),
         ("GitHub Primer", "MIT"),
+        ("Quality Muncher", "qm-org"),
         ("Battle Angel Alita (ctt art)", "Yukito Kishiro"),
     ]];
     // made when it first shows, a window that waits hidden is in the task bar of the desktop

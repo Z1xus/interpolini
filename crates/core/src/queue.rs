@@ -12,6 +12,7 @@ use crate::decode::{Meta, Probe, damage, probe};
 use crate::dedup::{differences, threshold};
 use crate::encode::{Encoder, Plan};
 use crate::graph::{Plan as Shape, lossless};
+use crate::munch::Muncher;
 use crate::segments::Made;
 use crate::timeline::{Fade, Part, Placed, parts};
 use crate::upscale::Upscaler;
@@ -226,6 +227,9 @@ fn encode(
     if let Some(rate) = setup.fps {
         fps = rational(rate);
     }
+    if let Some(rate) = setup.munch.and_then(|munch| munch.fps) {
+        fps = (i64::from(rate), 1);
+    }
     // one video in 4:4:4 makes the whole file 4:4:4, an image follows the videos
     meta.matrix = meta.matrix.filter(|_| timeline.is_none());
     meta.yuv444 = probes.iter().any(|probe| probe.yuv444 && !probe.still);
@@ -241,7 +245,9 @@ fn encode(
     let (mix, sized) = (config.audio == Audio::Mix, config.target == Target::Size);
     let plan = match timeline {
         Some(sounds) => Plan::Mix(Mixer::new(sounds, mix)),
-        None if job.speed != 1.0 => Plan::Mix(Mixer::new(&sounds(std::slice::from_ref(job))?, mix)),
+        None if job.speed != 1.0 || setup.munch.is_some() => {
+            Plan::Mix(Mixer::new(&sounds(std::slice::from_ref(job))?, mix))
+        }
         // sound that is copied has no known size
         None if sized || (mix && most > 1) => Plan::Encode {
             lanes: if mix { most.min(1) } else { most },
@@ -271,7 +277,13 @@ fn encode(
         )));
     }
     let encoded = upscaler.as_ref().map_or(meta, |upscaler| upscaler.meta);
+    let mut muncher = setup
+        .munch
+        .map(|munch| Muncher::new(&encoded, &munch))
+        .transpose()?;
+    let encoded = muncher.as_ref().map_or(encoded, |muncher| muncher.meta);
     let mut encoder = Encoder::open(format::output(output)?, &encoded, fps, config, bits, plan)?;
+    encoder.munch = setup.munch;
     let fallback = if meta.yuv444 && !encoder.yuv444 {
         " in 4:2:0, it has no 4:4:4"
     } else {
@@ -283,7 +295,7 @@ fn encode(
     )));
     let from = ((start - job.at) * rate).round().max(0.0) as i32;
     let alone = timeline.is_none() && upscaler.is_none() && job.fade.none() && job.speed == 1.0;
-    let alone = alone && job.place == Place::default();
+    let alone = alone && muncher.is_none() && job.place == Place::default();
     let fused = match first.graph() {
         Some(graph) if alone && graph.packs() => encoder
             .spare()
@@ -358,6 +370,10 @@ fn encode(
                     let picture = canvas.compose(layers)?;
                     let picture = match &upscaler {
                         Some(upscaler) => upscaler.run(&picture)?,
+                        None => picture,
+                    };
+                    let picture = match &mut muncher {
+                        Some(muncher) => muncher.run(&picture)?,
                         None => picture,
                     };
                     encoder.write(picture, written)?;
@@ -448,21 +464,31 @@ fn clock(seconds: f64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
-fn render(job: &Job, clip: usize, output: &Path, sink: Sink, cancel: &Cancel) -> Result<()> {
+fn render(
+    job: &Job,
+    clip: usize,
+    setup: &Setup,
+    output: &Path,
+    sink: Sink,
+    cancel: &Cancel,
+) -> Result<()> {
     // a file of its own starts with the clip, not at its place on the timeline
     let job = &Job {
         at: 0.0,
         ..job.clone()
     };
     let untouched = job.place == Place::default();
-    let plain = untouched && job.speed == 1.0;
+    let plain = untouched && job.speed == 1.0 && setup.munch.is_none();
     if job.copy || (plain && lossless(probe(&job.clip)?.fps, &job.config)) {
         return copy(job, output, sink, cancel);
     }
     fit(
         &[(clip, job)],
         None,
-        &Setup::default(),
+        &Setup {
+            munch: setup.munch,
+            ..Setup::default()
+        },
         output,
         sink,
         cancel,
@@ -472,7 +498,7 @@ fn render(job: &Job, clip: usize, output: &Path, sink: Sink, cancel: &Cancel) ->
 pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, setup: &Setup, sink: Sink, cancel: &Cancel) {
     match timeline.filter(|_| !jobs.is_empty()) {
         Some(sounds) => joined(jobs, sounds, setup, sink, cancel),
-        None => separate(jobs, sink, cancel),
+        None => separate(jobs, setup, sink, cancel),
     }
     crate::rife::rest();
 }
@@ -509,7 +535,7 @@ fn joined(jobs: &[Job], sounds: &[Sound], setup: &Setup, sink: Sink, cancel: &Ca
     }
 }
 
-fn separate(jobs: &[Job], sink: Sink, cancel: &Cancel) {
+fn separate(jobs: &[Job], setup: &Setup, sink: Sink, cancel: &Cancel) {
     for (clip, job) in jobs.iter().enumerate() {
         if cancel.stopped() {
             break;
@@ -523,7 +549,7 @@ fn separate(jobs: &[Job], sink: Sink, cancel: &Cancel) {
             false => target(job, job.config.output.container.name()),
         };
         let _partial = work::partial(&output);
-        match render(job, clip, &output, sink, cancel) {
+        match render(job, clip, setup, &output, sink, cancel) {
             Ok(()) => {
                 let seconds = started.elapsed().as_secs_f32();
                 sink(Event::Done {

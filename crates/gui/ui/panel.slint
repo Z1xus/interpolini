@@ -1,5 +1,5 @@
 import { Action, Button, Dropdown, Field, Focus, Label, Note, Number, Popups, Row, Scroll, Section, Segment, SliderRow, Switch, Theme } from "widgets.slint";
-import { Clip, Sections, Settings } from "types.slint";
+import { Clip, Mode, Munch, Sections, Settings } from "types.slint";
 
 component Curve inherits Rectangle {
     in property <[float]> weights;
@@ -89,7 +89,20 @@ export component Panel inherits Rectangle {
     in property <[float]> weights;
     in property <string> summary;
     in property <bool> lossless;
-    in-out property <bool> copying;
+    in-out property <Mode> mode;
+    in-out property <Munch> munch;
+    in property <bool> secret;
+    property <bool> copying: root.mode == Mode.copy;
+    property <bool> configurable: root.mode == Mode.render;
+    property <int> taps;
+    callback munched();
+    callback secret-tapped(int);
+    changed mode => {
+        root.taps = 0;
+    }
+    pure function mode-of(index: int) -> Mode {
+        index == 1 ? Mode.copy : index == 2 ? Mode.munch : Mode.render
+    }
     in property <string> left;
     in property <string> estimate;
     in property <bool> separate;
@@ -129,15 +142,15 @@ export component Panel inherits Rectangle {
             padding: 10px;
             accessible-role: radio-group;
             accessible-label: "Mode";
-            for mode[index] in ["Render", "Lossless cut"]: Rectangle {
-                property <bool> active: (index == 1) == root.copying;
+            for name[index] in root.secret ? ["Render", "Lossless cut", "Munch"] : ["Render", "Lossless cut"]: Rectangle {
+                property <bool> active: root.mode-of(index) == root.mode;
                 accessible-role: radio-button;
-                accessible-label: mode;
+                accessible-label: name;
                 accessible-checkable: true;
                 accessible-checked: active;
                 accessible-enabled: !root.rendering;
                 accessible-item-index: index;
-                accessible-item-count: 2;
+                accessible-item-count: root.secret ? 3 : 2;
                 accessible-action-default => {
                     touch.clicked();
                 }
@@ -152,7 +165,7 @@ export component Panel inherits Rectangle {
                     }
                 }
                 Text {
-                    text: mode;
+                    text: name;
                     color: active ? Theme.ink : Theme.muted;
                     font-size: 13px;
                     accessible-role: none;
@@ -161,7 +174,14 @@ export component Panel inherits Rectangle {
                     mouse-cursor: pointer;
                     enabled: !root.rendering;
                     clicked => {
-                        root.copying = index == 1;
+                        if !active {
+                            root.mode = root.mode-of(index);
+                        } else if root.copying && !root.secret {
+                            root.taps += 1;
+                            if root.taps >= 3 {
+                                root.secret-tapped(root.taps);
+                            }
+                        }
                     }
                 }
             }
@@ -172,7 +192,7 @@ export component Panel inherits Rectangle {
             background: Theme.seam;
         }
 
-        if !root.copying: HorizontalLayout {
+        if root.configurable: HorizontalLayout {
             property <bool> shown: share.is-open;
             changed shown => {
                 Popups.open += self.shown ? 1 : -1;
@@ -386,12 +406,12 @@ export component Panel inherits Rectangle {
         }
         }
 
-        if !root.copying: Rectangle {
+        if root.configurable: Rectangle {
             height: 1px;
             background: Theme.seam;
         }
 
-        if root.clips.length > 0 && !root.copying: HorizontalLayout {
+        if root.clips.length > 0 && root.configurable: HorizontalLayout {
             height: 34px;
             padding-left: 10px;
             padding-right: 10px;
@@ -412,15 +432,62 @@ export component Panel inherits Rectangle {
                 }
             }
         }
-        if root.clips.length > 0 && !root.copying: Rectangle {
+        if root.clips.length > 0 && root.configurable: Rectangle {
             height: 1px;
             background: Theme.seam;
         }
 
-        if root.copying: VerticalLayout {
+        if !root.configurable: VerticalLayout {
             vertical-stretch: 1;
             alignment: start;
             padding-top: 10px;
+            if root.mode == Mode.munch: VerticalLayout {
+                SliderRow {
+                    label: "Munch";
+                    minimum: 1;
+                    maximum: 10;
+                    step: 1;
+                    value: root.munch.amount;
+                    changed(value) => {
+                        root.munch.amount = round(value);
+                        root.munched();
+                    }
+                }
+                Row {
+                    label: "Frame rate";
+                    Segment {
+                        label: "Munch frame rate";
+                        options: ["Same", "24", "15", "10", "5"];
+                        value: root.munch.fps == 0 ? "Same" : "\{root.munch.fps}";
+                        changed(value) => {
+                            root.munch.fps = value == "Same" ? 0 : value.to-float();
+                            root.munched();
+                        }
+                    }
+                }
+                SliderRow {
+                    label: "Deep fry";
+                    minimum: 0;
+                    maximum: 10;
+                    step: 1;
+                    value: root.munch.fry;
+                    changed(value) => {
+                        root.munch.fry = round(value);
+                        root.munched();
+                    }
+                }
+                SliderRow {
+                    label: "Loud";
+                    minimum: 0;
+                    maximum: 10;
+                    step: 1;
+                    value: root.munch.loud;
+                    changed(value) => {
+                        root.munch.loud = round(value);
+                        root.munched();
+                    }
+                }
+            }
             if root.estimate != "": Row {
                 label: "Size";
                 Rectangle { }
@@ -428,16 +495,16 @@ export component Panel inherits Rectangle {
                     text: root.estimate;
                 }
             }
-            if root.left != "": Note {
+            if root.copying && root.left != "": Note {
                 text: "Not kept: " + root.left;
             }
         }
 
         // the sections stay as they are while a copy hides them
         Scroll {
-            vertical-stretch: root.copying ? 0 : 1;
-            max-height: root.copying ? 0 : 100000px;
-            visible: !root.copying;
+            vertical-stretch: root.configurable ? 1 : 0;
+            max-height: root.configurable ? 100000px : 0;
+            visible: root.configurable;
             Section {
                 title: "Dedup";
                 open <=> root.sections.dedup;
@@ -1050,7 +1117,7 @@ export component Panel inherits Rectangle {
                     accessible-value-maximum: 100;
                 }
                 label := Text {
-                    text: root.rendering ? "Stop" : (root.copying || (root.lossless && (root.separate || root.videos < 2)) ? "Export" : "Render") + (root.videos > 1 && (root.separate || root.copying) ? " \{root.videos} clips" : "");
+                    text: root.rendering ? "Stop" : (root.copying || (root.configurable && root.lossless && (root.separate || root.videos < 2)) ? "Export" : "Render") + (root.videos > 1 && (root.separate || root.copying) ? " \{root.videos} clips" : "");
                     color: ready ? Theme.ink : Theme.faint;
                     font-size: 13px;
                     accessible-role: none;

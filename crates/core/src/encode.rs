@@ -12,6 +12,7 @@ use crate::audio::{Lane, Mixer, RATE, Source};
 use crate::budget;
 use crate::config::{self, Codec, Effort, Output};
 use crate::decode::Meta;
+use crate::munch::{Munch, crush};
 
 // the frames from one key frame to the next, each encoder has another default
 pub const GOP: u32 = 250;
@@ -523,6 +524,8 @@ pub struct Encoder {
     busy: bool,
     pub name: String,
     pub yuv444: bool,
+    pub munch: Option<Munch>,
+    held: Vec<[f32; 2]>,
     pub packets: [(u32, u64); 2],
 }
 
@@ -652,6 +655,7 @@ impl Encoder {
             output,
             encoder,
             audio,
+            held: vec![[0.0; 2]; lanes.len()],
             lanes,
             source: None,
             mixer,
@@ -662,6 +666,7 @@ impl Encoder {
             busy: false,
             name: name.to_owned(),
             yuv444: target == Pixel::YUV444P,
+            munch: None,
             packets: [(0, 0); 2],
         })
     }
@@ -724,7 +729,13 @@ impl Encoder {
             let track = (!mix).then_some(index);
             let count = lane.size().min((samples - lane.position()).max(0) as usize);
             let samples = match (&mut self.mixer, &mut self.source) {
-                (Some(mixer), _) => mixer.take(index, lane.position(), count)?,
+                (Some(mixer), _) => {
+                    let mut samples = mixer.take(index, lane.position(), count)?;
+                    if let Some(munch) = &self.munch {
+                        crush(&mut samples, lane.position(), munch, &mut self.held[index]);
+                    }
+                    samples
+                }
                 (None, Some(source)) => source.take(track, count)?,
                 (None, None) => [vec![0.0; count], vec![0.0; count]],
             };

@@ -7,6 +7,7 @@ use crate::budget;
 use crate::config::Config;
 use crate::decode::{Decoder, Meta};
 use crate::graph::{Graph, Image, image};
+use crate::munch::{Munch, Muncher};
 use crate::segments::Made;
 use crate::work::Cancel;
 use crate::{Result, Sink};
@@ -28,6 +29,11 @@ impl Scaler {
             (*scaler).flags = flags as u32;
         }
         Self(scaler)
+    }
+
+    pub fn single(self) -> Self {
+        unsafe { (*self.0).threads = 1 };
+        self
     }
 
     pub fn run(&self, to: &mut frame::Video, from: &frame::Video) -> Result<()> {
@@ -99,6 +105,7 @@ pub struct Setup {
     pub size: Option<(u32, u32)>,
     pub fps: Option<f64>,
     pub background: [u8; 3],
+    pub munch: Option<Munch>,
 }
 
 pub struct Picture(pub(crate) frame::Video);
@@ -349,6 +356,7 @@ pub struct Canvas {
     background: [u8; 3],
     scalers: Vec<Scaler>,
     shown: Scaler,
+    munch: Option<Muncher>,
 }
 
 impl Canvas {
@@ -361,7 +369,13 @@ impl Canvas {
         if let Some(size) = setup.size {
             (meta.width, meta.height) = size;
         }
-        Ok(Self::new(meta, setup.background))
+        let mut canvas = Self::new(meta, setup.background);
+        if let Some(munch) = setup.munch {
+            canvas.munch = Some(Muncher::new(&canvas.meta, &munch)?);
+            // slice threads leave gray lines in a small picture
+            canvas.shown = Scaler::new().single();
+        }
+        Ok(canvas)
     }
 
     pub(crate) fn new(meta: Meta, background: [u8; 3]) -> Self {
@@ -370,6 +384,7 @@ impl Canvas {
             background,
             scalers: Vec::new(),
             shown: Scaler::new(),
+            munch: None,
         }
     }
 
@@ -470,7 +485,13 @@ impl Canvas {
         Ok(canvas)
     }
 
-    pub fn preview(&mut self, layers: Vec<(Picture, Place, f32)>, width: u32) -> Result<Image> {
+    // a munched preview is drawn at the full size, so that it shows the pixels of the file
+    pub fn preview(
+        &mut self,
+        layers: Vec<(Picture, Place, f32)>,
+        width: u32,
+        munched: bool,
+    ) -> Result<Image> {
         let (wide, high) = self.size();
         let width = width.min(wide) & !1;
         let height = (u64::from(width) * u64::from(high) / u64::from(wide)) as u32 & !1;
@@ -478,11 +499,14 @@ impl Canvas {
         let fits = |layer: &(Picture, Place, f32)| {
             layer.1 == Place::default() && (layer.0.0.width(), layer.0.0.height()) == (wide, high)
         };
-        let size = match layers.iter().all(fits) {
+        let size = match layers.iter().all(fits) || (munched && self.munch.is_some()) {
             true => (wide, high),
             false => (width, height),
         };
-        let picture = self.draw(layers, size, true)?;
+        let mut picture = self.draw(layers, size, true)?;
+        if let Some(muncher) = self.munch.as_mut().filter(|_| munched) {
+            picture = muncher.run(&picture)?;
+        }
         image(&self.shown, &picture, width)
     }
 }

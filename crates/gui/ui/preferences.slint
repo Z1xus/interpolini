@@ -211,6 +211,19 @@ export component Preferences inherits Window {
                         }
                     }
                 }
+                if root.prefs.secret: FormRow {
+                    label: "Secret quality options";
+                    Cell {
+                        Switch {
+                            label: "Secret quality options";
+                            checked: root.prefs.secret;
+                            toggled(on) => {
+                                root.prefs.secret = on;
+                                root.changed();
+                            }
+                        }
+                    }
+                }
             }
             if root.section == "Projects": VerticalLayout {
                 padding-top: 8px;

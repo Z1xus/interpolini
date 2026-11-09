@@ -5,12 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use interpolini_core::config::{self, Config, Ease};
-use interpolini_core::{Fade, Part, Place, Plan, Setup, lossless};
+use interpolini_core::{Fade, Munch, Part, Place, Plan, Setup, lossless};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::settings::settings;
 use crate::state::{Shared, Span, State, lock};
-use crate::{App, Clip, Lane, preview};
+use crate::{App, Clip, Lane, Mode, preview};
 
 // the rows hold the place and the cut of each clip, and this brings the rest in line
 pub fn layout(ui: &App, state: &mut State) -> Vec<Span> {
@@ -312,6 +312,26 @@ pub fn repeats(ui: &App, state: &State) -> f32 {
     }
 }
 
+// what the file gets: a copy has no setup, and a munch comes on top of the project
+pub fn setup(ui: &App, state: &State) -> Setup {
+    match ui.get_mode() {
+        Mode::Copy => Setup::default(),
+        Mode::Render => state.project.setup(),
+        Mode::Munch => {
+            let munch = ui.get_munch();
+            Setup {
+                munch: Some(Munch {
+                    amount: munch.amount as u8,
+                    fps: u32::try_from(munch.fps).ok().filter(|fps| *fps > 0),
+                    fry: munch.fry as u8,
+                    loud: munch.loud as u8,
+                }),
+                ..state.project.setup()
+            }
+        }
+    }
+}
+
 pub fn only(ui: &App) -> bool {
     !ui.get_copying() && (ui.get_view() == "original" || ui.get_held())
 }
@@ -415,16 +435,18 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
         return;
     };
     // a copy shows each video as its file has it
-    let copying = ui.get_copying();
-    let mut setup = match copying {
-        true => Setup::default(),
-        false => state.project.setup(),
-    };
+    let mode = ui.get_mode();
+    let copying = mode == Mode::Copy;
+    let mut setup = setup(ui, &state);
     if base.missing {
         setup.size.get_or_insert(base.size);
     }
     let canvas = setup.size.unwrap_or(base.size);
-    let shrink = shrink(ui, canvas.0);
+    // a munch shows the pixels of the file, so it decodes them at full size
+    let shrink = match mode {
+        Mode::Munch => 1,
+        _ => shrink(ui, canvas.0),
+    };
     let place = |entry: &crate::state::Entry| match copying {
         true => Place::default(),
         false => entry.place,
@@ -447,9 +469,9 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
                 clip: entry.clip.clone(),
                 config: preview::shown(Config {
                     shrink,
-                    ..match copying {
-                        true => preview::source(&entry.config),
-                        false => entry.settled().retimed(speed),
+                    ..match mode {
+                        Mode::Render => entry.settled().retimed(speed),
+                        _ => preview::source(&entry.config),
                     }
                 }),
                 still: entry.still || entry.missing,

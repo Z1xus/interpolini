@@ -10,10 +10,11 @@ use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::clips::pick;
 use crate::history::record;
+use crate::preview::say;
 use crate::project::SESSION;
 use crate::state::{Shared, State, lock};
 use crate::view::{label, models, refresh, select, selected, stale, unsaved};
-use crate::{App, Code, Preferences, Prefs, Settings, System, themes};
+use crate::{App, Code, Mode, Munch, Note, Preferences, Prefs, Settings, System, themes};
 
 const LOOKS: [(Algorithm, &str); 3] = [
     (Algorithm::Sharp, "sharp"),
@@ -211,8 +212,9 @@ pub fn save_preferences(ui: &App) {
         .map(|open| open.0)
         .collect();
     let prefs = ui.get_prefs();
+    let munch = ui.get_munch();
     let mut text = format!(
-        "theme: {}\nmaximized: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\nprojects: {}\nautosave: {}\nasksave: {}\nreopen: {}\nconfirm: {}\nmemory: {}\nzoom: {}\nfolder: {}\npreset: {}\nsnapping: {}\nautofit: {}\nripple: {}\nscrolling: {}\n",
+        "theme: {}\nmaximized: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\nprojects: {}\nautosave: {}\nasksave: {}\nreopen: {}\nconfirm: {}\nmemory: {}\nzoom: {}\nfolder: {}\npreset: {}\nsnapping: {}\nautofit: {}\nripple: {}\nscrolling: {}\nsecret: {}\nmunch: {}\nmunchfps: {}\nfry: {}\nloud: {}\n",
         ui.get_theme(),
         yes(ui.window().is_maximized()),
         yes(ui.get_light()),
@@ -237,6 +239,11 @@ pub fn save_preferences(ui: &App) {
         yes(prefs.autofit),
         yes(prefs.ripple),
         prefs.scrolling,
+        yes(prefs.secret),
+        munch.amount,
+        munch.fps,
+        munch.fry,
+        munch.loud,
     );
     SESSION.with_borrow(|session| {
         for path in &session.recent {
@@ -274,6 +281,13 @@ pub fn load_prefs(ui: &App, saved: &str) {
         autofit: value("autofit: ") == Some("yes"),
         ripple: value("ripple: ") == Some("yes"),
         scrolling: value("scrolling: ").unwrap_or("system").into(),
+        secret: value("secret: ") == Some("yes"),
+    });
+    ui.set_munch(Munch {
+        amount: number("munch: ", 5).clamp(1, 10),
+        fps: number("munchfps: ", 0),
+        fry: number("fry: ", 0).clamp(0, 10),
+        loud: number("loud: ", 0).clamp(0, 10),
     });
     apply_scroll(ui);
     SESSION.with_borrow_mut(|session| {
@@ -423,6 +437,34 @@ pub fn wire(ui: &App, state: &Shared) {
         effort(&config.output, choice).into()
     });
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_munched(move || {
+        if let Some(ui) = weak.upgrade() {
+            save_preferences(&ui);
+            refresh(&ui, &shared);
+        }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_secret_tapped(move |taps| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let text = if taps >= 7 {
+            ui.set_prefs(Prefs {
+                secret: true,
+                ..ui.get_prefs()
+            });
+            save_preferences(&ui);
+            "Secret quality options are on".to_string()
+        } else if taps == 6 {
+            "1 click away from secret quality options".to_string()
+        } else {
+            format!("{} clicks away from secret quality options", 7 - taps)
+        };
+        say(&ui, text, Note::Brief, -1.0);
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_changed(move || {
         let Some(ui) = weak.upgrade() else {
             return;
@@ -543,6 +585,9 @@ pub fn wire(ui: &App, state: &Shared) {
     ui.on_prefs_changed(move || {
         if let Some(ui) = weak.upgrade() {
             limit(&ui);
+            if !ui.get_prefs().secret && ui.get_mode() == Mode::Munch {
+                ui.set_mode(Mode::Render);
+            }
             if ui.get_prefs().autofit {
                 crate::view::fit(&ui, &shared);
             }

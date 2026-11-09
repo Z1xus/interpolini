@@ -10,8 +10,8 @@ use slint::ComponentHandle;
 
 use crate::render::jobs;
 use crate::state::{Shared, lock};
-use crate::view::megabytes;
-use crate::{App, preview, services};
+use crate::view::{megabytes, setup};
+use crate::{App, Mode, preview, services};
 
 struct Asked {
     jobs: Vec<Job>,
@@ -36,7 +36,8 @@ fn measure(ui: &App, shared: &Shared) {
     }
     let mut state = lock(shared);
     // a copy is as large as the part of each file that it keeps
-    if ui.get_copying() {
+    let mode = ui.get_mode();
+    if mode == Mode::Copy {
         let video = |entry: &&crate::state::Entry| entry.audio.is_none() && !entry.still;
         let size =
             |entry: &crate::state::Entry| entry.bytes as f64 * f64::from(entry.cut.1 - entry.cut.0);
@@ -48,11 +49,12 @@ fn measure(ui: &App, shared: &Shared) {
         });
     }
     let separate = ui.get_separate();
-    let (mut jobs, sounds, ..) = jobs(&state, separate, false, crate::render::folder(ui));
-    if state.current(ui).config.output.target == Target::Size || ui.get_lossless() {
+    let (mut jobs, sounds, ..) = jobs(&state, separate, mode, crate::render::folder(ui));
+    let sized = state.current(ui).config.output.target == Target::Size || ui.get_lossless();
+    if mode == Mode::Render && sized {
         jobs.clear();
     }
-    let setup = state.project.setup();
+    let setup = setup(ui, &state);
     drop(state);
     let same =
         |asked: &Asked| asked.jobs == jobs && asked.separate == separate && asked.setup == setup;

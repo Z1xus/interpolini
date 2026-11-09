@@ -4,7 +4,7 @@ use slint::ComponentHandle;
 
 use crate::settings::save_preferences;
 use crate::state::{Shared, lock, sounds};
-use crate::view::{only, refresh, seek, timecode, wanted};
+use crate::view::{only, refresh, seek, setup, timecode, wanted};
 use crate::{App, services, sound};
 
 pub fn wire(ui: &App, state: &Shared) {
@@ -64,9 +64,10 @@ pub fn wire(ui: &App, state: &Shared) {
         let state = lock(&shared);
         let time = state.time(ui.get_position());
         let heard = ui.get_playing().then(|| sounds(&state));
+        let munch = setup(&ui, &state).munch;
         drop(state);
         services::with(|services| match heard {
-            Some(sounds) => services.audio.start(sounds, time),
+            Some(sounds) => services.audio.start(sounds, time, munch),
             None => services.audio.stop(),
         });
     });

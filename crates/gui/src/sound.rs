@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use interpolini_core::work;
-use interpolini_core::{Mixer, RATE, Sound};
+use interpolini_core::{Mixer, Munch, RATE, Sound, crush};
 
 // about a quarter of a second of stereo samples waits for the sound card
 const AHEAD: usize = RATE as usize / 2;
@@ -21,7 +21,7 @@ pub fn level(volume: f32) {
 }
 
 enum Command {
-    Start(Vec<Sound>, f64),
+    Start(Vec<Sound>, f64, Option<Munch>),
     Stop,
 }
 
@@ -54,8 +54,8 @@ impl Audio {
         }
     }
 
-    pub fn start(&self, sounds: Vec<Sound>, seconds: f64) {
-        self.send(Command::Start(sounds, seconds));
+    pub fn start(&self, sounds: Vec<Sound>, seconds: f64, munch: Option<Munch>) {
+        self.send(Command::Start(sounds, seconds, munch));
     }
 
     pub fn stop(&self) {
@@ -118,7 +118,7 @@ fn run(signal: &Shared) {
     let queue = Queue::default();
     let broken = Arc::new(AtomicBool::new(false));
     let mut stream: Option<cpal::Stream> = None;
-    let mut playing: Option<(Mixer, i64)> = None;
+    let mut playing: Option<(Mixer, i64, Option<Munch>, [f32; 2])> = None;
     loop {
         let command = {
             let mut held = locked(&signal.0);
@@ -139,7 +139,7 @@ fn run(signal: &Shared) {
                     let _ = stream.pause();
                 }
             }
-            Some(Command::Start(sounds, seconds)) => {
+            Some(Command::Start(sounds, seconds, munch)) => {
                 let mixer = Mixer::new(&sounds, true);
                 playing = None;
                 locked(&queue).clear();
@@ -150,14 +150,15 @@ fn run(signal: &Shared) {
                     stream = stream.or_else(|| open(&queue, signal, &broken));
                     let started = stream.as_ref().is_some_and(|stream| stream.play().is_ok());
                     if started {
-                        playing = Some((mixer, (seconds * f64::from(RATE)) as i64));
+                        playing =
+                            Some((mixer, (seconds * f64::from(RATE)) as i64, munch, [0.0; 2]));
                         locked(&signal.0).hungry = true;
                     }
                 }
             }
             None => {}
         }
-        let Some((mixer, position)) = &mut playing else {
+        let Some((mixer, position, munch, held)) = &mut playing else {
             continue;
         };
         while locked(&queue).len() + 2 * SLICE <= AHEAD {
@@ -165,10 +166,14 @@ fn run(signal: &Shared) {
                 playing = None;
                 break;
             }
-            let Ok([left, right]) = mixer.take(0, *position, SLICE) else {
+            let Ok(mut samples) = mixer.take(0, *position, SLICE) else {
                 playing = None;
                 break;
             };
+            if let Some(munch) = munch {
+                crush(&mut samples, *position, munch, held);
+            }
+            let [left, right] = samples;
             *position += SLICE as i64;
             let both = left.iter().zip(&right).flat_map(|(l, r)| [*l, *r]);
             locked(&queue).extend(both);

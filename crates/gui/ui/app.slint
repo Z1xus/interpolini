@@ -1,5 +1,5 @@
 import { Button, Keyboard, Modal, Piece, Popups, Theme, Tip } from "widgets.slint";
-import { Clip, Family, Ghost, Lane, Note, Prefs, Recent, Sections, Settings } from "types.slint";
+import { Clip, Family, Ghost, Lane, Mode, Munch, Note, Prefs, Recent, Sections, Settings } from "types.slint";
 import { Timeline } from "timeline.slint";
 import { Menu } from "menu.slint";
 import { Code, Panel } from "panel.slint";
@@ -11,7 +11,7 @@ import { Stage } from "stage.slint";
 import { Transport } from "transport.slint";
 
 export { Change, Code, Sheet, Preferences, ProjectSettings, Update }
-export { Note, Recent }
+export { Mode, Note, Recent }
 export { Keyboard, Piece, System, Theme } from "widgets.slint";
 
 export component App inherits Window {
@@ -104,11 +104,15 @@ export component App inherits Window {
     in property <float> note-progress: -1;
     in property <bool> lossless;
     // the clips are copied without a new encode, and the settings are not used
-    in-out property <bool> copying;
-    changed copying => {
+    in-out property <Mode> mode;
+    out property <bool> copying: root.mode == Mode.copy;
+    changed mode => {
         root.moded();
     }
     callback moded();
+    in-out property <Munch> munch: { amount: 5, fry: 0, loud: 0, fps: 0 };
+    callback munched();
+    callback secret-tapped(int);
     in property <string> left;
     in property <string> estimate;
     in-out property <bool> separate;
@@ -810,7 +814,15 @@ export component App inherits Window {
                 weights: root.weights;
                 summary: root.summary;
                 lossless: root.lossless;
-                copying <=> root.copying;
+                mode <=> root.mode;
+                munch <=> root.munch;
+                munched => {
+                    root.munched();
+                }
+                secret: root.prefs.secret;
+                secret-tapped(taps) => {
+                    root.secret-tapped(taps);
+                }
                 left: root.left;
                 estimate: root.estimate;
                 separate: root.separate;

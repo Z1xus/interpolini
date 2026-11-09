@@ -5,7 +5,7 @@ use std::sync::{Arc, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use interpolini_core::config::{self, Config};
-use interpolini_core::{Place, Probe, Setup, probe};
+use interpolini_core::{Munch, Place, Probe, Setup, probe};
 use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
@@ -14,8 +14,8 @@ use crate::file::{self, Document, Media};
 use crate::history::{self, record};
 use crate::settings::save_preferences;
 use crate::state::{Entry, Shared, State, Tracks, lock};
-use crate::view::{fit, layout, refit, refresh, select};
-use crate::{App, ProjectSettings, Recent, Theme, themes};
+use crate::view::{fit, layout, refit, refresh, select, setup};
+use crate::{App, Mode, ProjectSettings, Recent, Theme, themes};
 
 const RECENT: usize = 8;
 const EXTENSION: &str = "lini";
@@ -70,7 +70,11 @@ pub struct View {
     pub selected: i32,
     pub scope: String,
     pub view: String,
+    pub mode: String,
+    // the mode of projects saved before the munch
+    #[serde(skip_serializing)]
     pub copying: bool,
+    pub munch: Option<Munch>,
 }
 
 impl Default for View {
@@ -80,7 +84,9 @@ impl Default for View {
             selected: -1,
             scope: String::new(),
             view: String::new(),
+            mode: String::new(),
             copying: false,
+            munch: None,
         }
     }
 }
@@ -106,6 +112,7 @@ impl Project {
             size: self.look.size,
             fps: self.look.fps,
             background: self.look.background,
+            munch: None,
         }
     }
 
@@ -367,7 +374,14 @@ fn snapshot(ui: &App, state: &mut State, target: Option<&Path>) -> Document {
             selected: ui.get_selected(),
             scope: ui.get_scope().into(),
             view: ui.get_view().into(),
-            copying: ui.get_copying(),
+            mode: match ui.get_mode() {
+                Mode::Render => "render",
+                Mode::Copy => "copy",
+                Mode::Munch => "munch",
+            }
+            .into(),
+            copying: false,
+            munch: setup(ui, state).munch,
         },
     }
 }
@@ -686,7 +700,20 @@ fn restore(ui: &App, shared: &Shared, document: Document, path: Option<PathBuf>,
     ui.set_clips(ModelRc::new(VecModel::from(rows)));
     ui.set_scope(view.scope.into());
     ui.set_view(view.view.into());
-    ui.set_copying(view.copying);
+    ui.set_mode(match view.mode.as_str() {
+        "copy" => Mode::Copy,
+        "" if view.copying => Mode::Copy,
+        "munch" if ui.get_prefs().secret => Mode::Munch,
+        _ => Mode::Render,
+    });
+    if let Some(munch) = view.munch {
+        ui.set_munch(crate::Munch {
+            amount: i32::from(munch.amount.clamp(1, 10)),
+            fps: munch.fps.map_or(0, |fps| fps as i32),
+            fry: i32::from(munch.fry.min(10)),
+            loud: i32::from(munch.loud.min(10)),
+        });
+    }
     fit(ui, shared);
     let mut state = lock(shared);
     refit(ui, &mut state);

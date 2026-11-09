@@ -3,12 +3,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use std::path::PathBuf;
 
-use interpolini_core::{Event, Fade, Job, Place, Setup, Sound, budget, run};
+use interpolini_core::config::Encoder;
+use interpolini_core::{Event, Fade, Job, Place, Sound, budget, run};
 use slint::{ComponentHandle, Model};
 
 use crate::state::{Shared, State, lock, sounds};
-use crate::view::{layout, megabytes, refresh, update};
-use crate::{App, services};
+use crate::view::{layout, megabytes, refresh, setup, update};
+use crate::{App, Mode, preview, services};
 
 // row is the clip that renders now, or none when all clips go into one file
 fn show(ui: &App, event: Event, row: Option<usize>, lead: f32, current: usize, count: usize) {
@@ -83,9 +84,10 @@ fn show(ui: &App, event: Event, row: Option<usize>, lead: f32, current: usize, c
 pub fn jobs(
     state: &State,
     separate: bool,
-    copy: bool,
+    mode: Mode,
     folder: Option<PathBuf>,
 ) -> (Vec<Job>, Vec<Sound>, Vec<usize>, f64) {
+    let copy = mode == Mode::Copy;
     let mut heard = sounds(state);
     // an image goes into the file of the timeline, and has no file of its own
     let mut rows = state.videos();
@@ -106,7 +108,15 @@ pub fn jobs(
         };
         Job {
             clip: entry.clip.clone(),
-            config: entry.settled(),
+            config: match mode {
+                // hardware encoders refuse a picture as small as a munch can be
+                Mode::Munch => {
+                    let mut config = preview::source(&entry.config);
+                    config.output.encoder = Encoder::Software;
+                    config
+                }
+                _ => entry.settled(),
+            },
             cut: match faded {
                 true => Some((start, end.min(entry.seconds))),
                 false => (entry.cut != (0.0, 1.0)).then_some((
@@ -156,16 +166,14 @@ pub fn folder(ui: &App) -> Option<PathBuf> {
 
 fn render(ui: &App, shared: &Shared) {
     // a copy makes one file for each clip
-    let copy = ui.get_copying();
+    let mode = ui.get_mode();
+    let copy = mode == Mode::Copy;
     let separate = ui.get_separate() || copy;
-    let setup = match copy {
-        true => Setup::default(),
-        false => lock(shared).project.setup(),
-    };
+    let setup = setup(ui, &lock(shared));
     let (jobs, sounds, rows, lead) = {
         let mut state = lock(shared);
         layout(ui, &mut state);
-        let (jobs, sounds, rows, lead) = jobs(&state, separate, copy, folder(ui));
+        let (jobs, sounds, rows, lead) = jobs(&state, separate, mode, folder(ui));
         (jobs, sounds, rows, lead as f32)
     };
     if ui.get_missing() > 0 {

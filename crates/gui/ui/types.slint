@@ -5,6 +5,20 @@ export enum Note {
     notice,
 }
 
+export enum Mode {
+    render,
+    copy,
+    munch,
+}
+
+export struct Munch {
+    amount: int,
+    // 0 keeps the rate of the clip
+    fps: int,
+    fry: int,
+    loud: int,
+}
+
 export struct Clip {
     name: string,
     state: string,
@@ -157,4 +171,5 @@ export struct Prefs {
     autofit: bool,
     ripple: bool,
     scrolling: string,
+    secret: bool,
 }

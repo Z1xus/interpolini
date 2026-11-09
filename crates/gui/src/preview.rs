@@ -242,7 +242,7 @@ fn compose(
             pictures.push((picture, layer.place, level(layer)));
         }
     }
-    canvas.preview(pictures, width)
+    canvas.preview(pictures, width, !original)
 }
 
 fn pair(
@@ -278,20 +278,26 @@ fn details(open: &Sources, layers: &[Layer], original: bool, setup: &Setup) -> (
         return (String::new(), 30.0);
     };
     let info = graph.info;
-    let fps = setup
+    let munch = setup.munch.filter(|_| !original);
+    let mut fps = setup
         .fps
         .unwrap_or(info.fps.0 as f64 / info.fps.1 as f64 * speed);
+    let mut size = setup.size.unwrap_or((info.width, info.height));
+    if let Some(munch) = munch {
+        fps = munch.fps.map_or(fps, f64::from);
+        size = munch.size(size);
+    }
     let source = graph.source_fps() * speed;
     let rate = match source.round() == fps.round() {
         true => format!("{fps:.0} fps"),
         false => format!("{source:.0} to {fps:.0} fps"),
     };
-    let (width, height) = setup.size.unwrap_or((info.width, info.height));
+    let (width, height) = size;
     let details = format!("{width}x{height}  |  {rate}");
     (details, fps)
 }
 
-fn say(ui: &App, text: String, kind: Note, progress: f32) {
+pub fn say(ui: &App, text: String, kind: Note, progress: f32) {
     ui.set_preview_note(text.into());
     ui.set_note_kind(kind);
     ui.set_note_progress(progress);
