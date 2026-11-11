@@ -2,6 +2,10 @@
 
 ## 0.1.31
 - New: Secret quality options
+- New: AV1 decoding on the GPU
+- Faster: GPU decoding
+- Faster: Masking
+- Fixed: Crash on odd sizes
 
 ## 0.1.30
 - Faster: TensorRT
