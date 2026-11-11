@@ -218,6 +218,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ("GitHub Primer", "MIT"),
         ("Quality Muncher", "qm-org"),
         ("Battle Angel Alita (ctt art)", "Yukito Kishiro"),
+        ("Sakuya and Remilia (aetopia art)", "Morino Hon"),
     ]];
     // made when it first shows, a window that waits hidden is in the task bar of the desktop
     let made: std::cell::RefCell<Option<Sheet>> = Default::default();

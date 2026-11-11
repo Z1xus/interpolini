@@ -93,8 +93,8 @@ export component Icon inherits Path {
 
 export struct Piece {
     area: string,
-    picture: image,
-    mask: image,
+    picture: [image],
+    mask: [image],
     x: float,
     y: float,
     size: float,
@@ -106,7 +106,9 @@ export component Art inherits Rectangle {
     in property <string> area;
     in property <bool> light;
     for piece in root.pieces: Rectangle {
-        property <float> shape: piece.mask.width > 0 ? piece.mask.height / piece.mask.width : piece.picture.height / max(1, piece.picture.width);
+        property <image> base: piece.mask.length > 0 ? piece.mask[0] : piece.picture[0];
+        property <float> shape: self.base.height / max(1, self.base.width);
+        property <int> level: clamp(floor(log(max(1.0, self.base.width / max(1.0, self.width / 1phx)), 1.4142)), 0, max(0, piece.picture.length - 1));
         x: (root.width - self.width) * piece.x;
         y: (root.height - self.height) * piece.y;
         width: root.width * piece.size;
@@ -116,14 +118,14 @@ export component Art inherits Rectangle {
         Image {
             width: parent.width;
             height: parent.height;
-            source: piece.mask;
+            source: piece.mask[parent.level];
             colorize: root.light ? Theme.ink : Theme.muted;
             accessible-role: none;
         }
         Image {
             width: parent.width;
             height: parent.height;
-            source: piece.picture;
+            source: piece.picture[parent.level];
             accessible-role: none;
         }
     }

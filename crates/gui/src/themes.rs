@@ -1,9 +1,14 @@
-use slint::{Color, ComponentHandle, ModelRc, VecModel};
+use std::collections::BTreeMap;
+use std::f32::consts::FRAC_1_SQRT_2;
+use std::sync::Mutex;
+
+use slint::{Color, ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
 use crate::{App, Piece, Theme};
 
 // void, rack, raised, seam, ink, muted, faint, accent, ok
 type Palette = [u32; 9];
+type Pixels = SharedPixelBuffer<Rgba8Pixel>;
 
 struct Art {
     theme: &'static str,
@@ -18,12 +23,16 @@ struct Art {
     opacity: f32,
 }
 
-const ART: [Art; 2] = [
+// the levels are kept by address
+static CTT_MASK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/art/themes/ctt.mask.png"));
+static CTT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/art/themes/ctt.png"));
+
+static ART: [Art; 4] = [
     Art {
         theme: "ctt",
         area: "timeline",
-        mask: include_bytes!(concat!(env!("OUT_DIR"), "/art/themes/ctt.mask.png")),
-        picture: include_bytes!(concat!(env!("OUT_DIR"), "/art/themes/ctt.png")),
+        mask: CTT_MASK,
+        picture: CTT,
         x: 0.5,
         y: 1.0,
         width: 1.0,
@@ -32,12 +41,35 @@ const ART: [Art; 2] = [
     Art {
         theme: "ctt",
         area: "start",
-        mask: include_bytes!(concat!(env!("OUT_DIR"), "/art/themes/ctt.mask.png")),
-        picture: include_bytes!(concat!(env!("OUT_DIR"), "/art/themes/ctt.png")),
+        mask: CTT_MASK,
+        picture: CTT,
         x: 1.0,
         y: 1.0,
         width: 0.8,
         opacity: 1.0,
+    },
+    Art {
+        theme: "aetopia",
+        area: "start",
+        mask: include_bytes!(concat!(env!("OUT_DIR"), "/art/themes/aetopia.mask.png")),
+        picture: include_bytes!(concat!(env!("OUT_DIR"), "/art/themes/aetopia.png")),
+        x: 1.0,
+        y: 1.0,
+        width: 0.42,
+        opacity: 1.0,
+    },
+    Art {
+        theme: "aetopia",
+        area: "timeline",
+        mask: include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/art/themes/aetopia.bust.mask.png"
+        )),
+        picture: include_bytes!(concat!(env!("OUT_DIR"), "/art/themes/aetopia.bust.png")),
+        x: 1.0,
+        y: 1.0,
+        width: 0.3,
+        opacity: 0.4,
     },
 ];
 
@@ -155,16 +187,40 @@ pub const THEMES: [(&str, Palette, Option<Palette>); 12] = [
     ),
 ];
 
-fn image(bytes: &[u8]) -> slint::Image {
-    let Ok(decoded) = image::load_from_memory(bytes) else {
-        return slint::Image::default();
-    };
-    let decoded = decoded.into_rgba8();
-    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
-        decoded.as_raw(),
-        decoded.width(),
-        decoded.height(),
-    ))
+fn levels(bytes: &'static [u8]) -> ModelRc<slint::Image> {
+    // an image kept past the event loop stops the exit
+    static BUILT: Mutex<BTreeMap<usize, Vec<Pixels>>> = Mutex::new(BTreeMap::new());
+    let mut built = BUILT.lock().unwrap_or_else(|poison| poison.into_inner());
+    let sizes = built.entry(bytes.as_ptr() as usize).or_insert_with(|| {
+        let Ok(decoded) = image::load_from_memory(bytes) else {
+            return Vec::new();
+        };
+        let mut full = decoded.into_rgba8();
+        for pixel in full.pixels_mut() {
+            let alpha = pixel[3] as u32;
+            for channel in &mut pixel.0[..3] {
+                *channel = ((*channel as u32 * alpha + 127) / 255) as u8;
+            }
+        }
+        let mut sizes = vec![full];
+        // each level is 1/sqrt(2) of the one before
+        for level in 1..6 {
+            let from = &sizes[level.max(2) - 2];
+            let scale = if level == 1 { FRAC_1_SQRT_2 } else { 0.5 };
+            let width = ((from.width() as f32 * scale).round() as u32).max(1);
+            let height = ((from.height() as f32 * scale).round() as u32).max(1);
+            sizes.push(image::imageops::thumbnail(from, width, height));
+        }
+        let pixels = |size: &image::RgbaImage| {
+            Pixels::clone_from_slice(size.as_raw(), size.width(), size.height())
+        };
+        sizes.iter().map(pixels).collect()
+    });
+    let images = sizes
+        .iter()
+        .cloned()
+        .map(slint::Image::from_rgba8_premultiplied);
+    ModelRc::new(VecModel::from(images.collect::<Vec<_>>()))
 }
 
 pub fn has_light(name: &str) -> bool {
@@ -197,8 +253,8 @@ pub fn apply(ui: &App, name: &str, light: bool) {
     let pieces = ART.iter().filter(|art| art.theme == name);
     let pieces = pieces.map(|art| Piece {
         area: art.area.into(),
-        mask: image(art.mask),
-        picture: image(art.picture),
+        mask: levels(art.mask),
+        picture: levels(art.picture),
         x: art.x,
         y: art.y,
         size: art.width,

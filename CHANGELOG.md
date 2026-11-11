@@ -10,6 +10,7 @@
 - Faster: Masking
 - Fixed: Crash on odd sizes
 - Changed: Finer waveforms
+- Changed: aetopia theme
 
 ## 0.1.30
 - Faster: TensorRT
