@@ -523,7 +523,14 @@ impl Decoder {
                 return Err(ffmpeg_next::Error::from(code).into());
             }
         }
-        let decoder = context.decoder().video()?;
+        let decoder = match gpu.is_some() && context.id() == codec::Id::AV1 {
+            // the default av1 decoder has no gpu path
+            true => {
+                let av1 = codec::decoder::find_by_name("av1").ok_or("no av1 decoder")?;
+                context.decoder().open_as(av1)?.video()?
+            }
+            false => context.decoder().video()?,
+        };
         let format = decoder.format();
         let jpeg = matches!(format, Pixel::YUVJ420P | Pixel::YUVJ444P);
         let limited = !jpeg && decoder.color_range() != color::Range::JPEG;
