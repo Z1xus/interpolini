@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 
 use ffmpeg_next::{Discard, Packet, Rational, codec, encoder, ffi, format, media};
 
+use crate::audio::name;
+use crate::decode::title;
 use crate::queue::Job;
 use crate::work::Cancel;
 use crate::{Event, Result, Sink};
@@ -52,6 +54,7 @@ pub fn copy(job: &Job, output: &Path, sink: Sink, cancel: &Cancel) -> Result<()>
         }
         let mut added = target.add_stream(encoder::find(codec::Id::None))?;
         added.set_parameters(stream.parameters());
+        name(&mut added, &title(&stream));
         // the tag of one container is not valid in another
         unsafe { (*added.parameters().as_mut_ptr()).codec_tag = 0 };
         streams.push(Some(added.index()));

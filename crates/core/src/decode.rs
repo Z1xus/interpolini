@@ -163,6 +163,13 @@ impl Meta {
     }
 }
 
+// newer ffmpeg puts an mp4 track name in name
+pub fn title(stream: &format::stream::Stream) -> String {
+    let metadata = stream.metadata();
+    let found = metadata.get("title").or_else(|| metadata.get("name"));
+    found.unwrap_or_default().to_owned()
+}
+
 pub struct Probe {
     pub seconds: f64,
     pub fps: f64,
@@ -178,11 +185,7 @@ pub struct Probe {
 pub fn probe(path: &Path) -> Result<Probe> {
     ffmpeg_next::init()?;
     let audio = |stream: &format::stream::Stream| {
-        let parameters = stream.parameters();
-        (parameters.medium() == media::Type::Audio).then(|| {
-            let channels = unsafe { (*parameters.as_ptr()).ch_layout.nb_channels };
-            format!("{}, {channels} ch", parameters.id().name())
-        })
+        (stream.parameters().medium() == media::Type::Audio).then(|| title(stream))
     };
     let read = |input: &format::context::Input| {
         let tracks: Vec<String> = input

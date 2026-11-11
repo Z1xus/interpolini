@@ -986,6 +986,9 @@ export component Field inherits Rectangle {
     in property <bool> commit: true;
     callback accepted(string);
     callback edited <=> input.edited;
+    public function select-all() {
+        input.select-all();
+    }
     forward-focus: input;
     border-width: 1px;
     border-color: input.has-focus ? Theme.accent : Theme.seam;

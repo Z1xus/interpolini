@@ -92,6 +92,7 @@ pub fn sounds(jobs: &[Job]) -> Result<Vec<Sound>> {
             sounds.push(Sound {
                 clip: job.clip.clone(),
                 stream,
+                title: probe.tracks[stream].clone(),
                 start: job.cut.map_or(0.0, |cut| cut.0),
                 length: kept(job, &probe),
                 at: job.at,
@@ -250,7 +251,13 @@ fn encode(
         }
         // sound that is copied has no known size
         None if sized || (mix && most > 1) => Plan::Encode {
-            lanes: if mix { most.min(1) } else { most },
+            titles: match mix {
+                true => vec![String::new(); most.min(1)],
+                false => (probes[base].tracks.iter().enumerate())
+                    .filter(|(track, _)| !silenced[base].contains(track))
+                    .map(|(_, title)| title.clone())
+                    .collect(),
+            },
         },
         None => Plan::Copy {
             clip: &job.clip,
@@ -260,7 +267,7 @@ fn encode(
     };
     let lanes = match &plan {
         Plan::Mix(mixer) => mixer.lanes(),
-        Plan::Encode { lanes } => *lanes,
+        Plan::Encode { titles } => titles.len(),
         Plan::Copy { .. } => 0,
     };
     let megabytes = f64::from(config.size) * MARGIN * share;

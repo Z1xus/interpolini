@@ -1,4 +1,4 @@
-import { Action, Art, Clock, IconButton, Icons, MenuItem, MenuPopup, MenuRow, MenuSeparator, MenuSlider, Piece, Popups, Segment, Theme } from "widgets.slint";
+import { Action, Art, Clock, Field, IconButton, Icons, MenuItem, MenuPopup, MenuRow, MenuSeparator, MenuSlider, Piece, Popups, Segment, Theme } from "widgets.slint";
 import { Clip, Ghost, Lane } from "types.slint";
 
 global Curves {
@@ -224,6 +224,8 @@ export component Timeline inherits Rectangle {
     callback add-lane(bool);
     callback remove-lane(bool, int);
     callback mute-lane(int);
+    callback rename-lane(int, string);
+    property <int> renaming: -1;
     property <length> gutter: 150px;
     property <length> ruler: 24px;
     property <float> zoom: 1;
@@ -461,6 +463,13 @@ export component Timeline inherits Rectangle {
             }
         }
         if root.lane-audio: MenuItem {
+            text: "Rename track";
+            clicked => {
+                root.renaming = root.lane-index;
+                lane-menu.close();
+            }
+        }
+        if root.lane-audio: MenuItem {
             text: "Mute track";
             toggle: true;
             checked: root.audio[root.lane-index].muted;
@@ -595,6 +604,9 @@ export component Timeline inherits Rectangle {
                     root.open-lane(true, index, self.absolute-position.x + 24px, self.absolute-position.y + self.height / 2);
                 }
                 TouchArea {
+                    double-clicked => {
+                        root.renaming = index;
+                    }
                     pointer-event(event) => {
                         if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                             root.open-lane(true, index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
@@ -625,8 +637,39 @@ export component Timeline inherits Rectangle {
                             root.mute-lane(index);
                         }
                     }
-                    Rectangle {
+                    if root.renaming != index: Text {
                         horizontal-stretch: 1;
+                        text: lane.title;
+                        color: Theme.faint;
+                        font-size: 11px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    if root.renaming == index: FocusScope {
+                        horizontal-stretch: 1;
+                        focus-on-click: false;
+                        focus-on-tab-navigation: false;
+                        // escape takes the focus, the old name stays
+                        key-pressed(event) => {
+                            if event.text == Key.Escape {
+                                field.text = lane.title;
+                            }
+                            reject
+                        }
+                        field := Field {
+                            y: (parent.height - self.height) / 2;
+                            height: 20px;
+                            label: "Track name";
+                            text: lane.title;
+                            init => {
+                                self.focus();
+                                self.select-all();
+                            }
+                            accepted(name) => {
+                                root.renaming = -1;
+                                root.rename-lane(index, name);
+                            }
+                        }
                     }
                     Action {
                         text: "×";

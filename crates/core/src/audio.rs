@@ -311,6 +311,7 @@ pub fn keep(clip: &Path, streams: &[usize]) -> Vec<usize> {
 pub struct Sound {
     pub clip: PathBuf,
     pub stream: usize,
+    pub title: String,
     // the place in the source and how much of it plays, in seconds
     pub start: f64,
     pub length: f64,
@@ -328,6 +329,7 @@ struct Playing {
 
 pub struct Mixer {
     lanes: Vec<Vec<Playing>>,
+    mix: bool,
 }
 
 impl Mixer {
@@ -364,11 +366,16 @@ impl Mixer {
                 source: None,
             });
         }
-        Self { lanes }
+        Self { lanes, mix }
     }
 
     pub fn lanes(&self) -> usize {
         self.lanes.len()
+    }
+
+    pub fn title(&self, lane: usize) -> &str {
+        let first = self.lanes[lane].first().filter(|_| !self.mix);
+        first.map_or("", |playing| &playing.sound.title)
     }
 
     // the samples of one lane from a place on the timeline, counted in samples
@@ -416,6 +423,12 @@ impl Mixer {
     }
 }
 
+pub fn name(stream: &mut format::stream::StreamMut, title: &str) {
+    if !title.is_empty() {
+        stream.set_metadata([("title", title)].into_iter().collect());
+    }
+}
+
 pub struct Lane {
     encoder: encoder::audio::Encoder,
     stream: usize,
@@ -423,7 +436,7 @@ pub struct Lane {
 }
 
 impl Lane {
-    pub fn open(output: &mut format::context::Output) -> Result<Self> {
+    pub fn open(output: &mut format::context::Output, title: &str) -> Result<Self> {
         let codec = encoder::find(codec::Id::AAC).ok_or("there is no aac encoder")?;
         let header = output
             .format()
@@ -441,6 +454,7 @@ impl Lane {
         let encoder = audio.open_as(codec)?;
         let mut stream = output.add_stream(codec)?;
         stream.set_parameters(&encoder);
+        name(&mut stream, title);
         Ok(Self {
             encoder,
             stream: stream.index(),

@@ -8,10 +8,10 @@ use ffmpeg_next::software::scaling;
 use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, ffi, frame, media, picture};
 
 use crate::Result;
-use crate::audio::{Lane, Mixer, RATE, Source};
+use crate::audio::{Lane, Mixer, RATE, Source, name};
 use crate::budget;
 use crate::config::{self, Codec, Effort, Output};
-use crate::decode::Meta;
+use crate::decode::{Meta, title};
 use crate::munch::{Munch, crush};
 
 // the frames from one key frame to the next, each encoder has another default
@@ -248,6 +248,7 @@ impl Audio {
             }
             let mut target = output.add_stream(encoder::find(codec::Id::None))?;
             target.set_parameters(stream.parameters());
+            name(&mut target, &title(&stream));
             // the tag of one container is not valid in another
             unsafe { (*target.parameters().as_mut_ptr()).codec_tag = 0 };
             streams.push(Some(target.index()));
@@ -504,7 +505,7 @@ pub enum Plan<'a> {
     },
     // the tracks of each clip in its turn, as one track or one for each
     Encode {
-        lanes: usize,
+        titles: Vec<String>,
     },
     // the sounds of a timeline, added together
     Mix(Mixer),
@@ -600,15 +601,15 @@ impl Encoder {
         let mut mixer = None;
         let audio = match plan {
             Plan::Copy { clip, start, muted } => Audio::open(clip, &mut output, start, muted)?,
-            Plan::Encode { lanes: count } => {
-                for _ in 0..count {
-                    lanes.push(Lane::open(&mut output)?);
+            Plan::Encode { titles } => {
+                for title in titles {
+                    lanes.push(Lane::open(&mut output, &title)?);
                 }
                 None
             }
             Plan::Mix(sounds) => {
-                for _ in 0..sounds.lanes() {
-                    lanes.push(Lane::open(&mut output)?);
+                for lane in 0..sounds.lanes() {
+                    lanes.push(Lane::open(&mut output, sounds.title(lane))?);
                 }
                 mixer = Some(sounds);
                 None

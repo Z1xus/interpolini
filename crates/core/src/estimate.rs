@@ -59,7 +59,7 @@ fn encode(
     if let Some(muncher) = &muncher {
         encoded = muncher.meta;
     }
-    let plan = Plan::Encode { lanes: 0 };
+    let plan = Plan::Encode { titles: Vec::new() };
     let mut encoder = Encoder::open(void()?, &encoded, fps, &job.config.output, None, plan)?;
     for n in 0..FRAMES {
         cancel.check()?;

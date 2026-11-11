@@ -9,7 +9,7 @@ use interpolini_core::{Fade, Munch, Part, Place, Plan, Setup, lossless};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::settings::settings;
-use crate::state::{Shared, Span, State, lock};
+use crate::state::{Shared, Span, State, Track, lock};
 use crate::{App, Clip, Lane, Mode, preview};
 
 // the rows hold the place and the cut of each clip, and this brings the rest in line
@@ -93,8 +93,9 @@ pub fn refit(ui: &App, state: &mut State) {
 
 pub fn lanes(ui: &App, state: &State) {
     let (video, audio, content) = state.places();
-    let lane = |name: String, y: f32, height: f32, muted: bool| Lane {
+    let lane = |name: String, title: &str, y: f32, height: f32, muted: bool| Lane {
         name: name.into(),
+        title: title.into(),
         y,
         height,
         muted,
@@ -111,11 +112,13 @@ pub fn lanes(ui: &App, state: &State) {
     };
     let heights = state.tracks.video.iter().zip(video).enumerate();
     let rows =
-        heights.map(|(index, (height, y))| lane(format!("V{}", index + 1), y, *height, false));
+        heights.map(|(index, (height, y))| lane(format!("V{}", index + 1), "", y, *height, false));
     ui.set_video(fill(ui.get_video(), rows.collect()));
     let heights = state.tracks.audio.iter().zip(audio).enumerate();
-    let rows = heights
-        .map(|(index, ((height, muted), y))| lane(format!("A{}", index + 1), y, *height, *muted));
+    let rows = heights.map(|(index, (Track(height, muted, title), y))| {
+        let title = title.as_deref().unwrap_or_default();
+        lane(format!("A{}", index + 1), title, y, *height, *muted)
+    });
     ui.set_audio(fill(ui.get_audio(), rows.collect()));
     ui.set_content(content);
     let videos = state.videos().into_iter();

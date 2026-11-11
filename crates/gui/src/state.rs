@@ -137,14 +137,18 @@ impl Span {
 #[serde(default)]
 pub struct Tracks {
     pub video: Vec<f32>,
-    pub audio: Vec<(f32, bool)>,
+    pub audio: Vec<Track>,
 }
+
+// none was never set, empty was cleared by hand
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Track(pub f32, pub bool, #[serde(default)] pub Option<String>);
 
 impl Default for Tracks {
     fn default() -> Self {
         Self {
             video: vec![64.0],
-            audio: vec![(36.0, false)],
+            audio: vec![Track(36.0, false, None)],
         }
     }
 }
@@ -332,9 +336,9 @@ impl State {
             top += self.tracks.video[index];
         }
         let mut audio = Vec::new();
-        for (height, _) in &self.tracks.audio {
+        for track in &self.tracks.audio {
             audio.push(top);
-            top += height;
+            top += track.0;
         }
         (video, audio, top)
     }
@@ -361,7 +365,7 @@ impl State {
         };
         if past && self.spare.is_none() {
             match sound {
-                true => self.tracks.audio.push((36.0, false)),
+                true => self.tracks.audio.push(Track(36.0, false, None)),
                 false => self.tracks.video.push(64.0),
             }
             self.spare = Some(sound);
@@ -448,6 +452,9 @@ pub fn sounds(state: &State) -> Vec<Sound> {
         Sound {
             clip: entry.clip.clone(),
             stream: entry.audio.unwrap_or(0),
+            title: (state.tracks.audio.get(entry.track))
+                .and_then(|track| track.2.clone())
+                .unwrap_or_default(),
             start: span.start,
             length: span.length,
             speed: f64::from(entry.speed),

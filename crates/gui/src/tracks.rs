@@ -5,7 +5,7 @@ use slint::{ComponentHandle, Model};
 use crate::App;
 use crate::edit::discard;
 use crate::history::record;
-use crate::state::{Shared, lock};
+use crate::state::{Shared, Track, lock};
 use crate::view::{fit, lanes, refresh, select};
 
 pub fn wire(ui: &App, state: &Shared) {
@@ -53,7 +53,7 @@ pub fn wire(ui: &App, state: &Shared) {
         let mut state = lock(&shared);
         record(&ui, &mut state, false);
         match audio {
-            true => state.tracks.audio.push((36.0, false)),
+            true => state.tracks.audio.push(Track(36.0, false, None)),
             false => state.tracks.video.push(64.0),
         }
         lanes(&ui, &state);
@@ -104,6 +104,26 @@ pub fn wire(ui: &App, state: &Shared) {
         if let Some(track) = state.tracks.audio.get_mut(index as usize) {
             track.1 = !track.1;
         }
+        lanes(&ui, &state);
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_rename_lane(move |index, name| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let mut state = lock(&shared);
+        let (index, name) = (index as usize, name.trim());
+        let old = state
+            .tracks
+            .audio
+            .get(index)
+            .map(|track| track.2.as_deref());
+        if old.is_none_or(|old| old.unwrap_or_default() == name) {
+            return;
+        }
+        record(&ui, &mut state, false);
+        state.tracks.audio[index].2 = Some(name.into());
         lanes(&ui, &state);
     });
 }

@@ -188,6 +188,7 @@ export component App inherits Window {
     callback add-lane(bool);
     callback remove-lane(bool, int);
     callback mute-lane(int);
+    callback rename-lane(int, string);
     callback choose-lut();
     callback choose-config(string);
     callback save-config();
@@ -775,6 +776,9 @@ export component App inherits Window {
                     }
                     mute-lane(index) => {
                         root.mute-lane(index);
+                    }
+                    rename-lane(index, name) => {
+                        root.rename-lane(index, name);
                     }
                 }
             }

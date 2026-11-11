@@ -9,7 +9,7 @@ use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 use crate::edit::overwrite;
 use crate::history::record;
 use crate::project::{even, placement};
-use crate::state::{Entry, STILL, Saved, Shared, State, lock};
+use crate::state::{Entry, STILL, Saved, Shared, State, Track, lock};
 #[cfg(target_os = "linux")]
 use crate::view::lanes;
 use crate::view::{fit, refit, refresh, update};
@@ -201,8 +201,22 @@ pub fn add(
                 Some(stream) if probed.fps == 0.0 => alone.unwrap_or(stream),
                 Some(stream) => stream,
             };
-            if audio.is_some() && guard.tracks.audio.len() <= track {
-                guard.tracks.audio.resize(track + 1, (36.0, false));
+            if let Some(stream) = audio {
+                if guard.tracks.audio.len() <= track {
+                    guard
+                        .tracks
+                        .audio
+                        .resize(track + 1, Track(36.0, false, None));
+                }
+                let title = &probed.tracks[stream];
+                // obs names tracks Track1, Track2
+                let number = title.strip_prefix("Track").unwrap_or_default();
+                let default =
+                    !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
+                let name = &mut guard.tracks.audio[track].2;
+                if name.is_none() && !title.is_empty() && !default {
+                    *name = Some(title.clone());
+                }
             }
             let entry = Entry {
                 saved: Saved {

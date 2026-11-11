@@ -4,7 +4,7 @@ use std::sync::Arc;
 use slint::{ComponentHandle, Model, VecModel};
 
 use crate::history::{record, revert};
-use crate::state::{Entry, Shared, State, lock};
+use crate::state::{Entry, Shared, State, Track, lock};
 use crate::view::{fit, lanes, layout, load, refit, refresh, select, selected};
 use crate::{App, Clip};
 
@@ -244,7 +244,7 @@ fn bands(state: &State) -> Vec<(bool, usize, f32, f32)> {
     let video = video.into_iter().zip(&state.tracks.video).enumerate();
     let audio = audio.into_iter().zip(&state.tracks.audio).enumerate();
     let video = video.map(|(track, (top, height))| (false, track, top, top + height));
-    let audio = audio.map(|(track, (top, (height, _)))| (true, track, top, top + height));
+    let audio = audio.map(|(index, (top, track))| (true, index, top, top + track.0));
     video.chain(audio).collect()
 }
 
@@ -872,7 +872,7 @@ pub fn wire(ui: &App, state: &Shared) {
             rows.set_row_data(other, row);
         }
         if state.tracks.audio.len() < sounds {
-            state.tracks.audio.resize(sounds, (36.0, false));
+            state.tracks.audio.resize(sounds, Track(36.0, false, None));
             lanes(&ui, &state);
         }
         layout(&ui, &mut state);
