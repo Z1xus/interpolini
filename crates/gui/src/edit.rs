@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use slint::{ComponentHandle, Model, VecModel};
 
+use crate::editor::left;
 use crate::history::{record, revert};
 use crate::state::{Entry, Shared, State, Track, lock};
 use crate::view::{fit, lanes, layout, load, refit, refresh, select, selected};
@@ -20,6 +21,7 @@ pub fn overwrite(ui: &App, state: &mut State, link: u64, moved: f64) {
         .filter(|entry| entry.link == link)
         .cloned()
         .collect();
+    let chosen = selected(ui).and_then(|index| state.entries.get(index).map(|entry| entry.id));
     // a video that is cut takes its sounds with it, on any track
     let under = |video: &&Entry| {
         let covers = |mover: &Entry| {
@@ -100,6 +102,11 @@ pub fn overwrite(ui: &App, state: &mut State, link: u64, moved: f64) {
                 ((row.cut_in, row.cut_out), f64::from(row.at));
             model.set_row_data(index, row);
         }
+    }
+    if let Some(id) = chosen {
+        let place = state.entries.iter().position(|entry| entry.id == id);
+        ui.set_selected(place.map_or(-1, |place| place as i32));
+        load(ui, state);
     }
     layout(ui, state);
 }
@@ -337,6 +344,9 @@ pub fn wire(ui: &App, state: &Shared) {
         let Some(ui) = weak.upgrade() else {
             return;
         };
+        if !left(&ui, &shared, move |ui| ui.invoke_extend(index)) {
+            return;
+        }
         let state = lock(&shared);
         let rows = ui.get_clips();
         let Some(link) = state.entries.get(index as usize).map(|entry| entry.link) else {
@@ -378,6 +388,14 @@ pub fn wire(ui: &App, state: &Shared) {
                 return;
             }
             drop(state);
+            let again = move |ui: &App| match (all, pull) {
+                (true, _) => ui.invoke_close_clips(),
+                (_, true) => ui.invoke_ripple_clip(),
+                _ => ui.invoke_remove_clip(),
+            };
+            if !left(&ui, &shared, again) {
+                return;
+            }
             let count = links.len();
             let now = move |ui: &App, shared: &Shared| {
                 let mut state = lock(shared);
@@ -426,6 +444,9 @@ pub fn wire(ui: &App, state: &Shared) {
         let Some(ui) = weak.upgrade() else {
             return;
         };
+        if !left(&ui, &shared, move |ui| ui.invoke_range(index)) {
+            return;
+        }
         let state = lock(&shared);
         let span = selected(&ui).and_then(|place| {
             let (anchor, clicked) = (
@@ -455,6 +476,9 @@ pub fn wire(ui: &App, state: &Shared) {
         let Some(ui) = weak.upgrade() else {
             return;
         };
+        if !left(&ui, &shared, move |ui| ui.invoke_select_track(audio, index)) {
+            return;
+        }
         let state = lock(&shared);
         let on_track =
             |entry: &&Entry| entry.audio.is_some() == audio && entry.track == index as usize;
@@ -487,6 +511,9 @@ pub fn wire(ui: &App, state: &Shared) {
         let Some(ui) = weak.upgrade() else {
             return;
         };
+        if !left(&ui, &shared, move |ui| ui.invoke_jump_clip(step)) {
+            return;
+        }
         let state = lock(&shared);
         let mut order: Vec<usize> = (0..state.entries.len()).collect();
         order.sort_by(|a, b| {
@@ -556,6 +583,9 @@ pub fn wire(ui: &App, state: &Shared) {
         let Some(ui) = weak.upgrade() else {
             return;
         };
+        if !left(&ui, &shared, |ui| ui.invoke_select_all()) {
+            return;
+        }
         let rows = ui.get_clips();
         for place in 0..rows.row_count() {
             if let Some(mut row) = rows.row_data(place).filter(|row| !row.picked) {
@@ -571,7 +601,9 @@ pub fn wire(ui: &App, state: &Shared) {
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_lasso_start(move |add| {
-        if let Some(ui) = weak.upgrade() {
+        if let Some(ui) = weak.upgrade()
+            && left(&ui, &shared, |_| {})
+        {
             let mut state = lock(&shared);
             state.lasso = if add { chosen(&ui, &state) } else { Vec::new() };
         }
@@ -579,7 +611,7 @@ pub fn wire(ui: &App, state: &Shared) {
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_lasso(move |from, to, top, bottom| {
-        let Some(ui) = weak.upgrade() else {
+        let Some(ui) = weak.upgrade().filter(|ui| ui.get_closing() != "leave") else {
             return;
         };
         let state = lock(&shared);
@@ -606,7 +638,7 @@ pub fn wire(ui: &App, state: &Shared) {
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_lasso_end(move || {
-        let Some(ui) = weak.upgrade() else {
+        let Some(ui) = weak.upgrade().filter(|ui| ui.get_closing() != "leave") else {
             return;
         };
         let rows = ui.get_clips();
@@ -711,6 +743,7 @@ pub fn wire(ui: &App, state: &Shared) {
             room.1 = room.1.min(after - end).min(cut.1 * entry.length());
         }
         let room = (room.0.max(0.0) as f32, room.1.max(0.0) as f32);
+        let chosen = selected(&ui).and_then(|index| state.entries.get(index).map(|entry| entry.id));
         record(&ui, &mut state, false);
         let first = state.ids + 1;
         for index in targets.into_iter().rev() {
@@ -766,6 +799,11 @@ pub fn wire(ui: &App, state: &Shared) {
             .map(|entry| entry.id.max(entry.link))
             .max()
             .unwrap_or(0);
+        if let Some(place) =
+            chosen.and_then(|id| state.entries.iter().position(|entry| entry.id == id))
+        {
+            ui.set_selected(place as i32);
+        }
         drop(state);
         fit(&ui, &shared);
         let span = lock(&shared).span.max(0.001);
@@ -777,7 +815,8 @@ pub fn wire(ui: &App, state: &Shared) {
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_grab(move |index, time, alone| {
         let mut state = lock(&shared);
-        let Some(ui) = weak.upgrade() else {
+        // a click that asks about the mask does not drag the clip
+        let Some(ui) = weak.upgrade().filter(|ui| ui.get_closing() != "leave") else {
             return;
         };
         // with alt the clip leaves the other clips of its file, and moves and cuts on its own

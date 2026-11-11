@@ -678,7 +678,7 @@ pub fn path(directory: &Path, name: &str) -> PathBuf {
     }
 }
 
-fn scan(directory: &Path, local: bool) -> Vec<Entry> {
+pub fn scan(directory: &Path, local: bool) -> Vec<Entry> {
     let files = std::fs::read_dir(directory).into_iter().flatten().flatten();
     let mut entries: Vec<Entry> = files
         .filter_map(|file| {

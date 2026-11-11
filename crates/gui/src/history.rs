@@ -20,6 +20,7 @@ struct Moment {
 struct History {
     undo: Vec<Moment>,
     redo: Vec<Moment>,
+    cleared: Vec<Moment>,
     recorded: Instant,
 }
 
@@ -28,6 +29,7 @@ thread_local! {
     static HISTORY: RefCell<History> = RefCell::new(History {
         undo: Vec::new(),
         redo: Vec::new(),
+        cleared: Vec::new(),
         recorded: Instant::now(),
     });
 }
@@ -52,7 +54,7 @@ pub fn record(ui: &App, state: &mut State, gesture: bool) {
             return;
         }
         history.undo.push(moment(ui, state));
-        history.redo.clear();
+        history.cleared = std::mem::take(&mut history.redo);
         if history.undo.len() > 200 {
             history.undo.remove(0);
         }
@@ -63,6 +65,31 @@ pub fn clear() {
     HISTORY.with_borrow_mut(|history| {
         history.undo.clear();
         history.redo.clear();
+        history.cleared.clear();
+    });
+}
+
+pub fn recorded() -> Instant {
+    HISTORY.with_borrow(|history| history.recorded)
+}
+
+pub fn forget() {
+    HISTORY.with_borrow_mut(|history| {
+        history.undo.pop();
+        history.redo = std::mem::take(&mut history.cleared);
+    });
+}
+
+pub fn amend(change: impl Fn(&mut Entry)) {
+    HISTORY.with_borrow_mut(|history| {
+        let moments = history
+            .undo
+            .iter_mut()
+            .chain(&mut history.redo)
+            .chain(&mut history.cleared);
+        moments
+            .flat_map(|moment| &mut moment.entries)
+            .for_each(change);
     });
 }
 
@@ -118,7 +145,9 @@ pub fn wire(ui: &App, state: &Shared) {
     for back in [true, false] {
         let (weak, shared) = (ui.as_weak(), Arc::clone(state));
         let travel = move || {
-            if let Some(ui) = weak.upgrade() {
+            if let Some(ui) = weak.upgrade()
+                && !crate::editor::travel(&ui, &shared, back)
+            {
                 travel(&ui, &shared, back);
             }
         };

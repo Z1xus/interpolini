@@ -253,7 +253,9 @@ fn render(ui: &App, shared: &Shared) {
 pub fn wire(ui: &App, state: &Shared) {
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_render(move || {
-        if let Some(ui) = weak.upgrade() {
+        if let Some(ui) = weak.upgrade()
+            && crate::editor::left(&ui, &shared, |ui| ui.invoke_render())
+        {
             render(&ui, &shared);
         }
     });

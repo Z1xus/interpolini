@@ -1,8 +1,8 @@
 import { Button, Keyboard, Modal, Piece, Popups, Theme, Tip } from "widgets.slint";
-import { Clip, Family, Ghost, Lane, Mode, Munch, Note, Prefs, Recent, Sections, Settings } from "types.slint";
+import { Clip, Family, Ghost, Lane, Masks, Mode, Munch, Note, Prefs, Recent, Sections, Settings } from "types.slint";
 import { Timeline } from "timeline.slint";
 import { Menu } from "menu.slint";
-import { Code, Masks, Panel } from "panel.slint";
+import { Code, Panel } from "panel.slint";
 import { Sheet } from "sheet.slint";
 import { Preferences } from "preferences.slint";
 import { ProjectSettings } from "project.slint";
@@ -157,6 +157,7 @@ export component App inherits Window {
     callback resized();
     callback close-gaps();
     callback changed();
+    callback rescope(string);
     pure callback effort-tip(Settings, string, bool) -> string;
     // the encoders of this system are known, so the effort tips can name the one in use
     in property <bool> encoders-found;
@@ -298,12 +299,37 @@ export component App inherits Window {
                 keys.focus();
                 return accept;
             }
+            if Masks.editing && !event.modifiers.control && !event.modifiers.alt {
+                if event.text == Key.Escape {
+                    Masks.leave();
+                    return accept;
+                }
+                if event.text == "[" || event.text == "]" {
+                    Masks.size = clamp(event.text == "[" ? min(Masks.size - 1, round(Masks.size * 0.8)) : max(Masks.size + 1, round(Masks.size * 1.25)), 1, Masks.brush-max);
+                    return accept;
+                }
+                if event.text == "b" || event.text == "r" || event.text == "o" {
+                    Masks.tool = event.text == "b" ? "brush" : event.text == "r" ? "box" : "ellipse";
+                    return accept;
+                }
+                if event.text == "e" || event.text == "x" {
+                    Masks.mode = Masks.mode == "paint" ? "erase" : "paint";
+                    return accept;
+                }
+                if !(event.text == " " || event.text == "k" || event.text == "j" || event.text == "l" || event.text == "`" || event.text == "m" || event.text == Key.LeftArrow || event.text == Key.RightArrow || event.text == Key.UpArrow || event.text == Key.DownArrow || event.text == Key.Home || event.text == Key.End) {
+                    return reject;
+                }
+            }
             if event.text == Key.F10 && !event.modifiers.shift {
                 menu.open-file();
                 return accept;
             }
             if (event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift)) && root.clips.length > 0 {
                 timeline.open-selected();
+                return accept;
+            }
+            if Masks.editing && event.modifiers.control && event.text == "i" {
+                Masks.invert();
                 return accept;
             }
             if event.modifiers.control && (event.text == "y" || event.text == "Z" || (event.text == "z" && event.modifiers.shift)) {
@@ -544,7 +570,6 @@ export component App inherits Window {
                     clips <=> root.clips;
                     preview: root.preview;
                     original: root.original;
-                    mask: Masks.hover;
                     view <=> root.view;
                     copying: root.copying;
                     off <=> root.preview-off;
@@ -858,6 +883,9 @@ export component App inherits Window {
                 changed => {
                     root.changed();
                 }
+                rescope(scope) => {
+                    root.rescope(scope);
+                }
                 choose-lut => {
                     root.choose-lut();
                 }
@@ -967,7 +995,7 @@ export component App inherits Window {
                         }
                         HorizontalLayout {
                             spacing: 8px;
-                            if root.closing == "save" || root.closing == "project" || root.closing == "switch" || root.closing == "recover": Button {
+                            if root.closing == "save" || root.closing == "project" || root.closing == "switch" || root.closing == "recover" || root.closing == "mask" || root.closing == "leave": Button {
                                 height: 26px;
                                 top: true;
                                 text: root.closing == "recover" ? "Discard" : "Don't save";

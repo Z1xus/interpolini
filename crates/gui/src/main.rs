@@ -5,6 +5,7 @@ mod components;
 #[cfg(target_os = "linux")]
 mod drop;
 mod edit;
+mod editor;
 mod estimate;
 mod ffmpeg;
 mod file;
@@ -41,7 +42,7 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("COMMIT"), "
 
 // the system is asked on another thread, the answers take a moment
 fn details(ui: &App, state: &Shared) -> impl FnOnce() -> String + Send + use<> {
-    let config = lock(state).current(ui).config.to_ini();
+    let config = editor::settled(&lock(state).current(ui).config).to_ini();
     let (status, clip, log) = (ui.get_status(), ui.get_details(), ui.get_log());
     move || {
         let about = interpolini_core::about();
@@ -172,6 +173,16 @@ fn main() -> Result<(), slint::PlatformError> {
             ("Show the original", "Hold `"),
             ("Stretch", "Shift drag an edge"),
             ("Save the frame", "Ctrl Shift E"),
+            ("Mask editor", ""),
+            ("Erase", "Right drag, Alt drag"),
+            ("Paint or erase", "X, E"),
+            ("Brush, box, ellipse", "B, R, O"),
+            ("Brush size", "[, ]"),
+            ("Straight line", "Shift click"),
+            ("Square or circle", "Shift drag"),
+            ("Invert", "Ctrl I"),
+            ("Zoom, move the view", "Wheel, Middle drag"),
+            ("Cancel", "Esc"),
         ],
         &[
             ("Selection", ""),
@@ -302,7 +313,10 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(&state));
     ui.on_select(move |index| {
-        if let Some(ui) = weak.upgrade() {
+        if let Some(ui) = weak.upgrade()
+            && (index == ui.get_selected()
+                || editor::left(&ui, &shared, move |ui| ui.invoke_select(index)))
+        {
             select(&ui, &shared, index);
         }
     });
@@ -317,6 +331,10 @@ fn main() -> Result<(), slint::PlatformError> {
     let (weak, shared) = (ui.as_weak(), Arc::clone(&state));
     ui.on_moded(move || {
         if let Some(ui) = weak.upgrade() {
+            let mode = ui.get_mode();
+            if mode != Mode::Render && !editor::left(&ui, &shared, move |ui| ui.set_mode(mode)) {
+                return ui.set_mode(Mode::Render);
+            }
             ui.set_transform(false);
             ui.set_playing(false);
             view::refresh(&ui, &shared);
@@ -333,14 +351,16 @@ fn main() -> Result<(), slint::PlatformError> {
     history::wire(&ui, &state);
     render::wire(&ui, &state);
     masks::wire(&ui, &state);
+    editor::wire(&ui, &state);
     project::wire(&ui, &state);
     project::recents(&ui);
     project::schedule(&ui, &state);
 
-    const QUESTIONS: [&str; 3] = ["render", "save", "project"];
+    const QUESTIONS: [&str; 4] = ["render", "mask", "save", "project"];
     let question = |ui: &App, from: usize| {
         let open = |name: &str| match name {
             "render" => ui.get_rendering(),
+            "mask" => editor::unsaved(),
             "save" => ui.get_unsaved(),
             _ => project::asks(ui),
         };
@@ -350,9 +370,13 @@ fn main() -> Result<(), slint::PlatformError> {
             .copied()
             .unwrap_or("")
     };
-    let weak = ui.as_weak();
+    let (weak, shared) = (ui.as_weak(), Arc::clone(&state));
     let close = move || {
         weak.upgrade().is_none_or(|ui| {
+            // else the draft name stays in the settings
+            if !editor::unsaved() {
+                editor::close(&ui, &shared, false);
+            }
             let ask = question(&ui, 0);
             project::question(&ui, ask);
             if ask.is_empty() {
@@ -381,6 +405,13 @@ fn main() -> Result<(), slint::PlatformError> {
             return project::answer(&ui, &shared, save);
         };
         match current.as_str() {
+            "mask" => {
+                editor::close(&ui, &shared, save);
+                if editor::unsaved() {
+                    ui.set_closing("".into());
+                    return;
+                }
+            }
             "save" if save => {
                 settings::save(&ui, &shared, None);
                 if ui.get_failed() {

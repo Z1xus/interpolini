@@ -1,5 +1,5 @@
 import { Action, Art, Button, FileButtons, Focus, Icon, IconButton, Icons, MenuItem, MenuPopup, Piece, Popups, Tabs, Theme } from "widgets.slint";
-import { Clip, Note } from "types.slint";
+import { Clip, Masks, Note } from "types.slint";
 import { Frame } from "frame.slint";
 
 struct Tip {
@@ -15,7 +15,6 @@ component Pane inherits Rectangle {
     in property <float> scale;
     in property <length> pan-x;
     in property <length> pan-y;
-    in property <image> mask;
     clip: true;
     Image {
         x: (parent.width - self.width) / 2 + root.pan-x;
@@ -28,17 +27,58 @@ component Pane inherits Rectangle {
         accessible-role: image;
         accessible-label: "Preview, " + root.name;
     }
-    if root.mask.width > 0: Image {
-        property <float> ratio: root.source.width / max(1, root.source.height);
-        width: min(parent.width, parent.height * self.ratio) * root.scale;
-        height: self.width / self.ratio;
-        x: (parent.width - self.width) / 2 + root.pan-x;
-        y: (parent.height - self.height) / 2 + root.pan-y;
-        source: root.mask;
-        image-fit: fill;
-        colorize: Theme.accent;
-        opacity: 0.6;
-        accessible-role: none;
+}
+
+component Tint inherits Rectangle {
+    in property <Clip> item;
+    in property <length> box-x;
+    in property <length> box-y;
+    in property <length> box-width;
+    in property <length> box-height;
+    in property <image> picture;
+    property <length> left: max(0, root.box-x + root.item.crop-left * root.box-width);
+    property <length> top: max(0, root.box-y + root.item.crop-top * root.box-height);
+    property <length> right: min(root.width, root.box-x + (1 - root.item.crop-right) * root.box-width);
+    property <length> bottom: min(root.height, root.box-y + (1 - root.item.crop-bottom) * root.box-height);
+    Rectangle {
+        x: root.left;
+        y: root.top;
+        width: max(0, root.right - root.left);
+        height: max(0, root.bottom - root.top);
+        clip: true;
+        opacity: 0.5;
+        tiles := Rectangle {
+            x: root.box-x - root.left;
+            y: root.box-y - root.top;
+            width: root.box-width;
+            height: root.box-height;
+            // whole pixels, else seams show between tiles
+            pure function edge-x(column: int) -> length {
+                round((self.absolute-position.x + column * self.width / Masks.width) / 1phx) * 1phx - self.absolute-position.x
+            }
+            pure function edge-y(row: int) -> length {
+                round((self.absolute-position.y + row * self.height / Masks.height) / 1phx) * 1phx - self.absolute-position.y
+            }
+            if root.picture.width > 0: Image {
+                width: tiles.width;
+                height: tiles.height;
+                source: root.picture;
+                image-fit: fill;
+                colorize: Theme.accent;
+                accessible-role: none;
+            }
+            for tile in Masks.tiles: Image {
+                x: tiles.edge-x(tile.x);
+                y: tiles.edge-y(tile.y);
+                width: tiles.edge-x(tile.x + tile.width) - self.x;
+                height: tiles.edge-y(tile.y + tile.height) - self.y;
+                source: tile.picture;
+                image-fit: fill;
+                image-rendering: pixelated;
+                colorize: Theme.accent;
+                accessible-role: none;
+            }
+        }
     }
 }
 
@@ -59,7 +99,6 @@ export component Stage inherits Rectangle {
     in-out property <[Clip]> clips;
     in property <image> preview;
     in property <image> original;
-    in property <image> mask;
     in-out property <string> view;
     in property <bool> held;
     in property <float> zoom: 1;
@@ -152,6 +191,18 @@ export component Stage inherits Rectangle {
     property <float> ratio: root.preview.height > 0 ? root.preview.width / root.preview.height : 16 / 9;
     property <length> strip: root.clips.length > 0 ? 30px : 0px;
     property <length> wide: min(pane, (root.height - root.strip) * ratio) * root.scale;
+    property <bool> masked: Masks.clip >= 0 && Masks.clip < root.clips.length && !root.copying && !root.off;
+    // the paint area can go away in the middle of a stroke
+    changed masked => {
+        if !self.masked {
+            Masks.done();
+        }
+    }
+    property <Clip> target: root.clips[max(0, Masks.clip)];
+    property <length> box-width: (root.target.ratio > root.ratio ? 1 : root.target.ratio / root.ratio) * root.target.zoom-x * root.wide;
+    property <length> box-height: (root.target.ratio > root.ratio ? root.ratio / root.target.ratio : 1) * root.target.zoom-y * root.wide / root.ratio;
+    property <length> box-x: (root.pane - root.wide) / 2 + root.pan-x + (0.5 + root.target.x) * root.wide - root.box-width / 2;
+    property <length> box-y: (root.height - root.strip - root.wide / root.ratio) / 2 + root.pan-y + (0.5 + root.target.y) * root.wide / root.ratio - root.box-height / 2;
     property <float> divide: 0.5;
     property <float> next;
     out property <length> drawn: wide;
@@ -238,7 +289,6 @@ export component Stage inherits Rectangle {
             scale: root.scale;
             pan-x: root.pan-x;
             pan-y: root.pan-y;
-            mask: root.mask;
         }
         if root.shown == "split": Rectangle {
             x: line;
@@ -252,7 +302,6 @@ export component Stage inherits Rectangle {
                 scale: root.scale;
                 pan-x: root.pan-x;
                 pan-y: root.pan-y;
-                mask: root.mask;
             }
         }
         if root.shown == "side": Rectangle {
@@ -268,7 +317,17 @@ export component Stage inherits Rectangle {
             scale: root.scale;
             pan-x: root.pan-x;
             pan-y: root.pan-y;
-            mask: root.mask;
+        }
+        for side in root.shown == "side" ? 2 : 1: Tint {
+            x: side * (root.pane + 1px);
+            width: root.pane;
+            visible: root.masked && (Masks.editing || Masks.hover.width > 0);
+            item: root.target;
+            box-x: root.box-x;
+            box-y: root.box-y;
+            box-width: root.box-width;
+            box-height: root.box-height;
+            picture: Masks.hover;
         }
         if (root.held && !root.copying && !root.off) || root.shown == "split" || root.shown == "side": Tag {
             x: 8px;
@@ -311,6 +370,121 @@ export component Stage inherits Rectangle {
                 root.pan-y = 0;
                 root.viewed();
             }
+            if root.masked && Masks.editing: paint := TouchArea {
+                mouse-cursor: crosshair;
+                property <bool> down;
+                property <PointerEventButton> button;
+                property <bool> erasing;
+                property <length> side;
+                property <float> start-x;
+                property <float> start-y;
+                property <length> from-x: self.side + root.box-x + self.start-x * root.box-width / Masks.width;
+                property <length> from-y: root.box-y + self.start-y * root.box-height / Masks.height;
+                property <bool> shift;
+                property <length> reach: max(abs(self.mouse-x - self.from-x), abs(self.mouse-y - self.from-y));
+                property <length> to-x: !self.shift ? self.mouse-x : self.from-x + (self.mouse-x < self.from-x ? -self.reach : self.reach);
+                property <length> to-y: !self.shift ? self.mouse-y : self.from-y + (self.mouse-y < self.from-y ? -self.reach : self.reach);
+                property <bool> drawn;
+                property <float> last-x;
+                property <float> last-y;
+                property <string> began;
+                property <string> tool: self.down ? self.began : Masks.tool;
+                property <bool> brush: self.tool == "brush";
+                pure function mask-x(x: length) -> float {
+                    (x - self.side - root.box-x) / root.box-width * Masks.width
+                }
+                pure function mask-y(y: length) -> float {
+                    (y - root.box-y) / root.box-height * Masks.height
+                }
+                // the wheel comes here while a button is down
+                scroll-event(event) => {
+                    zoom(mod(self.mouse-x, root.pane + 1px) - root.pane / 2, self.mouse-y - self.height / 2, event.delta-y > 0);
+                    accept
+                }
+                function dab(first: bool) {
+                    self.last-x = mask-x(self.mouse-x);
+                    self.last-y = mask-y(self.mouse-y);
+                    self.drawn = true;
+                    Masks.stroke(self.last-x, self.last-y, self.erasing, first);
+                }
+                pointer-event(event) => {
+                    self.shift = event.modifiers.shift;
+                    if event.button == PointerEventButton.middle || (event.kind == PointerEventKind.move && !self.down) {
+                        pan(event, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, false);
+                    } else if event.kind == PointerEventKind.down && !self.down && (event.button == PointerEventButton.left || event.button == PointerEventButton.right) {
+                        self.began = Masks.tool;
+                        self.down = true;
+                        self.button = event.button;
+                        self.erasing = ((event.button == PointerEventButton.right) != (Masks.mode == "erase")) != event.modifiers.alt;
+                        self.side = root.shown == "side" && self.mouse-x > root.pane ? root.pane + 1px : 0;
+                        self.start-x = mask-x(self.mouse-x);
+                        self.start-y = mask-y(self.mouse-y);
+                        if self.brush && self.shift && self.drawn {
+                            Masks.stroke(self.last-x, self.last-y, self.erasing, true);
+                            self.dab(false);
+                        } else if self.brush {
+                            self.dab(true);
+                        }
+                    } else if event.kind == PointerEventKind.move && self.down && self.brush {
+                        self.dab(false);
+                    } else if self.down && (event.kind == PointerEventKind.cancel || (event.kind == PointerEventKind.up && event.button == self.button)) {
+                        self.finish();
+                    }
+                }
+                function finish() {
+                    if !self.brush {
+                        Masks.shape(self.start-x, self.start-y, mask-x(self.to-x), mask-y(self.to-y), self.erasing, self.tool == "ellipse");
+                    }
+                    self.down = false;
+                    Masks.done();
+                }
+                // the release of another button ends the grab
+                changed has-hover => {
+                    if !self.has-hover && self.down {
+                        self.finish();
+                    }
+                }
+                if self.down && !self.brush: Rectangle {
+                    x: min(paint.from-x, paint.to-x);
+                    y: min(paint.from-y, paint.to-y);
+                    width: abs(paint.to-x - paint.from-x);
+                    height: abs(paint.to-y - paint.from-y);
+                    if paint.tool == "box": Rectangle {
+                        background: paint.erasing ? Theme.void.with-alpha(0.5) : Theme.accent.with-alpha(0.5);
+                        border-width: 1px;
+                        border-color: Theme.ink;
+                    }
+                    if paint.tool == "ellipse" && paint.mouse-x != paint.from-x && paint.mouse-y != paint.from-y: Path {
+                        // a path keeps the ratio of its viewbox
+                        property <float> wide: self.width / 1px;
+                        property <float> high: self.height / 1px;
+                        viewbox-width: self.wide;
+                        viewbox-height: self.high;
+                        commands: "M0 \{self.high / 2}A\{self.wide / 2} \{self.high / 2} 0 0 0 \{self.wide} \{self.high / 2}A\{self.wide / 2} \{self.high / 2} 0 0 0 0 \{self.high / 2}Z";
+                        fill: paint.erasing ? Theme.void.with-alpha(0.5) : Theme.accent.with-alpha(0.5);
+                        stroke: Theme.ink;
+                        stroke-width: 1px;
+                    }
+                }
+                if self.brush && self.has-hover: Rectangle {
+                    x: paint.mouse-x - self.width / 2;
+                    y: paint.mouse-y - self.height / 2;
+                    width: max(4px, Masks.size * root.box-width / Masks.width);
+                    height: max(4px, Masks.size * root.box-height / Masks.height);
+                    border-radius: min(self.width, self.height) / 2;
+                    border-width: 1px;
+                    border-color: Theme.ink;
+                    Rectangle {
+                        border-radius: min(self.width, self.height) / 2;
+                        x: 1px;
+                        y: 1px;
+                        width: parent.width - 2px;
+                        height: parent.height - 2px;
+                        border-width: 1px;
+                        border-color: Theme.void;
+                    }
+                }
+            }
             // the line and the box are in the touch area, so the wheel over them still zooms the preview
             if root.shown == "split": Rectangle {
                 x: line - 5px;
@@ -335,7 +509,7 @@ export component Stage inherits Rectangle {
                     }
                 }
             }
-            if root.transform && root.shown != "side" && !root.off && root.framed >= 0 && root.framed < root.clips.length && now >= framed.at - 0.001 && now <= framed.at + framed.kept: Frame {
+            if root.transform && !Masks.editing && root.shown != "side" && !root.off && root.framed >= 0 && root.framed < root.clips.length && now >= framed.at - 0.001 && now <= framed.at + framed.kept: Frame {
                 x: (parent.width - self.width) / 2 + root.pan-x;
                 y: (parent.height - self.height) / 2 + root.pan-y;
                 width: wide;

@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::{ffi, frame};
@@ -8,6 +9,7 @@ use crate::compose::Scaler;
 use crate::config;
 use crate::decode::Decoder;
 
+#[derive(Clone)]
 pub struct Gray {
     pub width: u32,
     pub height: u32,
@@ -37,8 +39,23 @@ fn full(picture: &mut frame::Video) {
     unsafe { (*picture.as_mut_ptr()).color_range = ffi::AVColorRange::AVCOL_RANGE_JPEG };
 }
 
+static HELD: Mutex<Option<(String, Gray)>> = Mutex::new(None);
+
+pub fn hold(draft: Option<(String, Gray)>) {
+    *HELD.lock().unwrap_or_else(|poison| poison.into_inner()) = draft;
+}
+
 pub fn load(name: &str) -> Result<Gray> {
-    let mut source = Decoder::open(&path(name))?.first()?;
+    if let Some((held, gray)) = &*HELD.lock().unwrap_or_else(|poison| poison.into_inner())
+        && held == name
+    {
+        return Ok(gray.clone());
+    }
+    read(&path(name))
+}
+
+pub fn read(file: &Path) -> Result<Gray> {
+    let mut source = Decoder::open(file)?.first()?;
     full(&mut source);
     let (width, height) = (source.width(), source.height());
     let mut rgba = frame::Video::new(Pixel::RGBA, width, height);

@@ -176,3 +176,54 @@ export struct Prefs {
     scrolling: string,
     secret: bool,
 }
+
+export struct MaskTile {
+    name: string,
+    path: string,
+    picture: image,
+}
+
+export struct Tile {
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    picture: image,
+}
+
+export global Masks {
+    in property <[MaskTile]> list;
+    in property <image> hover;
+    // -1 when the clip is not at the playhead
+    in property <int> clip: -1;
+    in property <bool> editing;
+    in property <bool> undoable;
+    in property <bool> redoable;
+    in property <int> width;
+    in property <int> height;
+    in property <[Tile]> tiles;
+    in property <string> opened;
+    in-out property <string> name;
+    in-out property <string> tool: "brush";
+    in-out property <string> mode: "paint";
+    in-out property <float> size: 40;
+    out property <float> brush-max: max(100, round(self.height / 4));
+    callback scan();
+    callback show(string);
+    callback add();
+    callback remove(string);
+    callback rename(string, string);
+    callback duplicate(string);
+    pure callback found([MaskTile], string) -> bool;
+    callback draw();
+    callback edit(string);
+    callback stroke(x: float, y: float, erase: bool, first: bool);
+    callback shape(x0: float, y0: float, x1: float, y1: float, erase: bool, ellipse: bool);
+    callback done();
+    callback undo();
+    callback redo();
+    callback clear();
+    callback invert();
+    callback save();
+    callback leave();
+}

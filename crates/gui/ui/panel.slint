@@ -1,5 +1,5 @@
 import { Action, Button, Dropdown, Field, FileButtons, Focus, Icon, Icons, Label, MenuItem, MenuPopup, Note, Number, Popups, Row, Scroll, Section, Segment, SliderRow, Switch, Theme } from "widgets.slint";
-import { Clip, Mode, Munch, Sections, Settings } from "types.slint";
+import { Clip, Masks, MaskTile, Mode, Munch, Sections, Settings } from "types.slint";
 
 component Curve inherits Rectangle {
     in property <[float]> weights;
@@ -44,25 +44,12 @@ export global Code {
     callback apply(string);
 }
 
-export struct MaskTile {
-    name: string,
-    path: string,
-    picture: image,
-}
-
-export global Masks {
-    in property <[MaskTile]> list;
-    in-out property <image> hover;
-    callback scan();
-    callback add();
-    callback remove(string);
-    pure callback found([MaskTile], string) -> bool;
-}
-
 component MaskGrid inherits Rectangle {
     in property <string> chosen;
+    in-out property <string> renaming;
     callback choose(string);
     callback menu(MaskTile, length, length);
+    callback add(length, length);
     property <int> columns: 3;
     property <length> gap: 8px;
     property <length> tile: (self.width - (self.columns - 1) * self.gap) / self.columns;
@@ -118,7 +105,7 @@ component MaskGrid inherits Rectangle {
                 accessible-role: none;
             }
         }
-        Text {
+        if root.renaming != mask.name: Text {
             y: root.picture + 4px;
             width: root.tile;
             height: 14px;
@@ -134,12 +121,43 @@ component MaskGrid inherits Rectangle {
             clicked => {
                 root.choose(mask.name);
             }
+            double-clicked => {
+                Masks.edit(mask.name);
+            }
             changed has-hover => {
-                Masks.hover = self.has-hover ? mask.picture : @image-url("");
+                Masks.show(self.has-hover ? mask.name : "");
             }
             pointer-event(event) => {
                 if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                     root.menu(mask, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+        }
+        if root.renaming == mask.name: FocusScope {
+            y: root.picture + 2px;
+            height: 18px;
+            focus-on-click: false;
+            focus-on-tab-navigation: false;
+            // escape takes the focus and accepts the text
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    field.text = mask.name;
+                }
+                reject
+            }
+            field := Field {
+                label: "Mask name";
+                text: mask.name;
+                init => {
+                    self.focus();
+                    self.select-all();
+                }
+                accepted(name) => {
+                    // a lost focus can accept twice
+                    if root.renaming == mask.name {
+                        root.renaming = "";
+                        Masks.rename(mask.name, name);
+                    }
                 }
             }
         }
@@ -154,12 +172,15 @@ component MaskGrid inherits Rectangle {
         background: add.has-hover ? Theme.raised : transparent;
         accessible-role: button;
         accessible-label: "Add mask";
+        function open() {
+            root.add(self.absolute-position.x, self.absolute-position.y + self.height);
+        }
         accessible-action-default => {
-            Masks.add();
+            self.open();
         }
         Focus {
             activate => {
-                Masks.add();
+                parent.open();
             }
         }
         HorizontalLayout {
@@ -183,7 +204,7 @@ component MaskGrid inherits Rectangle {
         add := TouchArea {
             mouse-cursor: pointer;
             clicked => {
-                Masks.add();
+                root.add(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
             }
         }
     }
@@ -274,6 +295,7 @@ export component Panel inherits Rectangle {
     in property <bool> encoders-found;
     callback choose-lut();
     callback choose-config(string);
+    callback rescope(string);
     callback save-config();
     callback new-config(string);
     callback delete-config();
@@ -290,19 +312,20 @@ export component Panel inherits Rectangle {
     }
     Timer {
         interval: 1s;
-        running: root.gallery;
+        running: root.gallery && !Masks.editing;
         triggered => {
             Masks.scan();
         }
     }
     public pure function over-masks(x: length, y: length) -> bool {
-        root.gallery && x >= masking.absolute-position.x && x < masking.absolute-position.x + masking.width && y >= max(masking.absolute-position.y, scroll.absolute-position.y) && y < min(masking.absolute-position.y + masking.height, scroll.absolute-position.y + scroll.height)
+        root.gallery && !Masks.editing && x >= masking.absolute-position.x && x < masking.absolute-position.x + masking.width && y >= max(masking.absolute-position.y, scroll.absolute-position.y) && y < min(masking.absolute-position.y + masking.height, scroll.absolute-position.y + scroll.height)
     }
     property <MaskTile> menu-mask;
     property <length> menu-x;
     property <length> menu-y;
     property <bool> deleting;
-    property <bool> menu-shown: mask-menu.is-open;
+    property <string> renaming;
+    property <bool> menu-shown: mask-menu.is-open || add-menu.is-open;
     changed menu-shown => {
         Popups.open += self.menu-shown ? 1 : -1;
     }
@@ -313,10 +336,52 @@ export component Panel inherits Rectangle {
             root.deleting = false;
         }
     }
+    add-menu := MenuPopup {
+        x: root.menu-x;
+        y: root.menu-y;
+        close-policy: close-on-click-outside;
+        MenuItem {
+            text: "Draw on the clip";
+            enabled: root.videos > 0;
+            clicked => {
+                Masks.draw();
+                add-menu.close();
+            }
+        }
+        MenuItem {
+            text: "Import an image…";
+            clicked => {
+                Masks.add();
+                add-menu.close();
+            }
+        }
+    }
     mask-menu := MenuPopup {
         x: root.menu-x;
         y: root.menu-y;
         close-policy: close-on-click-outside;
+        MenuItem {
+            text: "Edit";
+            enabled: root.videos > 0;
+            clicked => {
+                Masks.edit(root.menu-mask.name);
+                mask-menu.close();
+            }
+        }
+        MenuItem {
+            text: "Rename";
+            clicked => {
+                root.renaming = root.menu-mask.name;
+                mask-menu.close();
+            }
+        }
+        MenuItem {
+            text: "Duplicate";
+            clicked => {
+                Masks.duplicate(root.menu-mask.name);
+                mask-menu.close();
+            }
+        }
         MenuItem {
             text: "Show in folder";
             clicked => {
@@ -620,17 +685,22 @@ export component Panel inherits Rectangle {
             padding-top: 3px;
             padding-bottom: 3px;
             spacing: 10px;
+            // a refused rescope keeps the old scope
+            property <string> shown: root.selected < 0 ? "all clips" : root.scope;
+            changed shown => {
+                chooser.value = self.shown;
+            }
             Label {
                 horizontal-stretch: 1;
                 text: "Settings for";
             }
-            Segment {
+            chooser := Segment {
                 label: "Settings scope";
                 options: root.selected < 0 ? ["all clips"] : ["all clips", "this clip"];
-                value: root.selected < 0 ? "all clips" : root.scope;
+                value: parent.shown;
                 changed(value) => {
-                    root.scope = value;
-                    root.changed();
+                    self.value = parent.shown;
+                    root.rescope(value);
                 }
             }
         }
@@ -918,7 +988,7 @@ export component Panel inherits Rectangle {
                 toggled => {
                     root.changed();
                 }
-                Row {
+                if !Masks.editing: Row {
                     label: "Method";
                     Segment {
                         label: "Masking method";
@@ -942,21 +1012,110 @@ export component Panel inherits Rectangle {
                         root.changed();
                     }
                 }
-                if masking.image: Note {
+                property <bool> gallery: masking.image && !Masks.editing;
+                changed gallery => {
+                    if !self.gallery {
+                        Masks.show("");
+                    }
+                }
+                if masking.gallery: Note {
                     text: "Keeps the original frame in the parts that you mark.";
                 }
-                if masking.image && root.settings.mask-image != "" && !Masks.found(Masks.list, root.settings.mask-image): Need {
+                if masking.gallery && root.settings.mask-image != "" && !Masks.found(Masks.list, root.settings.mask-image): Need {
                     text: "\"\{root.settings.mask-image}\" isn't in the masks folder.";
                 }
+                if Masks.editing: VerticalLayout {
+                    Note {
+                        text: "Paint the parts that keep the original frame.";
+                    }
+                    Row {
+                        label: "Name";
+                        Field {
+                            label: "Mask name";
+                            placeholder: "Name";
+                            text <=> Masks.name;
+                            commit: false;
+                        }
+                    }
+                    if Masks.name != Masks.opened && Masks.found(Masks.list, Masks.name): Need {
+                        text: "\"\{Masks.name}\" exists. Save replaces it.";
+                    }
+                    Row {
+                        label: "Tool";
+                        Segment {
+                            label: "Mask tool";
+                            options: ["brush", "box", "ellipse"];
+                            tips: ["Brush", "Box", "Ellipse"];
+                            shortcuts: ["B", "R", "O"];
+                            value <=> Masks.tool;
+                        }
+                    }
+                    Row {
+                        label: "Mode";
+                        Segment {
+                            label: "Paint mode";
+                            options: ["paint", "erase"];
+                            tips: ["Paint", "Erase"];
+                            shortcuts: ["X", "X"];
+                            value <=> Masks.mode;
+                        }
+                    }
+                    if Masks.tool == "brush": SliderRow {
+                        label: "Size";
+                        minimum: 1;
+                        maximum: Masks.brush-max;
+                        step: 1;
+                        value <=> Masks.size;
+                    }
+                    Row {
+                        label: "";
+                        spacing: 14px;
+                        Action {
+                            text: "Undo";
+                            keys: ["Ctrl Z"];
+                            enabled: Masks.undoable;
+                            clicked => {
+                                Masks.undo();
+                            }
+                        }
+                        Action {
+                            text: "Redo";
+                            keys: ["Ctrl Shift Z"];
+                            enabled: Masks.redoable;
+                            clicked => {
+                                Masks.redo();
+                            }
+                        }
+                        Action {
+                            text: "Clear";
+                            accessible: "Clear mask";
+                            clicked => {
+                                Masks.clear();
+                            }
+                        }
+                        Action {
+                            text: "Invert";
+                            keys: ["Ctrl I"];
+                            clicked => {
+                                Masks.invert();
+                            }
+                        }
+                        Rectangle { }
+                    }
+                    if Masks.clip < 0: Need {
+                        text: "Move the playhead onto the clip to paint on it.";
+                    }
+                }
                 HorizontalLayout {
-                    visible: masking.image;
-                    height: masking.image ? self.preferred-height : 0;
+                    visible: masking.gallery;
+                    height: masking.gallery ? self.preferred-height : 0;
                     padding-left: 28px;
                     padding-right: 12px;
                     padding-top: 4px;
                     padding-bottom: 10px;
                     MaskGrid {
                         chosen: root.settings.mask-image;
+                        renaming <=> root.renaming;
                         choose(name) => {
                             root.settings.mask-image = name;
                             root.settings.mask = true;
@@ -969,9 +1128,14 @@ export component Panel inherits Rectangle {
                             root.deleting = false;
                             mask-menu.show();
                         }
+                        add(x, y) => {
+                            root.menu-x = x - root.absolute-position.x;
+                            root.menu-y = y - root.absolute-position.y;
+                            add-menu.show();
+                        }
                     }
                 }
-                if masking.image && root.settings.mask-image != "": SliderRow {
+                if (masking.image && root.settings.mask-image != "") || Masks.editing: SliderRow {
                     label: "Soft edge";
                     minimum: 0;
                     maximum: 100;
@@ -979,6 +1143,37 @@ export component Panel inherits Rectangle {
                     value <=> root.settings.mask-soft;
                     changed => {
                         root.changed();
+                        if self.touched || Masks.editing {
+                            Masks.show(root.settings.mask-image);
+                        }
+                    }
+                    changed touched => {
+                        if !Masks.editing {
+                            Masks.show(self.touched ? root.settings.mask-image : "");
+                        }
+                    }
+                }
+                if Masks.editing: HorizontalLayout {
+                    padding-left: 28px;
+                    padding-right: 12px;
+                    padding-top: 6px;
+                    padding-bottom: 10px;
+                    spacing: 8px;
+                    Rectangle { }
+                    Button {
+                        height: 26px;
+                        text: "Cancel";
+                        clicked => {
+                            Masks.leave();
+                        }
+                    }
+                    Button {
+                        height: 26px;
+                        text: "Save";
+                        main: true;
+                        clicked => {
+                            Masks.save();
+                        }
                     }
                 }
                 if masking.still: Note {

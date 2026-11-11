@@ -241,6 +241,7 @@ fn left(ui: &App, state: &State) {
 
 pub fn timecode(ui: &App, state: &Shared) {
     let state = lock(state);
+    crate::editor::aim(ui, &state);
     ui.set_timecode(clock(state.time(ui.get_position())).into());
     ui.set_duration(clock(state.seconds()).into());
 }

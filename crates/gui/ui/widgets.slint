@@ -303,6 +303,7 @@ export component Segment inherits HorizontalLayout {
     in property <[string]> options;
     // a hover tip for each option, none when empty
     in property <[string]> tips;
+    in property <[string]> shortcuts;
     in-out property <string> value;
     in property <string> label;
     in property <bool> fill;
@@ -390,12 +391,17 @@ export component Segment inherits HorizontalLayout {
                     Tip.text = "";
                 }
             }
+            changed pressed => {
+                if root.tips.length > 0 {
+                    Tip.text = "";
+                }
+            }
         }
         Timer {
             interval: 500ms;
-            running: (touch.has-hover || keys.has-focus) && index < root.tips.length;
+            running: ((touch.has-hover && !touch.pressed) || keys.has-focus) && index < root.tips.length;
             triggered => {
-                Tip.keys = [];
+                Tip.keys = index < root.shortcuts.length ? [root.shortcuts[index]] : [];
                 Tip.x = cell.absolute-position.x + cell.width / 2;
                 Tip.y = cell.absolute-position.y;
                 Tip.text = root.tips[index];
@@ -412,6 +418,7 @@ export component Slider inherits Rectangle {
     in property <string> label;
     in property <string> readout;
     in property <bool> resets;
+    out property <bool> touched: touch.has-hover || touch.pressed;
     callback changed(float);
     function set(to: float) {
         let next = clamp(to, minimum, maximum);
@@ -507,6 +514,7 @@ export component SliderRow inherits Row {
     in property <float> step <=> slider.step;
     in-out property <float> value <=> slider.value;
     in property <string> unit;
+    out property <bool> touched <=> slider.touched;
     callback changed <=> slider.changed;
     property <string> shown: round(root.value * 100) / 100 + root.unit;
     slider := Slider {
@@ -824,20 +832,32 @@ export component Section inherits VerticalLayout {
 export component Action inherits Rectangle {
     in property <string> text;
     in property <string> accessible;
+    in property <[string]> keys;
     in property <length> size: 11px;
     in property <bool> active;
     in property <bool> toggle;
     in property <bool> accent;
+    in property <bool> enabled: true;
     callback clicked <=> touch.clicked;
     callback context(length, length);
+    property <bool> focused: ring.has-focus;
+    changed focused => {
+        if !self.focused {
+            Tip.text = "";
+        }
+    }
     accessible-role: button;
     accessible-label: root.accessible != "" ? root.accessible : root.text;
+    accessible-enabled: root.enabled;
     accessible-checkable: root.toggle;
     accessible-checked: root.active;
     accessible-action-default => {
-        touch.clicked();
+        if root.enabled {
+            touch.clicked();
+        }
     }
-    Focus {
+    ring := Focus {
+        usable: root.enabled;
         activate => {
             touch.clicked();
         }
@@ -845,7 +865,7 @@ export component Action inherits Rectangle {
     HorizontalLayout {
         Text {
             text: root.text;
-            color: root.accent ? Theme.accent : root.active || touch.has-hover ? Theme.ink : Theme.faint;
+            color: !root.enabled ? Theme.seam : root.accent ? Theme.accent : root.active || touch.has-hover ? Theme.ink : Theme.faint;
             font-size: root.size;
             font-weight: root.active ? 700 : 400;
             vertical-alignment: center;
@@ -853,6 +873,7 @@ export component Action inherits Rectangle {
         }
     }
     touch := TouchArea {
+        enabled: root.enabled;
         mouse-cursor: pointer;
         changed has-hover => {
             if !self.has-hover {
@@ -870,12 +891,12 @@ export component Action inherits Rectangle {
     }
     Timer {
         interval: 500ms;
-        running: root.accessible != "" && touch.has-hover && !touch.pressed;
+        running: (root.accessible != "" || root.keys.length > 0) && ((touch.has-hover && !touch.pressed) || ring.has-focus);
         triggered => {
-            Tip.keys = [];
+            Tip.keys = root.keys;
             Tip.x = root.absolute-position.x + root.width / 2;
             Tip.y = root.absolute-position.y;
-            Tip.text = root.accessible;
+            Tip.text = root.accessible-label;
         }
     }
 }

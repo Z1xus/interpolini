@@ -65,11 +65,15 @@ pub fn wire(ui: &App, state: &Shared) {
             return;
         };
         let rows = ui.get_clips();
-        let mut state = lock(&shared);
-        let index = index as usize;
-        if !audio && state.tracks.video.len() < 2 {
+        if !audio && lock(&shared).tracks.video.len() < 2 {
             return;
         }
+        let again = move |ui: &App| ui.invoke_remove_lane(audio, index);
+        if !crate::editor::left(&ui, &shared, again) {
+            return;
+        }
+        let mut state = lock(&shared);
+        let index = index as usize;
         record(&ui, &mut state, false);
         // the clips on the track go with it, and the tracks above it move down
         discard(&ui, &mut state, |entry| {

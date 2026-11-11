@@ -203,7 +203,7 @@ pub fn touch(ui: &App, state: &mut State) {
     }
 }
 
-fn title(ui: &App, state: &State) {
+pub fn title(ui: &App, state: &State) {
     ui.set_modified(state.project.dirty);
     ui.set_project_name(state.project.name().into());
 }
@@ -353,12 +353,12 @@ fn snapshot(ui: &App, state: &mut State, target: Option<&Path>) -> Document {
         });
         clips.push(file::Clip {
             media: at,
-            config: known(&entry.config),
+            config: known(&crate::editor::settled(&entry.config)),
             saved: entry.saved.clone(),
         });
     }
     state.entries = entries;
-    let draft_config = known(&state.draft.config);
+    let draft_config = known(&crate::editor::settled(&state.draft.config));
     Document {
         app: env!("CARGO_PKG_VERSION").into(),
         path: target.map_or(String::new(), |path| path.to_string_lossy().into_owned()),
@@ -470,6 +470,11 @@ pub fn choose(ui: &App, shared: &Shared, then: Option<Then>) {
 }
 
 fn guard(ui: &App, shared: &Shared, then: Then) {
+    if crate::editor::unsaved() {
+        let again = Box::new(move |ui: &App, shared: &Shared| guard(ui, shared, then));
+        return ask(ui, "leave", crate::editor::question(ui), again);
+    }
+    crate::editor::close(ui, shared, false);
     if ui.get_rendering() {
         return status(ui, "Stop the render first".into());
     }
@@ -484,6 +489,9 @@ pub fn question(ui: &App, kind: &str) {
     if matches!(kind, "project" | "switch") {
         let name = ui.get_project_name();
         ui.set_ask(format!("Save changes to \"{name}\"?").into());
+    }
+    if kind == "mask" {
+        ui.set_ask(crate::editor::question(ui).into());
     }
     ui.set_closing(kind.into());
 }
@@ -506,6 +514,12 @@ pub fn answer(ui: &App, shared: &Shared, yes: bool) {
             run(then);
         }
         ("recover", false) => discard(ui),
+        ("leave", save) => {
+            crate::editor::close(ui, shared, save);
+            if !ui.global::<crate::Masks>().get_editing() {
+                run(then);
+            }
+        }
         ("recover" | "delete", true) => run(then),
         _ => {}
     }
@@ -1205,7 +1219,9 @@ pub fn wire(ui: &App, state: &Shared) {
     ui.on_locate(hook(locate));
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_replace_clip(move |index| {
-        if let Some(ui) = weak.upgrade() {
+        if let Some(ui) = weak.upgrade()
+            && crate::editor::left(&ui, &shared, move |ui| ui.invoke_replace_clip(index))
+        {
             replace(&ui, &shared, index as usize);
         }
     });

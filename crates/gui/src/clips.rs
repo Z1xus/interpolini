@@ -496,7 +496,7 @@ pub fn wire(ui: &App, state: &Shared) {
     ui.window().on_winit_window_event(move |_, event| {
         use winit::event::{ElementState, WindowEvent};
         match (event, weak.upgrade()) {
-            (WindowEvent::DroppedFile(file), Some(ui)) if masks::png(file) => {
+            (WindowEvent::DroppedFile(file), Some(ui)) if masks::image(file) => {
                 DROPPED.with_borrow_mut(|files| files.push(file.clone()));
                 let (weak, shared) = (ui.as_weak(), Arc::clone(&shared));
                 // a clip when the pointer does not move
@@ -552,7 +552,7 @@ pub fn drops(ui: &App, state: &Shared) {
         let point = (point.0 as f32, point.1 as f32);
         let _ = weak.clone().upgrade_in_event_loop(move |ui| {
             let (pictures, clips) = match ui.invoke_drop_mask(point.0, point.1) {
-                true => clips.into_iter().partition(|clip| masks::png(clip)),
+                true => clips.into_iter().partition(|clip| masks::image(clip)),
                 false => (Vec::new(), clips),
             };
             if !pictures.is_empty() {

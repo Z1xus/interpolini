@@ -9,11 +9,12 @@ use interpolini_core::{budget, effort, words};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::clips::pick;
+use crate::editor::{left, settled};
 use crate::history::record;
 use crate::preview::say;
 use crate::project::SESSION;
 use crate::state::{Shared, State, lock};
-use crate::view::{label, models, refresh, select, selected, stale, unsaved};
+use crate::view::{label, load, models, refresh, select, selected, stale, unsaved};
 use crate::{App, Code, Mode, Munch, Note, Preferences, Prefs, Settings, System, themes};
 
 const LOOKS: [(Algorithm, &str); 3] = [
@@ -183,7 +184,7 @@ pub fn save(ui: &App, state: &Shared, name: Option<&str>) {
             }
         }
     };
-    let result = std::fs::write(&target.path, entry.config.to_ini());
+    let result = std::fs::write(&target.path, settled(&entry.config).to_ini());
     stale(&target.path);
     if result.is_ok() {
         entry.origin = Some(target);
@@ -515,10 +516,25 @@ pub fn wire(ui: &App, state: &Shared) {
     });
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
+    ui.on_rescope(move |scope| {
+        let again = scope.clone();
+        if let Some(ui) = weak.upgrade()
+            && left(&ui, &shared, move |ui| ui.invoke_rescope(again))
+        {
+            ui.set_scope(scope);
+            ui.invoke_changed();
+        }
+    });
+
+    let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_choose_config(move |name| {
         let Some(ui) = weak.upgrade() else {
             return;
         };
+        let again = name.clone();
+        if !left(&ui, &shared, move |ui| ui.invoke_choose_config(again)) {
+            return load(&ui, &mut lock(&shared));
+        }
         let mut state = lock(&shared);
         let entry = state.current(&ui);
         let found = config::entries(&entry.clip);
@@ -554,6 +570,9 @@ pub fn wire(ui: &App, state: &Shared) {
         let Some(ui) = weak.upgrade() else {
             return;
         };
+        if !left(&ui, &shared, |ui| ui.invoke_delete_config()) {
+            return;
+        }
         let mut state = lock(&shared);
         let entry = state.current(&ui);
         let Some(origin) = entry.origin.take() else {
@@ -613,7 +632,7 @@ pub fn wire(ui: &App, state: &Shared) {
         let Some(ui) = weak.upgrade() else {
             return;
         };
-        let mut config = lock(&shared).current(&ui).config.clone();
+        let mut config = settled(&lock(&shared).current(&ui).config);
         let words = words::encode(&config).into_iter().map(Into::into);
         let code = ui.global::<Code>();
         code.set_words(ModelRc::new(VecModel::from_iter(words)));
@@ -698,6 +717,12 @@ pub fn wire(ui: &App, state: &Shared) {
         let Some(ui) = weak.upgrade() else {
             return;
         };
+        let again = text.clone();
+        if !left(&ui, &shared, move |ui| {
+            ui.global::<Code>().invoke_apply(again)
+        }) {
+            return;
+        }
         if let Ok((_, config)) = decoded(&ui, &shared, &text) {
             record(&ui, &mut lock(&shared), false);
             ui.set_settings(settings(&config));
