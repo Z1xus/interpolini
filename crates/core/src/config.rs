@@ -73,7 +73,7 @@ macro_rules! named {
 
 named!(Engine { Svp = "svp", Rife = "rife" } Svp);
 named!(Backend { Vulkan = "vulkan", Tensorrt = "tensorrt" } Vulkan);
-named!(Masking { Peel = "peel", Still = "still" } Peel);
+named!(Masking { Peel = "peel", Still = "still", Image = "image" } Peel);
 named!(Speed { Medium = "medium", Fast = "fast", Faster = "faster", Fastest = "fastest" } Faster);
 named!(Tuning { Weak = "weak", Smooth = "smooth", Film = "film", Animation = "animation" } Film);
 named!(Algorithm { Sharp = "2", Standard = "13", Smooth = "23" } Standard);
@@ -293,6 +293,8 @@ pub struct Mask {
     pub limit: f32,
     pub edge: f32,
     pub tolerance: f32,
+    pub image: String,
+    pub soft: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
@@ -409,6 +411,8 @@ impl Default for Mask {
             limit: 4.5,
             edge: 5.0,
             tolerance: 30.0,
+            image: String::new(),
+            soft: 0.0,
         }
     }
 }
@@ -576,6 +580,8 @@ impl Config {
             field("output", "container", &mut output.container),
             field("output", "audio", &mut output.audio),
             field("output", "options", &mut output.options),
+            field("mask", "image", &mut mask.image),
+            field("mask", "soft edge", Within(&mut mask.soft, 0.0, 100.0)),
         ]
     }
 
@@ -618,17 +624,22 @@ impl Config {
     }
 
     pub fn to_ini(&self) -> String {
-        let mut text = String::new();
-        let mut last = "";
-        for (section, key, value) in self.clone().fields() {
-            if section != last {
-                let gap = if last.is_empty() { "" } else { "\n" };
-                text.push_str(&format!("{gap}[{section}]\n"));
-                last = section;
+        let mut config = self.clone();
+        let fields = config.fields();
+        let mut sections = Vec::new();
+        for (section, ..) in &fields {
+            if !sections.contains(section) {
+                sections.push(*section);
             }
-            text.push_str(&format!("{key}: {}\n", value.write()));
         }
-        text
+        let sections = sections.into_iter().map(|section| {
+            let keys = fields.iter().filter(|field| field.0 == section);
+            let lines: String = keys
+                .map(|(_, key, value)| format!("{key}: {}\n", value.write()))
+                .collect();
+            format!("[{section}]\n{lines}")
+        });
+        sections.collect::<Vec<_>>().join("\n")
     }
 }
 

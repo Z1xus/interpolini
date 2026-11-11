@@ -714,6 +714,7 @@ export component Panel inherits Rectangle {
                 open <=> root.sections.masking;
                 enabled <=> root.settings.mask;
                 property <bool> peel: root.settings.mask-method == "peel";
+                property <bool> still: root.settings.mask-method == "still";
                 toggled => {
                     root.changed();
                 }
@@ -721,7 +722,7 @@ export component Panel inherits Rectangle {
                     label: "Method";
                     Segment {
                         label: "Masking method";
-                        options: ["peel", "still"];
+                        options: ["peel", "still", "image"];
                         value <=> root.settings.mask-method;
                         changed => {
                             root.changed();
@@ -741,10 +742,10 @@ export component Panel inherits Rectangle {
                         root.changed();
                     }
                 }
-                if !masking.peel: Note {
+                if masking.still: Note {
                     text: "Pixels that don't change are faded instead of warped.";
                 }
-                if !masking.peel: SliderRow {
+                if masking.still: SliderRow {
                     label: "Limit";
                     minimum: 0;
                     maximum: 20;
@@ -754,7 +755,7 @@ export component Panel inherits Rectangle {
                         root.changed();
                     }
                 }
-                if !masking.peel: SliderRow {
+                if masking.still: SliderRow {
                     label: "Edge";
                     minimum: 0;
                     maximum: 20;
@@ -764,7 +765,7 @@ export component Panel inherits Rectangle {
                         root.changed();
                     }
                 }
-                if !masking.peel: SliderRow {
+                if masking.still: SliderRow {
                     label: "Tolerance";
                     minimum: 0;
                     maximum: 100;

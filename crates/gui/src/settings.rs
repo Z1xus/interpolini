@@ -726,6 +726,7 @@ fn change(section: &str, key: &str, value: &str) -> String {
         ("mask", "enabled") => format!("masking {on}"),
         ("mask", "method") => format!("masking {value}"),
         ("mask", "peel limit") => format!("peel limit {value}"),
+        ("mask", "image") => format!("mask {value}"),
         ("blending", "enabled") => format!("blending {on}"),
         ("blending", "fps") => format!("blending {value} fps"),
         ("color", "enabled") => format!("color {on}"),

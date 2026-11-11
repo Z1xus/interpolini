@@ -4,9 +4,10 @@ use ffmpeg_next::format::Pixel;
 use ffmpeg_next::{color, ffi, frame};
 
 use crate::budget;
-use crate::config::Config;
+use crate::config::{Config, Masking};
 use crate::decode::{Decoder, Meta};
 use crate::graph::{Graph, Image, image};
+use crate::mask::Gray;
 use crate::munch::{Munch, Muncher};
 use crate::segments::Made;
 use crate::work::Cancel;
@@ -234,6 +235,20 @@ impl Sources {
         let (kept, gone) = held.partition(|held| keep(&held.0, &held.1));
         self.0 = kept;
         Sources(gone)
+    }
+
+    pub fn remask(&mut self, name: &str, gray: &Gray, sink: Sink, cancel: &Cancel) {
+        self.0.retain_mut(|(_, config, source)| {
+            let mask = &config.mask;
+            let Kind::Clip(graph) = &mut source.kind else {
+                return true;
+            };
+            if !mask.enabled || mask.method != Masking::Image || mask.image != name {
+                return true;
+            }
+            source.held = None;
+            graph.remask(config, gray, sink, cancel).is_ok()
+        });
     }
 
     // a clip that is not open opens only for the call

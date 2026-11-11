@@ -32,6 +32,7 @@ mod estimate;
 mod event;
 mod graph;
 mod lut;
+pub mod mask;
 mod munch;
 mod queue;
 mod rife;

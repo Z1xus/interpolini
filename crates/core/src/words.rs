@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, Masking};
 
 // bip 39, each word is unique in its first four letters
 const LIST: &str = include_str!("../words/english.txt");
@@ -69,7 +69,11 @@ fn fields(config: &Config) -> Vec<Field> {
             section,
             key,
             value: value.write(),
-            choices: value.choices(),
+            // older codes have one bit for these two
+            choices: match (section, key) {
+                ("mask", "method") => &["peel", "still"],
+                _ => value.choices(),
+            },
         })
         .collect()
 }
@@ -147,6 +151,13 @@ impl Reader<'_> {
 pub fn encode(config: &Config) -> Vec<&'static str> {
     let mut config = config.clone();
     config.color.lut.clear();
+    match config.mask.method {
+        Masking::Image => {
+            config.mask.enabled &= !config.mask.image.is_empty();
+            config.mask.method = Masking::default();
+        }
+        _ => config.mask.image.clear(),
+    }
     let base = fields(&Config::default());
     let mut out = Writer::default();
     out.put(VERSION, 3);
@@ -292,6 +303,9 @@ fn read(input: &mut Reader) -> Option<Config> {
         fields[index].2.read(&value);
     }
     drop(fields);
+    if !config.mask.image.is_empty() {
+        config.mask.method = Masking::Image;
+    }
     Some(config)
 }
 

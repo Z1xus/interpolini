@@ -402,6 +402,36 @@ impl Svp {
         Ok(self.clip(raw)?.keep(clip).keep(Arc::clone(source)))
     }
 
+    fn optional<T>(&self, symbol: &[u8]) -> Result<libloading::Symbol<'_, T>> {
+        let found = unsafe { self.api._library.get(symbol) };
+        found.map_err(|_| "this open-svpflow has no image masks, update it".into())
+    }
+
+    pub fn mask(self: &Arc<Self>, pixels: &[u8], width: u32, height: u32) -> Result<Stencil> {
+        let create = self
+            .optional::<unsafe extern "C" fn(*const u8, i32, i32) -> i64>(b"osvp_mask_create\0")?;
+        let id = unsafe { create(pixels.as_ptr(), width as i32, height as i32) };
+        if id == 0 {
+            return Err(unsafe { error(self.api, None) });
+        }
+        Ok(Stencil {
+            svp: Arc::clone(self),
+            id,
+        })
+    }
+
+    pub fn hold(
+        self: &Arc<Self>,
+        clip: Clip,
+        source: &Arc<Clip>,
+        stencil: &Stencil,
+    ) -> Result<Clip> {
+        let hold =
+            self.optional::<unsafe extern "C" fn(Raw, Raw, Raw, i64) -> Raw>(b"osvp_hold\0")?;
+        let raw = unsafe { hold(self.context, clip.raw, source.raw, stencil.id) };
+        Ok(self.clip(raw)?.keep(clip).keep(Arc::clone(source)))
+    }
+
     pub fn layer(self: &Arc<Self>, source: &Clip, options: &Options, limit: f32) -> Result<Clip> {
         let Options {
             supers,
@@ -434,6 +464,22 @@ impl Svp {
         let raw = unsafe { (self.api.unpeel)(self.context, clip.raw, source.raw, layer.raw) };
         let clip = self.clip(raw)?.keep(clip);
         Ok(clip.keep(Arc::clone(source)).keep(Arc::clone(layer)))
+    }
+}
+
+pub struct Stencil {
+    svp: Arc<Svp>,
+    id: i64,
+}
+
+impl Drop for Stencil {
+    fn drop(&mut self) {
+        let free = self
+            .svp
+            .optional::<unsafe extern "C" fn(i64)>(b"osvp_mask_free\0");
+        if let Ok(free) = free {
+            unsafe { free(self.id) };
+        }
     }
 }
 
@@ -504,6 +550,7 @@ impl Options {
         interpolation: &Interpolation,
         rate: &str,
         mask: Option<&Mask>,
+        image: Option<&Stencil>,
         dedup: Option<f32>,
         gpu: bool,
         half: bool,
@@ -567,11 +614,13 @@ impl Options {
                 ..
             }) => format!(",peel:{{limit:{peel}}}"),
             Some(Mask {
+                method: Masking::Still,
                 limit,
                 edge,
                 tolerance,
                 ..
             }) => format!(",still:{{limit:{limit},edge:{edge},tolerance:{tolerance}}}"),
+            Some(_) => image.map_or(String::new(), |image| format!(",image:{}", image.id)),
             None => String::new(),
         };
         let scene = if tuning == Tuning::Weak {

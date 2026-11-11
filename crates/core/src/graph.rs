@@ -9,9 +9,10 @@ use crate::blend::Blend;
 use crate::budget;
 use crate::color::Grade;
 use crate::compose::Scaler;
-use crate::config::{self, Config, Engine, Masking};
+use crate::config::{self, Blending, Config, Engine, Masking};
 use crate::decode::{Ahead, Decoder, Meta};
 use crate::encode::Spare;
+use crate::mask::{self, Gray};
 use crate::rife::Rife;
 use crate::segments::{Made, Segments};
 use crate::svp::{Clip, Frame, Options, Shape, Svp};
@@ -32,6 +33,8 @@ enum Feed {
     Host {
         derived: Option<Clip>,
         input: Arc<Clip>,
+        svp: Arc<Svp>,
+        source: Arc<Clip>,
     },
 }
 
@@ -141,6 +144,23 @@ fn wrap(source: Frame, width: u32, height: u32, format: Pixel) -> frame::Video {
     picture
 }
 
+fn blend(
+    feed: &Feed,
+    meta: &Meta,
+    weights: &[f64],
+    blending: &Blending,
+    on: bool,
+) -> Option<Blend> {
+    match feed {
+        Feed::Host { derived, input, .. } if on => {
+            let shape = derived.as_ref().unwrap_or(input).shape();
+            let frames = covering(meta.frames, meta.fps, shape.fps);
+            Some(Blend::new(weights, shape.fps, blending, frames))
+        }
+        _ => None,
+    }
+}
+
 pub fn covering(frames: i32, from: (i64, i64), to: (i64, i64)) -> i32 {
     let (num, den) = (
         i128::from(frames) * i128::from(from.1) * i128::from(to.0),
@@ -207,14 +227,7 @@ impl Graph {
                 Self::host(decoder, config, &plan, sink, cancel)?
             }
         };
-        let blend = match &feed {
-            Feed::Host { derived, input } if *blended && !fused => {
-                let shape = derived.as_ref().unwrap_or(input).shape();
-                let frames = covering(frames, fps, shape.fps);
-                Some(Blend::new(weights, shape.fps, blending, frames))
-            }
-            _ => None,
-        };
+        let blend = blend(&feed, &meta, weights, blending, *blended && !fused);
         if *blended {
             let fused = if fused { " on the gpu" } else { "" };
             sink(Event::Info(format!(
@@ -229,7 +242,7 @@ impl Graph {
                 ((i64::from(blending.fps), 1), segments.frames)
             }
             (_, Some(blend)) => ((i64::from(blending.fps), 1), blend.frames),
-            (Feed::Host { derived, input }, None) => {
+            (Feed::Host { derived, input, .. }, None) => {
                 let shape = derived.as_ref().unwrap_or(input).shape();
                 (shape.fps, covering(frames, fps, shape.fps))
             }
@@ -261,12 +274,92 @@ impl Graph {
         cancel: &Cancel,
     ) -> Result<(Feed, bool)> {
         let meta = decoder.meta();
+        cancel.check()?;
+        let svp = Svp::load(&config::app_dir())?;
+        let shape = Shape {
+            deep: false,
+            yuv444: meta.yuv444,
+            width: meta.width,
+            height: meta.height,
+            fps: meta.fps,
+            frames: meta.frames,
+        };
+        let source = Arc::new(svp.source(&shape, Ahead::new(decoder))?);
+        let mask = &config.mask;
+        let gray = match mask.enabled && mask.method == Masking::Image && !mask.image.is_empty() {
+            true => mask::load(&mask.image)
+                .inspect_err(|_| {
+                    let name = &mask.image;
+                    sink(Event::Warning(format!(
+                        "cannot open the mask \"{name}\", rendering without it"
+                    )));
+                })
+                .ok(),
+            false => None,
+        };
+        Self::passes(
+            svp,
+            source,
+            &meta,
+            config,
+            plan,
+            gray.as_ref(),
+            sink,
+            cancel,
+        )
+    }
+
+    pub fn remask(
+        &mut self,
+        config: &Config,
+        gray: &Gray,
+        sink: Sink,
+        cancel: &Cancel,
+    ) -> Result<()> {
+        let Feed::Host { svp, source, .. } = &self.feed else {
+            return Ok(());
+        };
+        let (svp, source) = (Arc::clone(svp), Arc::clone(source));
+        // frees the rife engines for the new passes
+        self.blend = None;
+        self.feed = Feed::Host {
+            derived: None,
+            input: Arc::clone(&source),
+            svp: Arc::clone(&svp),
+            source: Arc::clone(&source),
+        };
+        let plan = Plan::new(self.source_fps(), config);
+        let passes = Self::passes(
+            svp,
+            source,
+            &self.meta,
+            config,
+            &plan,
+            Some(gray),
+            sink,
+            cancel,
+        );
+        let (feed, fused) = passes?;
+        let blended = plan.blended && !fused;
+        self.blend = blend(&feed, &self.meta, &plan.weights, &config.blending, blended);
+        self.feed = feed;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn passes(
+        svp: Arc<Svp>,
+        source: Arc<Clip>,
+        meta: &Meta,
+        config: &Config,
+        plan: &Plan,
+        gray: Option<&Gray>,
+        sink: Sink,
+        cancel: &Cancel,
+    ) -> Result<(Feed, bool)> {
+        let meta = *meta;
         let Meta {
-            width,
-            height,
-            fps,
-            frames,
-            ..
+            width, height, fps, ..
         } = meta;
         let Config {
             dedup,
@@ -277,18 +370,14 @@ impl Graph {
         } = config;
         let mask = config.mask.enabled.then_some(&config.mask);
         let half = interpolation.half && width % 4 == 0 && height % 4 == 0;
-
-        cancel.check()?;
-        let svp = Svp::load(&config::app_dir())?;
-        let shape = Shape {
-            deep: false,
-            yuv444: meta.yuv444,
-            width,
-            height,
-            fps,
-            frames,
+        let stencil = match gray {
+            Some(gray) => {
+                Some(svp.mask(&gray.fit(width, height, config.mask.soft)?, width, height)?)
+            }
+            None => None,
         };
-        let mut input = Arc::new(svp.source(&shape, Ahead::new(decoder))?);
+        let image = stencil.as_ref();
+        let mut input = Arc::clone(&source);
 
         let Plan {
             pre,
@@ -303,7 +392,7 @@ impl Graph {
         let mut fused = false;
         if dedup.enabled && dedup.threshold > 0.0 && !skipped {
             let rate = format!("num:{},den:{},abs:true", fps.0, fps.1);
-            let options = |gpu| Options::new(interpolation, &rate, mask, limit, gpu, half);
+            let options = |gpu| Options::new(interpolation, &rate, mask, image, limit, gpu, half);
             let last = !interpolate && pre.is_none();
             let made = match blended && last {
                 true => svp.smooth_blend(&input, &options(true), weights, blending),
@@ -333,17 +422,21 @@ impl Graph {
                     cancel,
                 )
             };
-            match mask {
-                Some(mask) if mask.method == Masking::Peel => {
-                    let options = |gpu| Options::new(interpolation, "", None, None, gpu, half);
+            match (mask, image) {
+                (Some(mask), _) if mask.method == Masking::Peel => {
+                    let options =
+                        |gpu| Options::new(interpolation, "", None, None, None, gpu, half);
                     let layer = svp.layer(input, &options(true), mask.peel);
                     let layer = layer.or_else(|_| svp.layer(input, &options(false), mask.peel))?;
                     let layer = Arc::new(layer);
                     let bare = Arc::new(svp.peel(input, &layer)?);
                     svp.unpeel(open(&bare)?, input, &layer)
                 }
-                Some(mask) => svp.still(open(input)?, input, mask),
-                None => open(input),
+                (Some(mask), _) if mask.method == Masking::Still => {
+                    svp.still(open(input)?, input, mask)
+                }
+                (Some(_), Some(image)) => svp.hold(open(input)?, input, image),
+                _ => open(input),
             }
         };
         if let Some(fps) = pre {
@@ -364,7 +457,8 @@ impl Graph {
             Engine::Svp => {
                 let rate = format!("num:{target},den:1,abs:true");
                 let limit = limit.filter(|_| skipped);
-                let options = |gpu| Options::new(interpolation, &rate, mask, limit, gpu, half);
+                let options =
+                    |gpu| Options::new(interpolation, &rate, mask, image, limit, gpu, half);
                 let made = match blended {
                     true => svp.smooth_blend(&input, &options(true), weights, blending),
                     false => Err("no blend".into()),
@@ -383,11 +477,17 @@ impl Graph {
                 Some(clip)
             }
         };
-        Ok((Feed::Host { derived, input }, fused))
+        let feed = Feed::Host {
+            derived,
+            input,
+            svp,
+            source,
+        };
+        Ok((feed, fused))
     }
 
     pub fn stop(&self, seconds: f64) {
-        if let Feed::Host { derived, input } = &self.feed {
+        if let Feed::Host { derived, input, .. } = &self.feed {
             let clip = derived.as_ref().unwrap_or(input);
             let (num, den) = clip.shape().fps;
             clip.end((seconds * num as f64 / den as f64).ceil() as i32);
@@ -403,7 +503,7 @@ impl Graph {
                 segments.frame(n, cancel)?
             }
             Feed::Plain(decoder) => decoder.picture(n)?,
-            Feed::Host { derived, input } => {
+            Feed::Host { derived, input, .. } => {
                 let clip = derived.as_ref().unwrap_or(input);
                 let last = clip.shape().frames - 1;
                 let source = |n: i32| {
