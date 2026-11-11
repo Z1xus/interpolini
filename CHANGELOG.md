@@ -3,9 +3,13 @@
 ## 0.1.31
 - New: Secret quality options
 - New: AV1 decoding on the GPU
+- New: Audio track names
+- New: Copy the rendered file
+- New: Draggable timeline scroll bar
 - Faster: GPU decoding
 - Faster: Masking
 - Fixed: Crash on odd sizes
+- Changed: Finer waveforms
 
 ## 0.1.30
 - Faster: TensorRT
