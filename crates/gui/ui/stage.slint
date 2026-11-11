@@ -1,4 +1,4 @@
-import { Action, Art, Button, Focus, Icon, IconButton, Icons, MenuItem, MenuPopup, Piece, Popups, Tabs, Theme } from "widgets.slint";
+import { Action, Art, Button, FileButtons, Focus, Icon, IconButton, Icons, MenuItem, MenuPopup, Piece, Popups, Tabs, Theme } from "widgets.slint";
 import { Clip, Note } from "types.slint";
 import { Frame } from "frame.slint";
 
@@ -62,6 +62,7 @@ export component Stage inherits Rectangle {
     in property <string> action;
     callback act();
     callback reveal(string);
+    callback copy-file(string) -> bool;
     property <bool> closed;
     property <string> last;
     changed note => {
@@ -535,10 +536,11 @@ export component Stage inherits Rectangle {
                 accessible-role: text;
                 accessible-live-region: root.kind == Note.warning ? assertive : polite;
             }
-            if root.kind == Note.brief && root.shot != "": Action {
-                text: "Show in folder";
-                size: 12px;
-                clicked => {
+            if root.kind == Note.brief && root.shot != "": FileButtons {
+                copy => {
+                    return root.copy-file(root.shot);
+                }
+                reveal => {
                     root.reveal(root.shot);
                 }
             }

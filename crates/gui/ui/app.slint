@@ -220,7 +220,9 @@ export component App inherits Window {
     // the files that the notes name, a click shows them in their folder
     in property <string> shot;
     in property <string> rendered;
+    in property <string> rendered-name;
     callback reveal(string);
+    callback copy-file(string) -> bool;
 
     function toggle() {
         root.prefs.snapping = !root.prefs.snapping;
@@ -583,6 +585,9 @@ export component App inherits Window {
                     reveal(path) => {
                         root.reveal(path);
                     }
+                    copy-file(path) => {
+                        return root.copy-file(path);
+                    }
                 }
 
                 if root.clips.length > 0: Rectangle {
@@ -831,8 +836,12 @@ export component App inherits Window {
                 status: root.status;
                 failed: root.failed;
                 rendered: root.rendered;
+                rendered-name: root.rendered-name;
                 reveal(path) => {
                     root.reveal(path);
+                }
+                copy-file(path) => {
+                    return root.copy-file(path);
                 }
                 version: root.version;
                 update: root.update;

@@ -402,6 +402,17 @@ fn main() -> Result<(), slint::PlatformError> {
 
     ui.on_reveal(|path| reveal(PathBuf::from(path.as_str())));
 
+    ui.on_copy_file(|path| {
+        // linux serves the file only while this lives
+        static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
+        let mut held = CLIPBOARD.lock().unwrap();
+        if held.is_none() {
+            *held = arboard::Clipboard::new().ok();
+        }
+        held.as_mut()
+            .is_some_and(|clipboard| clipboard.set().file_list(&[path.as_str()]).is_ok())
+    });
+
     ui.on_open(|url| services::open(url.as_str()));
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(&state));

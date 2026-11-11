@@ -1,4 +1,4 @@
-import { Action, Button, Dropdown, Field, Focus, Label, Note, Number, Popups, Row, Scroll, Section, Segment, SliderRow, Switch, Theme } from "widgets.slint";
+import { Action, Button, Dropdown, Field, FileButtons, Focus, Label, Note, Number, Popups, Row, Scroll, Section, Segment, SliderRow, Switch, Theme } from "widgets.slint";
 import { Clip, Mode, Munch, Sections, Settings } from "types.slint";
 
 component Curve inherits Rectangle {
@@ -111,7 +111,10 @@ export component Panel inherits Rectangle {
     in property <string> status;
     in property <bool> failed;
     in property <string> rendered;
+    in property <string> rendered-name;
     callback reveal(string);
+    callback copy-file(string) -> bool;
+    property <bool> finished: root.rendered != "" && !root.failed && !root.rendering;
     in property <string> version;
     in property <string> update;
     in property <bool> copied;
@@ -1135,18 +1138,30 @@ export component Panel inherits Rectangle {
                 }
             }
             HorizontalLayout {
-                height: 14px;
+                height: root.finished ? 24px : 14px;
                 spacing: 12px;
                 if root.failed: Rectangle {
                     width: 2px;
                     background: Theme.accent;
                 }
-                Text {
+                if root.finished: Text {
                     horizontal-stretch: 1;
+                    min-width: 0;
+                    text: root.rendered-name;
+                    color: Theme.ink;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
+                Text {
+                    horizontal-stretch: root.finished ? 0 : 1;
                     min-width: 0;
                     text: root.status;
                     color: root.failed ? Theme.ink : Theme.faint;
                     font-size: 11px;
+                    vertical-alignment: center;
                     // the live numbers do not jitter in monospace, a finished line matches the action next to it
                     font-family: root.rendering ? "monospace" : "";
                     overflow: elide;
@@ -1154,9 +1169,11 @@ export component Panel inherits Rectangle {
                     accessible-label: self.text;
                     accessible-live-region: polite;
                 }
-                if root.rendered != "" && !root.failed && !root.rendering: Action {
-                    text: "Show in folder";
-                    clicked => {
+                if root.finished: FileButtons {
+                    copy => {
+                        return root.copy-file(root.rendered);
+                    }
+                    reveal => {
                         root.reveal(root.rendered);
                     }
                 }

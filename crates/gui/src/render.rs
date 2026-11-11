@@ -68,6 +68,14 @@ fn show(ui: &App, event: Event, row: Option<usize>, lead: f32, current: usize, c
             let took = seconds as u32;
             ui.set_status(format!("{size} in {}:{:02}", took / 60, took % 60).into());
             ui.set_rendered(output.to_string_lossy().as_ref().into());
+            ui.set_rendered_name(
+                output
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .as_ref()
+                    .into(),
+            );
         }
         Event::Failed { clip, error } => {
             update(ui, clip, |row| {

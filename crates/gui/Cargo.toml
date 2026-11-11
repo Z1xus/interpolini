@@ -8,6 +8,7 @@ publish.workspace = true
 build = "build.rs"
 
 [dependencies]
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 cpal = "0.18.2"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 interpolini-core = { path = "../core" }
