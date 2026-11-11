@@ -256,6 +256,8 @@ pub(crate) const PAST: usize = 16;
 pub(crate) const REFERENCES: usize = 16;
 // a shorter step forward is decoded through, a longer one seeks
 const NEAR: i32 = 64;
+// the frames the gpu has in flight
+const FLIGHT: usize = 4;
 
 static DAMAGE: Mutex<BTreeMap<PathBuf, (f64, BTreeSet<i32>)>> = Mutex::new(BTreeMap::new());
 
@@ -307,7 +309,7 @@ pub fn yuv444(format: Pixel) -> bool {
 fn native(format: Pixel, full: bool) -> bool {
     match full {
         true => yuv444(format),
-        false => matches!(format, Pixel::YUV420P | Pixel::YUVJ420P),
+        false => matches!(format, Pixel::YUV420P | Pixel::YUVJ420P | Pixel::NV12),
     }
 }
 
@@ -328,9 +330,46 @@ fn row(picture: &frame::Video, plane: usize, y: usize) -> &[u8] {
     &picture.data(plane)[y * picture.stride(plane)..]
 }
 
+fn unpack(picture: &frame::Video, meta: &Meta, planes: [*mut u8; 3], strides: [isize; 3]) {
+    let target = |plane: usize, y: usize, width| unsafe {
+        std::slice::from_raw_parts_mut(planes[plane].offset(y as isize * strides[plane]), width)
+    };
+    let (width, height) = (meta.width as usize, meta.height as usize);
+    for y in 0..height {
+        target(0, y, width).copy_from_slice(&row(picture, 0, y)[..width]);
+    }
+    let (width, height) = (width >> meta.shift(), height >> meta.shift());
+    for y in 0..height {
+        if picture.format() == Pixel::NV12 {
+            let (pairs, _) = row(picture, 1, y)[..width * 2].as_chunks::<2>();
+            let (u, v) = (target(1, y, width), target(2, y, width));
+            for ((pair, u), v) in pairs.iter().zip(u).zip(v) {
+                [*u, *v] = *pair;
+            }
+        } else {
+            for plane in 1..3 {
+                target(plane, y, width).copy_from_slice(&row(picture, plane, y)[..width]);
+            }
+        }
+    }
+}
+
+fn planar(picture: frame::Video, meta: &Meta) -> frame::Video {
+    if picture.format() != Pixel::NV12 {
+        return picture;
+    }
+    let planar = frame::Video::new(meta.pixel(), meta.width, meta.height);
+    let raw = unsafe { &*planar.as_ptr() };
+    let planes = [0, 1, 2].map(|plane| raw.data[plane]);
+    let strides = [0, 1, 2].map(|plane| raw.linesize[plane] as isize);
+    unpack(&picture, meta, planes, strides);
+    planar
+}
+
 fn same(gpu: &frame::Video, cpu: &frame::Video) -> bool {
     let shift = usize::from(!yuv444(cpu.format()));
-    yuv444(gpu.format()) == yuv444(cpu.format())
+    (gpu.width(), gpu.height()) == (cpu.width(), cpu.height())
+        && yuv444(gpu.format()) == yuv444(cpu.format())
         && (0..3).all(|plane| {
             let shift = if plane == 0 { 0 } else { shift };
             let width = cpu.width() as usize >> shift;
@@ -371,9 +410,13 @@ impl Decoder {
         }
         let reference = cpu.picture(0).ok()?;
         ffmpeg_next::log::set_level(Level::Quiet);
-        let found = gpus().into_iter().find_map(|kind| {
-            let mut decoder = Self::start(path, |_, _| 1, Some(kind)).ok()?;
+        let mut rungs = gpus()
+            .into_iter()
+            .flat_map(|kind| [(kind, FLIGHT), (kind, 1)]);
+        let found = rungs.find_map(|(kind, threads)| {
+            let mut decoder = Self::start(path, |_, _| threads, Some(kind)).ok()?;
             let picture = decoder.picture(0).ok()?;
+            decoder.meta = cpu.meta;
             same(&picture, &reference).then_some(decoder)
         });
         ffmpeg_next::log::set_level(Level::Error);
@@ -387,10 +430,10 @@ impl Decoder {
 
     // a gpu that fails in the clip hands the rest of it to the cpu
     fn fetch(&mut self, n: i32) -> Result<frame::Video> {
-        match self.picture(n) {
+        match self.decoded(n) {
             Err(_) if self.gpu && self.cancel.check().is_ok() => {
                 *self = self.cpu()?;
-                self.picture(n)
+                self.decoded(n)
             }
             picture => picture,
         }
@@ -675,7 +718,6 @@ impl Decoder {
     }
 
     fn store(&mut self, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
-        let (width, height) = (self.meta.width as usize, self.meta.height as usize);
         let source = unsafe { &*self.frame.as_ptr() };
         let rows = self.frame.height() as i32;
         if let Some(scaler) = self.scaler()? {
@@ -694,19 +736,7 @@ impl Decoder {
             }
             return Ok(());
         }
-        let shift = self.meta.shift();
-        for plane in 0..3 {
-            let (width, height) = match plane {
-                0 => (width, height),
-                _ => (width >> shift, height >> shift),
-            };
-            let line = source.linesize[plane] as isize;
-            for y in 0..height as isize {
-                let row = unsafe { source.data[plane].offset(y * line) };
-                let target = unsafe { planes[plane].offset(y * strides[plane]) };
-                unsafe { std::ptr::copy_nonoverlapping(row, target, width) };
-            }
-        }
+        unpack(&self.frame, &self.meta, planes, strides);
         Ok(())
     }
 }
@@ -785,6 +815,10 @@ impl Decoder {
     }
 
     pub fn picture(&mut self, n: i32) -> Result<frame::Video> {
+        Ok(planar(self.decoded(n)?, &self.meta))
+    }
+
+    fn decoded(&mut self, n: i32) -> Result<frame::Video> {
         self.with(n, |decoder| {
             if decoder.scaler()?.is_none() {
                 return Ok(share(&decoder.frame));
@@ -857,6 +891,10 @@ impl Ahead {
     }
 
     pub fn picture(&self, n: i32) -> Result<frame::Video> {
+        Ok(planar(self.decoded(n)?, &self.meta))
+    }
+
+    fn decoded(&self, n: i32) -> Result<frame::Video> {
         let link = self
             .link
             .lock()
@@ -869,16 +907,7 @@ impl Ahead {
 
 impl Reader for Ahead {
     fn read(&self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
-        let picture = self.picture(n)?;
-        for plane in 0..3 {
-            let shift = if plane == 0 { 0 } else { self.meta.shift() };
-            let width = self.meta.width as usize >> shift;
-            for y in 0..self.meta.height as usize >> shift {
-                let target = unsafe { planes[plane].offset(y as isize * strides[plane]) };
-                let target = unsafe { std::slice::from_raw_parts_mut(target, width) };
-                target.copy_from_slice(&row(&picture, plane, y)[..width]);
-            }
-        }
+        unpack(&self.decoded(n)?, &self.meta, planes, strides);
         Ok(())
     }
 }
