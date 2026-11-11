@@ -6,10 +6,15 @@
 - New: Audio track names
 - New: Copy the rendered file
 - New: Draggable timeline scroll bar
+- New: Image masks
+- New: Mask editor
 - Faster: GPU decoding
 - Faster: Masking
 - Fixed: Crash on odd sizes
+- Fixed: Stuck delete confirm
+- Fixed: Undo for all clips
 - Changed: Finer waveforms
+- Changed: Aligned settings panel
 - Changed: aetopia theme
 
 ## 0.1.30
