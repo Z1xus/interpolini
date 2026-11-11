@@ -229,7 +229,8 @@ export component Timeline inherits Rectangle {
     property <float> zoom: 1;
     property <float> scroll;
     // the video tracks and the audio tracks are two stacks, which meet at the split line
-    property <length> pane: root.height - root.ruler;
+    property <length> strip: root.zoom > 1 ? 10px : 0;
+    property <length> pane: root.height - root.ruler - root.strip;
     property <length> upper: root.audio.length > 0 ? root.audio[0].y : root.content;
     property <length> lower: root.content - root.upper;
     property <length> spare: root.pane - root.content;
@@ -1339,12 +1340,33 @@ export component Timeline inherits Rectangle {
             }
         }
 
-        if root.zoom > 1: Rectangle {
-            x: root.scroll * area.width;
-            y: area.height - 3px;
-            width: area.width / root.zoom;
-            height: 3px;
-            background: Theme.muted;
+        if root.zoom > 1: bar := TouchArea {
+            property <length> grab;
+            y: area.height - root.strip;
+            height: root.strip;
+            function move() {
+                root.scroll = clamp((self.mouse-x - self.grab) / area.width, 0, max(0, 1 - 1 / root.zoom));
+            }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    let at = root.scroll * area.width;
+                    self.grab = self.mouse-x >= at && self.mouse-x <= at + area.width / root.zoom ? self.mouse-x - at : area.width / root.zoom / 2;
+                    self.move();
+                }
+            }
+            moved => {
+                if self.pressed {
+                    self.move();
+                }
+            }
+            Rectangle {
+                x: root.scroll * area.width;
+                y: parent.height - self.height;
+                width: area.width / root.zoom;
+                height: bar.has-hover || bar.pressed ? 6px : 3px;
+                background: Theme.muted;
+                animate height { duration: Theme.quick; }
+            }
         }
     }
 }
