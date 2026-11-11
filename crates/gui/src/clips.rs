@@ -344,7 +344,7 @@ pub fn fill(ui: &App, state: &Shared) {
         let mut sounds = sounds.filter(|(_, entry)| own(entry) && entry.audio.is_some());
         let silent = sounds.any(|(index, _)| {
             rows.row_data(index)
-                .is_some_and(|row| row.wave.size().width == 0)
+                .is_some_and(|row| row.waves.row_count() == 0)
         });
         if silent && !any.still {
             let key = format!("waves {link}");

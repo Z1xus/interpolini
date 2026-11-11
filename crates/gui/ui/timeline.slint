@@ -930,7 +930,7 @@ export component Timeline inherits Rectangle {
                                 width: whole;
                                 height: parent.height * (root.copying ? 1 : pow(10, clip.gain / 20));
                                 y: (parent.height - self.height) / 2;
-                                source: clip.wave;
+                                source: clip.waves[clamp(ceil(log(max(1.0, clip.waves[0].width / max(1.0, floor(whole / 1phx))), 2)), 0, max(0, clip.waves.length - 1))];
                                 accessible-role: none;
                                 image-fit: fill;
                                 image-rendering: pixelated;

@@ -1,12 +1,12 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use interpolini_core::budget::{self, Class};
 use interpolini_core::config::Config;
@@ -14,7 +14,7 @@ use interpolini_core::work::{self, Cancel};
 use interpolini_core::{
     Canvas, Event, Fade, Image, Job, Place, Setup, Sink, Sound, Source, Sources, estimate, peaks,
 };
-use slint::{Model, Rgba8Pixel, SharedPixelBuffer, Weak};
+use slint::{Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel, Weak};
 
 use crate::project::missing;
 use crate::view::clock;
@@ -29,7 +29,8 @@ const FILL: usize = 180;
 // the seconds before the end of a stretch when the clips of the next one open
 const EARLY: f64 = 2.0;
 pub const THUMBS: usize = 8;
-const WAVE: usize = 120;
+// the software renderer skips columns past 4096
+const WAVE: (usize, usize) = (120, 4096);
 // the rows of a wave, which the window stretches to the height of the track
 const STRIP: u32 = 64;
 
@@ -130,11 +131,15 @@ fn pixels(image: &Image) -> Pixels {
 fn strip(peaks: &[f32]) -> Pixels {
     let mut pixels = Pixels::new(peaks.len() as u32, STRIP);
     let bytes = pixels.make_mut_bytes();
+    let half = STRIP as usize / 2;
     for (column, peak) in peaks.iter().enumerate() {
-        let rows = ((peak.clamp(0.0, 1.0) * STRIP as f32 / 2.0).round() as usize).max(1) * 2;
-        for row in (STRIP as usize - rows) / 2..(STRIP as usize + rows) / 2 {
-            let at = (row * peaks.len() + column) * 4;
-            bytes[at..at + 4].copy_from_slice(&[255; 4]);
+        let reach = (peak.clamp(0.0, 1.0).sqrt() * half as f32).max(1.0);
+        for row in 0..half {
+            let alpha = ((reach - row as f32).clamp(0.0, 1.0) * 255.0) as u8;
+            for row in [half + row, half - 1 - row] {
+                let at = (row * peaks.len() + column) * 4;
+                bytes[at..at + 4].copy_from_slice(&[255, 255, 255, alpha]);
+            }
         }
     }
     pixels
@@ -974,6 +979,8 @@ pub fn differences(
     });
 }
 
+type Peaks = BTreeMap<(PathBuf, Option<SystemTime>, u64), Vec<Vec<f32>>>;
+
 pub fn waves(
     ui: Weak<App>,
     key: &str,
@@ -981,17 +988,51 @@ pub fn waves(
     seconds: f64,
     places: impl Fn() -> Vec<(Option<usize>, usize)> + Send + 'static,
 ) {
+    static PEAKS: Mutex<Peaks> = Mutex::new(BTreeMap::new());
     services::background(key, move |cancel| {
-        let Ok(tracks) = peaks(&clip, seconds, WAVE, cancel) else {
+        let Ok(meta) = std::fs::metadata(&clip) else {
             return;
         };
-        let tracks: Vec<Pixels> = tracks.iter().map(|wave| strip(wave)).collect();
+        let file = (clip.clone(), meta.modified().ok(), meta.len());
+        let cached = locked(&PEAKS).get(&file).cloned();
+        let tracks = match cached {
+            Some(tracks) => tracks,
+            None => {
+                let count = ((seconds * 100.0) as usize).clamp(WAVE.0, WAVE.1);
+                let Ok(tracks) = peaks(&clip, seconds, count, cancel) else {
+                    return;
+                };
+                locked(&PEAKS).insert(file, tracks.clone());
+                tracks
+            }
+        };
+        let tracks: Vec<Vec<Pixels>> = tracks
+            .into_iter()
+            .map(|mut peaks| {
+                let mut levels = vec![strip(&peaks)];
+                while peaks.len() > 1 {
+                    peaks = peaks
+                        .chunks(2)
+                        .map(|pair| pair.iter().copied().fold(0.0, f32::max))
+                        .collect();
+                    levels.push(strip(&peaks));
+                }
+                levels
+            })
+            .collect();
         let _ = ui.upgrade_in_event_loop(move |ui| {
+            let tracks: Vec<ModelRc<slint::Image>> = tracks
+                .into_iter()
+                .map(|levels| {
+                    let images = levels.into_iter().map(slint::Image::from_rgba8);
+                    ModelRc::new(VecModel::from_iter(images))
+                })
+                .collect();
             let rows = ui.get_clips();
             for (audio, index) in places() {
-                let wave = audio.and_then(|audio| tracks.get(audio));
-                if let (Some(wave), Some(mut row)) = (wave, rows.row_data(index)) {
-                    row.wave = slint::Image::from_rgba8(wave.clone());
+                let waves = audio.and_then(|audio| tracks.get(audio));
+                if let (Some(waves), Some(mut row)) = (waves, rows.row_data(index)) {
+                    row.waves = waves.clone();
                     rows.set_row_data(index, row);
                 }
             }

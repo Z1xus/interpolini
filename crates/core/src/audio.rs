@@ -211,16 +211,15 @@ impl Source {
 
 pub fn peaks(clip: &Path, seconds: f64, count: usize, cancel: &Cancel) -> Result<Vec<Vec<f32>>> {
     let mut source = Source::open(clip, 0.0, 1.0, |_| true)?;
-    let slice = ((seconds * f64::from(RATE)) as usize / count).max(1);
+    let total = (seconds * f64::from(RATE)) as usize;
     let mut tracks = vec![Vec::with_capacity(count); source.tracks.len()];
-    for _ in 0..count {
+    for column in 0..count {
         cancel.check()?;
+        let slice = (column + 1) * total / count - column * total / count;
         for (track, peaks) in tracks.iter_mut().enumerate() {
-            let [left, _] = source.take(Some(track), slice)?;
-            peaks.push(
-                left.iter()
-                    .fold(0.0, |peak: f32, sample| peak.max(sample.abs())),
-            );
+            let [left, right] = source.take(Some(track), slice)?;
+            let samples = left.iter().chain(&right);
+            peaks.push(samples.fold(0.0, |peak: f32, sample| peak.max(sample.abs())));
         }
     }
     Ok(tracks)
