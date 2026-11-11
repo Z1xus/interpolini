@@ -9,7 +9,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use interpolini_core::budget::{self, Class};
-use interpolini_core::config::Config;
+use interpolini_core::config::{Config, Masking};
+use interpolini_core::mask;
 use interpolini_core::work::{self, Cancel};
 use interpolini_core::{
     Canvas, Event, Fade, Image, Job, Place, Setup, Sink, Sound, Source, Sources, estimate, peaks,
@@ -473,6 +474,33 @@ impl Worker {
             (View::Result, Some(true)) => View::Both,
             (view, _) => view,
         };
+        let shown = wanted(&first.layers, view);
+        let warn = warn(ui);
+        // a remask must not stop halfway
+        let whole = Cancel::default();
+        let changed = std::mem::take(&mut *locked(&CHANGED));
+        for name in changed {
+            let using = |config: &Config| masked(config) && config.mask.image == name;
+            let Ok(gray) = mask::load(&name) else {
+                drop(open.split(|_, config| !using(config)));
+                continue;
+            };
+            for (clip, config) in open.keys().into_iter().filter(|key| using(&key.1)) {
+                open.remask(&clip, &config, &gray, &warn, &whole);
+            }
+        }
+        for (layer, config) in &shown {
+            if masked(config)
+                && open
+                    .keys()
+                    .into_iter()
+                    .any(|key| key.0 == layer.clip && masked(&key.1))
+                && open.get(&layer.clip, config).is_none()
+                && let Ok(gray) = mask::load(&config.mask.image)
+            {
+                open.remask(&layer.clip, config, &gray, &warn, &whole);
+            }
+        }
         // the old graphs must free the gpu first
         let near = parts.iter().take(2);
         let near = near.flat_map(|stretch| wanted(&stretch.layers, view));
@@ -480,9 +508,7 @@ impl Worker {
         near.extend(idle(&first.layers, view, size).iter().map(key));
         near.append(recent);
         drop(open.split(|clip, config| near.iter().any(|key| key.0 == clip && key.1 == *config)));
-        let shown = wanted(&first.layers, view);
         *recent = shown.iter().map(key).collect();
-        let warn = warn(ui);
         let mut failed = None;
         for (layer, config) in &shown {
             if open.get(&layer.clip, config).is_some() {
@@ -574,6 +600,17 @@ fn run(worker: &Arc<Mutex<Worker>>, show: Show, cancel: &Cancel) {
 
 thread_local! {
     static LAST: RefCell<Option<Show>> = const { RefCell::new(None) };
+}
+
+static CHANGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn masked(config: &Config) -> bool {
+    config.mask.enabled && config.mask.method == Masking::Image
+}
+
+pub fn remask(names: Vec<String>) {
+    locked(&CHANGED).extend(names);
+    LAST.take();
 }
 
 fn same(a: &Show, b: &Show) -> bool {

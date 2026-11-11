@@ -2,7 +2,7 @@ import { Button, Keyboard, Modal, Piece, Popups, Theme, Tip } from "widgets.slin
 import { Clip, Family, Ghost, Lane, Mode, Munch, Note, Prefs, Recent, Sections, Settings } from "types.slint";
 import { Timeline } from "timeline.slint";
 import { Menu } from "menu.slint";
-import { Code, Panel } from "panel.slint";
+import { Code, Masks, Panel } from "panel.slint";
 import { Sheet } from "sheet.slint";
 import { Preferences } from "preferences.slint";
 import { ProjectSettings } from "project.slint";
@@ -10,7 +10,7 @@ import { Change, Update } from "update.slint";
 import { Stage } from "stage.slint";
 import { Transport } from "transport.slint";
 
-export { Change, Code, Sheet, Preferences, ProjectSettings, Update }
+export { Change, Code, Masks, Sheet, Preferences, ProjectSettings, Update }
 export { Mode, Note, Recent }
 export { Keyboard, Piece, System, Theme } from "widgets.slint";
 
@@ -261,6 +261,9 @@ export component App inherits Window {
     // the time on the timeline under a point of the window, below 0 when the point is not on it
     public pure function drop-time(x: length, y: length) -> float {
         root.clips.length == 0 || y < timeline.absolute-position.y ? -1 : max(0, timeline.time-at(x))
+    }
+    public pure function drop-mask(x: length, y: length) -> bool {
+        panel.over-masks(x, y)
     }
     public pure function drop-depth(y: length) -> length {
         timeline.depth-at(y)
@@ -541,6 +544,7 @@ export component App inherits Window {
                     clips <=> root.clips;
                     preview: root.preview;
                     original: root.original;
+                    mask: Masks.hover;
                     view <=> root.view;
                     copying: root.copying;
                     off <=> root.preview-off;
@@ -801,7 +805,7 @@ export component App inherits Window {
                 }
             }
 
-            Panel {
+            panel := Panel {
                 width: max(340px, root.rail);
                 clips: root.clips;
                 videos: root.videos;

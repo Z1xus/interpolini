@@ -1,4 +1,4 @@
-import { Action, Button, Dropdown, Field, FileButtons, Focus, Label, Note, Number, Popups, Row, Scroll, Section, Segment, SliderRow, Switch, Theme } from "widgets.slint";
+import { Action, Button, Dropdown, Field, FileButtons, Focus, Icon, Icons, Label, MenuItem, MenuPopup, Note, Number, Popups, Row, Scroll, Section, Segment, SliderRow, Switch, Theme } from "widgets.slint";
 import { Clip, Mode, Munch, Sections, Settings } from "types.slint";
 
 component Curve inherits Rectangle {
@@ -42,6 +42,151 @@ export global Code {
     callback copy();
     callback check(string);
     callback apply(string);
+}
+
+export struct MaskTile {
+    name: string,
+    path: string,
+    picture: image,
+}
+
+export global Masks {
+    in property <[MaskTile]> list;
+    in-out property <image> hover;
+    callback scan();
+    callback add();
+    callback remove(string);
+    pure callback found([MaskTile], string) -> bool;
+}
+
+component MaskGrid inherits Rectangle {
+    in property <string> chosen;
+    callback choose(string);
+    callback menu(MaskTile, length, length);
+    property <int> columns: 3;
+    property <length> gap: 8px;
+    property <length> tile: (self.width - (self.columns - 1) * self.gap) / self.columns;
+    property <length> picture: self.tile * 9 / 16;
+    property <length> step: self.picture + 20px;
+    property <bool> empty: Masks.list.length == 0;
+    property <bool> alone: mod(Masks.list.length, self.columns) == 0;
+    height: ceil((Masks.list.length + 1) / self.columns) * (self.step + self.gap) - self.gap - (self.alone ? self.step - self.picture : 0px);
+    accessible-role: radio-group;
+    accessible-label: "Mask";
+    for mask[index] in Masks.list: Rectangle {
+        property <bool> active: mask.name == root.chosen;
+        x: mod(index, root.columns) * (root.tile + root.gap);
+        y: floor(index / root.columns) * (root.step + root.gap);
+        width: root.tile;
+        height: root.step;
+        accessible-role: radio-button;
+        accessible-label: mask.name;
+        accessible-checkable: true;
+        accessible-checked: self.active;
+        accessible-item-index: index;
+        accessible-item-count: Masks.list.length;
+        accessible-action-default => {
+            root.choose(mask.name);
+        }
+        Focus {
+            activate => {
+                root.choose(mask.name);
+            }
+            more(event) => {
+                if event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift) {
+                    root.menu(mask, parent.absolute-position.x, parent.absolute-position.y + parent.height);
+                    return accept;
+                }
+                reject
+            }
+        }
+        Rectangle {
+            y: 0;
+            height: root.picture;
+            border-width: 1px;
+            border-color: parent.active ? Theme.accent : touch.has-hover ? Theme.muted : Theme.seam;
+            background: Theme.void;
+            animate border-color { duration: Theme.quick; }
+            Image {
+                x: 1px;
+                y: 1px;
+                width: parent.width - 2px;
+                height: parent.height - 2px;
+                source: mask.picture;
+                image-fit: fill;
+                colorize: Theme.accent;
+                accessible-role: none;
+            }
+        }
+        Text {
+            y: root.picture + 4px;
+            width: root.tile;
+            height: 14px;
+            text: mask.name;
+            color: parent.active ? Theme.ink : Theme.muted;
+            font-size: 11px;
+            overflow: elide;
+            horizontal-alignment: center;
+            accessible-role: none;
+        }
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.choose(mask.name);
+            }
+            changed has-hover => {
+                Masks.hover = self.has-hover ? mask.picture : @image-url("");
+            }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                    root.menu(mask, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+        }
+    }
+    Rectangle {
+        x: mod(Masks.list.length, root.columns) * (root.tile + root.gap);
+        y: floor(Masks.list.length / root.columns) * (root.step + root.gap);
+        width: root.empty ? root.width : root.tile;
+        height: root.picture;
+        border-width: 1px;
+        border-color: add.has-hover ? Theme.muted : Theme.seam;
+        background: add.has-hover ? Theme.raised : transparent;
+        accessible-role: button;
+        accessible-label: "Add mask";
+        accessible-action-default => {
+            Masks.add();
+        }
+        Focus {
+            activate => {
+                Masks.add();
+            }
+        }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 6px;
+            VerticalLayout {
+                alignment: center;
+                Icon {
+                    shape: Icons.plus;
+                    color: add.has-hover ? Theme.ink : Theme.muted;
+                }
+            }
+            if root.empty: Text {
+                text: "Add mask";
+                color: add.has-hover ? Theme.ink : Theme.muted;
+                font-size: 12px;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+        }
+        add := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                Masks.add();
+            }
+        }
+    }
 }
 
 component Need inherits HorizontalLayout {
@@ -137,6 +282,60 @@ export component Panel inherits Rectangle {
     callback copy-details();
     callback show-components();
     callback show-update();
+    property <bool> gallery: root.configurable && root.sections.masking && root.settings.mask-method == "image";
+    changed gallery => {
+        if self.gallery {
+            Masks.scan();
+        }
+    }
+    Timer {
+        interval: 1s;
+        running: root.gallery;
+        triggered => {
+            Masks.scan();
+        }
+    }
+    public pure function over-masks(x: length, y: length) -> bool {
+        root.gallery && x >= masking.absolute-position.x && x < masking.absolute-position.x + masking.width && y >= max(masking.absolute-position.y, scroll.absolute-position.y) && y < min(masking.absolute-position.y + masking.height, scroll.absolute-position.y + scroll.height)
+    }
+    property <MaskTile> menu-mask;
+    property <length> menu-x;
+    property <length> menu-y;
+    property <bool> deleting;
+    property <bool> menu-shown: mask-menu.is-open;
+    changed menu-shown => {
+        Popups.open += self.menu-shown ? 1 : -1;
+    }
+    Timer {
+        interval: 3s;
+        running: root.deleting;
+        triggered => {
+            root.deleting = false;
+        }
+    }
+    mask-menu := MenuPopup {
+        x: root.menu-x;
+        y: root.menu-y;
+        close-policy: close-on-click-outside;
+        MenuItem {
+            text: "Show in folder";
+            clicked => {
+                root.reveal(root.menu-mask.path);
+                mask-menu.close();
+            }
+        }
+        MenuItem {
+            text: root.deleting ? "Delete?" : "Delete";
+            accent: root.deleting;
+            clicked => {
+                if root.deleting {
+                    Masks.remove(root.menu-mask.name);
+                    mask-menu.close();
+                }
+                root.deleting = !root.deleting;
+            }
+        }
+    }
 
     background: Theme.rack;
     VerticalLayout {
@@ -504,7 +703,7 @@ export component Panel inherits Rectangle {
         }
 
         // the sections stay as they are while a copy hides them
-        Scroll {
+        scroll := Scroll {
             vertical-stretch: root.configurable ? 1 : 0;
             max-height: root.configurable ? 100000px : 0;
             visible: root.configurable;
@@ -715,6 +914,7 @@ export component Panel inherits Rectangle {
                 enabled <=> root.settings.mask;
                 property <bool> peel: root.settings.mask-method == "peel";
                 property <bool> still: root.settings.mask-method == "still";
+                property <bool> image: root.settings.mask-method == "image";
                 toggled => {
                     root.changed();
                 }
@@ -738,6 +938,45 @@ export component Panel inherits Rectangle {
                     maximum: 20;
                     step: 0.5;
                     value <=> root.settings.mask-peel;
+                    changed => {
+                        root.changed();
+                    }
+                }
+                if masking.image: Note {
+                    text: "Keeps the original frame in the parts that you mark.";
+                }
+                if masking.image && root.settings.mask-image != "" && !Masks.found(Masks.list, root.settings.mask-image): Need {
+                    text: "\"\{root.settings.mask-image}\" isn't in the masks folder.";
+                }
+                HorizontalLayout {
+                    visible: masking.image;
+                    height: masking.image ? self.preferred-height : 0;
+                    padding-left: 28px;
+                    padding-right: 12px;
+                    padding-top: 4px;
+                    padding-bottom: 10px;
+                    MaskGrid {
+                        chosen: root.settings.mask-image;
+                        choose(name) => {
+                            root.settings.mask-image = name;
+                            root.settings.mask = true;
+                            root.changed();
+                        }
+                        menu(mask, x, y) => {
+                            root.menu-mask = mask;
+                            root.menu-x = x - root.absolute-position.x;
+                            root.menu-y = y - root.absolute-position.y;
+                            root.deleting = false;
+                            mask-menu.show();
+                        }
+                    }
+                }
+                if masking.image && root.settings.mask-image != "": SliderRow {
+                    label: "Soft edge";
+                    minimum: 0;
+                    maximum: 100;
+                    step: 1;
+                    value <=> root.settings.mask-soft;
                     changed => {
                         root.changed();
                     }

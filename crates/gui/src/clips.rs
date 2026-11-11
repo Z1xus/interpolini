@@ -13,7 +13,7 @@ use crate::state::{Entry, STILL, Saved, Shared, State, Track, lock};
 #[cfg(target_os = "linux")]
 use crate::view::lanes;
 use crate::view::{fit, refit, refresh, update};
-use crate::{App, Clip, preview, services};
+use crate::{App, Clip, masks, preview, services};
 #[cfg(target_os = "linux")]
 use crate::{Ghost, drop, icon};
 
@@ -477,6 +477,12 @@ pub fn pick(
     });
 }
 
+thread_local! {
+    // a drop has no position until the pointer moves
+    static DROPPED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    static LATE: slint::Timer = slint::Timer::default();
+}
+
 pub fn wire(ui: &App, state: &Shared) {
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_add_clips(move || {
@@ -490,8 +496,31 @@ pub fn wire(ui: &App, state: &Shared) {
     ui.window().on_winit_window_event(move |_, event| {
         use winit::event::{ElementState, WindowEvent};
         match (event, weak.upgrade()) {
+            (WindowEvent::DroppedFile(file), Some(ui)) if masks::png(file) => {
+                DROPPED.with_borrow_mut(|files| files.push(file.clone()));
+                let (weak, shared) = (ui.as_weak(), Arc::clone(&shared));
+                // a clip when the pointer does not move
+                LATE.with(|late| {
+                    late.start(
+                        slint::TimerMode::SingleShot,
+                        std::time::Duration::from_secs(1),
+                        move || import(weak.clone(), Arc::clone(&shared), DROPPED.take(), None),
+                    )
+                });
+            }
             (WindowEvent::DroppedFile(clip), Some(ui)) => {
                 import(ui.as_weak(), Arc::clone(&shared), vec![clip.clone()], None)
+            }
+            (WindowEvent::CursorMoved { position, .. }, Some(ui))
+                if DROPPED.with_borrow(|files| !files.is_empty()) =>
+            {
+                LATE.with(slint::Timer::stop);
+                let files = DROPPED.take();
+                let point = position.to_logical::<f32>(f64::from(ui.window().scale_factor()));
+                match ui.invoke_drop_mask(point.x, point.y) {
+                    true => masks::import(&ui, &shared, files),
+                    false => import(ui.as_weak(), Arc::clone(&shared), files, None),
+                }
             }
             // a click anywhere takes the keyboard away from a text field
             (
@@ -501,6 +530,7 @@ pub fn wire(ui: &App, state: &Shared) {
                 },
                 Some(ui),
             ) => ui.invoke_blur(),
+            (WindowEvent::Focused(true), Some(ui)) => masks::scan(&ui, &shared),
             _ => {}
         }
         EventResult::Propagate
@@ -518,8 +548,20 @@ pub fn drops(ui: &App, state: &Shared) {
     const EVERY: std::time::Duration = std::time::Duration::from_millis(30);
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     let dropped: drop::Dropped = Arc::new(move |clips, point| {
-        let point = Some((point.0 as f32, point.1 as f32));
-        import(weak.clone(), Arc::clone(&shared), clips, point);
+        let (weak, shared) = (weak.clone(), Arc::clone(&shared));
+        let point = (point.0 as f32, point.1 as f32);
+        let _ = weak.clone().upgrade_in_event_loop(move |ui| {
+            let (pictures, clips) = match ui.invoke_drop_mask(point.0, point.1) {
+                true => clips.into_iter().partition(|clip| masks::png(clip)),
+                false => (Vec::new(), clips),
+            };
+            if !pictures.is_empty() {
+                masks::import(&ui, &shared, pictures);
+            }
+            if !clips.is_empty() {
+                import(weak, shared, clips, Some(point));
+            }
+        });
     });
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     let hovered: drop::Hovered = Arc::new(move |event| {

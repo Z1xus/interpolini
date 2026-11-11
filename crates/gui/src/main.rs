@@ -11,6 +11,7 @@ mod file;
 mod history;
 #[cfg(target_os = "linux")]
 mod icon;
+mod masks;
 mod playback;
 mod preview;
 mod project;
@@ -331,6 +332,7 @@ fn main() -> Result<(), slint::PlatformError> {
     settings::wire(&ui, &state);
     history::wire(&ui, &state);
     render::wire(&ui, &state);
+    masks::wire(&ui, &state);
     project::wire(&ui, &state);
     project::recents(&ui);
     project::schedule(&ui, &state);

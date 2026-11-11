@@ -56,6 +56,8 @@ pub fn settings(config: &Config) -> Settings {
         mask_limit: mask.limit,
         mask_edge: mask.edge,
         mask_tolerance: mask.tolerance,
+        mask_image: mask.image.as_str().into(),
+        mask_soft: mask.soft,
         blend: blending.enabled,
         blend_fps: blending.fps as i32,
         intensity: blending.intensity,
@@ -116,6 +118,8 @@ pub fn apply(settings: &Settings, config: &mut Config) {
     mask.limit = settings.mask_limit;
     mask.edge = settings.mask_edge;
     mask.tolerance = settings.mask_tolerance;
+    mask.image = settings.mask_image.to_string();
+    mask.soft = settings.mask_soft;
     blending.enabled = settings.blend;
     blending.fps = settings.blend_fps as u32;
     blending.intensity = settings.intensity;

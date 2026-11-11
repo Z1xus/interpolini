@@ -1084,6 +1084,7 @@ export component MenuItem inherits Rectangle {
     in property <string> hint;
     in property <bool> checked;
     in property <bool> toggle;
+    in property <bool> accent;
     in property <bool> enabled: true;
     out property <bool> hover: touch.has-hover;
     callback clicked();
@@ -1131,7 +1132,7 @@ export component MenuItem inherits Rectangle {
         Text {
             horizontal-stretch: 1;
             text: root.text;
-            color: root.enabled ? Theme.ink : Theme.faint;
+            color: !root.enabled ? Theme.faint : root.accent ? Theme.accent : Theme.ink;
             font-size: 12px;
             vertical-alignment: center;
             accessible-role: none;

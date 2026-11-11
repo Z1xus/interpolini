@@ -4,7 +4,7 @@ use ffmpeg_next::format::Pixel;
 use ffmpeg_next::{color, ffi, frame};
 
 use crate::budget;
-use crate::config::{Config, Masking};
+use crate::config::Config;
 use crate::decode::{Decoder, Meta};
 use crate::graph::{Graph, Image, image};
 use crate::mask::Gray;
@@ -237,18 +237,25 @@ impl Sources {
         Sources(gone)
     }
 
-    pub fn remask(&mut self, name: &str, gray: &Gray, sink: Sink, cancel: &Cancel) {
-        self.0.retain_mut(|(_, config, source)| {
-            let mask = &config.mask;
-            let Kind::Clip(graph) = &mut source.kind else {
-                return true;
-            };
-            if !mask.enabled || mask.method != Masking::Image || mask.image != name {
-                return true;
-            }
-            source.held = None;
-            graph.remask(config, gray, sink, cancel).is_ok()
-        });
+    pub fn remask(&mut self, clip: &Path, to: &Config, gray: &Gray, sink: Sink, cancel: &Cancel) {
+        let like = |held: &(PathBuf, Config, Source)| {
+            let mut config = held.1.clone();
+            (config.mask.image, config.mask.soft) = (to.mask.image.clone(), to.mask.soft);
+            held.0 == clip && config == *to
+        };
+        let found = self.find(clip, to);
+        let Some(index) = found.or_else(|| self.0.iter().position(like)) else {
+            return;
+        };
+        let (_, config, source) = &mut self.0[index];
+        let Kind::Clip(graph) = &mut source.kind else {
+            return;
+        };
+        *config = to.clone();
+        source.held = None;
+        if graph.remask(to, gray, sink, cancel).is_err() {
+            self.0.remove(index);
+        }
     }
 
     // a clip that is not open opens only for the call

@@ -15,6 +15,7 @@ component Pane inherits Rectangle {
     in property <float> scale;
     in property <length> pan-x;
     in property <length> pan-y;
+    in property <image> mask;
     clip: true;
     Image {
         x: (parent.width - self.width) / 2 + root.pan-x;
@@ -26,6 +27,18 @@ component Pane inherits Rectangle {
         image-rendering: min(self.width, self.height * self.source.width / max(1, self.source.height)) > self.source.width * 1px ? pixelated : smooth;
         accessible-role: image;
         accessible-label: "Preview, " + root.name;
+    }
+    if root.mask.width > 0: Image {
+        property <float> ratio: root.source.width / max(1, root.source.height);
+        width: min(parent.width, parent.height * self.ratio) * root.scale;
+        height: self.width / self.ratio;
+        x: (parent.width - self.width) / 2 + root.pan-x;
+        y: (parent.height - self.height) / 2 + root.pan-y;
+        source: root.mask;
+        image-fit: fill;
+        colorize: Theme.accent;
+        opacity: 0.6;
+        accessible-role: none;
     }
 }
 
@@ -46,6 +59,7 @@ export component Stage inherits Rectangle {
     in-out property <[Clip]> clips;
     in property <image> preview;
     in property <image> original;
+    in property <image> mask;
     in-out property <string> view;
     in property <bool> held;
     in property <float> zoom: 1;
@@ -224,6 +238,7 @@ export component Stage inherits Rectangle {
             scale: root.scale;
             pan-x: root.pan-x;
             pan-y: root.pan-y;
+            mask: root.mask;
         }
         if root.shown == "split": Rectangle {
             x: line;
@@ -237,6 +252,7 @@ export component Stage inherits Rectangle {
                 scale: root.scale;
                 pan-x: root.pan-x;
                 pan-y: root.pan-y;
+                mask: root.mask;
             }
         }
         if root.shown == "side": Rectangle {
@@ -252,6 +268,7 @@ export component Stage inherits Rectangle {
             scale: root.scale;
             pan-x: root.pan-x;
             pan-y: root.pan-y;
+            mask: root.mask;
         }
         if (root.held && !root.copying && !root.off) || root.shown == "split" || root.shown == "side": Tag {
             x: 8px;
