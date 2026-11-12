@@ -11,6 +11,7 @@ use crate::{App, Clip};
 
 struct Moment {
     entries: Vec<Entry>,
+    draft: Entry,
     rows: Vec<Clip>,
     tracks: Tracks,
     size: Option<(u32, u32)>,
@@ -37,6 +38,7 @@ thread_local! {
 fn moment(ui: &App, state: &State) -> Moment {
     Moment {
         entries: state.entries.clone(),
+        draft: state.draft.clone(),
         rows: ui.get_clips().iter().collect(),
         tracks: state.tracks.clone(),
         size: state.project.look.size,
@@ -88,7 +90,7 @@ pub fn amend(change: impl Fn(&mut Entry)) {
             .chain(&mut history.redo)
             .chain(&mut history.cleared);
         moments
-            .flat_map(|moment| &mut moment.entries)
+            .flat_map(|moment| moment.entries.iter_mut().chain([&mut moment.draft]))
             .for_each(change);
     });
 }
@@ -117,6 +119,7 @@ fn restore(ui: &App, shared: &Shared, target: Moment) {
     let mut state = lock(shared);
     touch(ui, &mut state);
     state.entries = target.entries;
+    state.draft = target.draft;
     for entry in state
         .entries
         .iter_mut()
