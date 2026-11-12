@@ -336,6 +336,13 @@ export component Panel inherits Rectangle {
             root.deleting = false;
         }
     }
+    Timer {
+        interval: 3s;
+        running: root.confirming;
+        triggered => {
+            root.confirming = false;
+        }
+    }
     add-menu := MenuPopup {
         x: root.menu-x;
         y: root.menu-y;
