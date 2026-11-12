@@ -1,0 +1,45 @@
+{
+	"name": "interpolini-docs",
+	"private": true,
+	"version": "1.0.0",
+	"type": "module",
+	"packageManager": "bun@1.4.2",
+	"scripts": {
+		"dev": "vite dev",
+		"build": "vite build && bun scripts/search.ts",
+		"preview": "vite preview",
+		"prepare": "svelte-kit sync",
+		"check": "TSGO_BIN=$PWD/node_modules/tsgo/bin/tsc svelte-check-native --workspace .",
+		"lint": "prettier --check . && eslint .",
+		"format": "prettier --write .",
+		"media": "bun scripts/media.ts"
+	},
+	"devDependencies": {
+		"@eslint/compat": "^2.1.1",
+		"@eslint/js": "^10.0.1",
+		"@huggingface/tokenizers": "^0.2.0",
+		"@sveltejs/adapter-static": "^4.0.1",
+		"@sveltejs/kit": "^3.1.1",
+		"@sveltejs/vite-plugin-svelte": "^7.3.1",
+		"@tailwindcss/vite": "^4.3.5",
+		"@types/bun": "^1.4.4",
+		"eslint": "^10.14.0",
+		"eslint-config-prettier": "^10.1.8",
+		"eslint-plugin-svelte": "^3.24.0",
+		"globals": "^17.14.0",
+		"minisearch": "^7.2.0",
+		"onnxruntime-web": "^1.31.1",
+		"prettier": "^3.9.10",
+		"prettier-plugin-svelte": "^4.1.1",
+		"svelte": "^5.57.3",
+		"svelte-check-native": "^1.10.0",
+		"tailwindcss": "^4.3.5",
+		"tsgo": "npm:typescript@^7.0.2",
+		"typescript": "6",
+		"typescript-eslint": "^8.72.1",
+		"vite": "^8.3.5"
+	},
+	"imports": {
+		"#lib/*": "./src/lib/*"
+	}
+}

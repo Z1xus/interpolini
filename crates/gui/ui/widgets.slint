@@ -9,7 +9,8 @@ export global Theme {
     in property <color> accent: #e8483a;
     in property <color> ok: #6fbf8b;
     out property <color> ghost: accent.with-alpha(0.15);
-    out property <duration> quick: 140ms;
+    in property <float> motion: 1;
+    out property <duration> quick: 140ms * motion;
 }
 
 export global Popups {

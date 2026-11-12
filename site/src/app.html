@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="icon" type="image/svg+xml" href="%sveltekit.assets%/logo.svg" />
+		<link rel="modulepreload" href="%sveltekit.assets%/ui/interpolini_ui.js" />
+		<link
+			rel="preload"
+			as="fetch"
+			type="application/wasm"
+			crossorigin
+			href="%sveltekit.assets%/ui/interpolini_ui_bg.wasm"
+		/>
+		<script>
+			try {
+				const theme = localStorage.getItem("theme");
+				if (theme) document.documentElement.dataset.theme = theme;
+			} catch (error) {
+				console.error(error);
+			}
+		</script>
+		%sveltekit.head%
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

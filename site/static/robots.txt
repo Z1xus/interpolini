@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://z1xus.github.io/interpolini/sitemap.xml

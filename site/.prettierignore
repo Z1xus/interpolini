@@ -1,0 +1,6 @@
+static
+bun.lock
+.svelte-kit
+build
+/.publish
+ui/target

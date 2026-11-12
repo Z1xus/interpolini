@@ -541,6 +541,13 @@ export component Menu inherits Rectangle {
                     root.go(back ? 2 : 0);
                 }
                 MenuItem {
+                    text: "Documentation";
+                    clicked => {
+                        root.open("https://z1xus.github.io/interpolini/");
+                        help.close();
+                    }
+                }
+                MenuItem {
                     text: "Shortcuts";
                     clicked => {
                         root.show-sheet("Shortcuts");

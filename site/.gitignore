@@ -1,0 +1,8 @@
+node_modules
+/.svelte-kit
+/build
+/.publish/
+static/media/
+static/ui/
+/.screenshots/
+static/model/
