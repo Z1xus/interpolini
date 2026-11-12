@@ -735,6 +735,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Frame rate";
                     Segment {
+                        fill: true;
                         label: "Munch frame rate";
                         options: ["Same", "24", "15", "10", "5"];
                         value: root.munch.fps == 0 ? "Same" : "\{root.munch.fps}";
@@ -833,6 +834,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Backend";
                     Segment {
+                        fill: true;
                         label: "Pre-interpolation backend";
                         options: ["vulkan", "tensorrt"];
                         value <=> root.settings.backend;
@@ -877,6 +879,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Engine";
                     Segment {
+                        fill: true;
                         label: "Interpolation engine";
                         options: ["svp", "rife"];
                         value <=> root.settings.engine;
@@ -902,6 +905,7 @@ export component Panel inherits Rectangle {
                 if root.settings.engine == "rife": Row {
                     label: "Backend";
                     Segment {
+                        fill: true;
                         label: "Interpolation backend";
                         options: ["vulkan", "tensorrt"];
                         value <=> root.settings.backend;
@@ -937,6 +941,7 @@ export component Panel inherits Rectangle {
                 if root.settings.engine == "svp": Row {
                     label: "Speed";
                     Segment {
+                        fill: true;
                         label: "Interpolation speed";
                         options: ["medium", "fast", "faster", "fastest"];
                         value <=> root.settings.speed;
@@ -961,6 +966,7 @@ export component Panel inherits Rectangle {
                 if root.settings.engine == "svp": Row {
                     label: "Look";
                     Segment {
+                        fill: true;
                         label: "Interpolation look";
                         options: ["sharp", "standard", "smooth"];
                         value <=> root.settings.algorithm;
@@ -998,6 +1004,7 @@ export component Panel inherits Rectangle {
                 if !Masks.editing: Row {
                     label: "Method";
                     Segment {
+                        fill: true;
                         label: "Masking method";
                         options: ["peel", "still", "image"];
                         value <=> root.settings.mask-method;
@@ -1050,6 +1057,7 @@ export component Panel inherits Rectangle {
                     Row {
                         label: "Tool";
                         Segment {
+                            fill: true;
                             label: "Mask tool";
                             options: ["brush", "box", "ellipse"];
                             tips: ["Brush", "Box", "Ellipse"];
@@ -1060,6 +1068,7 @@ export component Panel inherits Rectangle {
                     Row {
                         label: "Mode";
                         Segment {
+                            fill: true;
                             label: "Paint mode";
                             options: ["paint", "erase"];
                             tips: ["Paint", "Erase"];
@@ -1382,6 +1391,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Resolution";
                     Segment {
+                        fill: true;
                         label: "Upscale resolution";
                         options: ["1080p", "1440p", "2160p"];
                         value <=> root.settings.resolution;
@@ -1413,6 +1423,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Codec";
                     Segment {
+                        fill: true;
                         label: "Output codec";
                         options: ["h264", "hevc", "av1"];
                         value <=> root.settings.codec;
@@ -1424,6 +1435,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Encoder";
                     Segment {
+                        fill: true;
                         label: "Video encoder";
                         options: ["auto", "hardware", "software"];
                         value <=> root.settings.encoder;
@@ -1435,6 +1447,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Target";
                     Segment {
+                        fill: true;
                         label: "Output target";
                         options: ["quality", "size"];
                         value <=> root.settings.target;
@@ -1472,6 +1485,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Effort";
                     Segment {
+                        fill: true;
                         label: "Encoding effort";
                         options: ["fastest", "fast", "balanced", "best"];
                         tips: [
@@ -1489,6 +1503,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Audio tracks";
                     Segment {
+                        fill: true;
                         label: "Audio tracks";
                         options: ["separate", "mix"];
                         value <=> root.settings.audio;
@@ -1513,6 +1528,7 @@ export component Panel inherits Rectangle {
                 Row {
                     label: "Container";
                     Segment {
+                        fill: true;
                         label: "Output container";
                         options: ["mp4", "mkv", "mov"];
                         value <=> root.settings.container;

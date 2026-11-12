@@ -377,6 +377,7 @@ export component Segment inherits HorizontalLayout {
                 text: option;
                 color: active ? Theme.ink : Theme.muted;
                 font-size: 12px;
+                horizontal-alignment: center;
                 vertical-alignment: center;
                 accessible-role: none;
             }
@@ -1053,7 +1054,8 @@ export component Note inherits HorizontalLayout {
     in property <string> text;
     padding-left: 28px;
     padding-right: 12px;
-    padding-bottom: 6px;
+    padding-top: 4px;
+    padding-bottom: 8px;
     Text {
         text: root.text;
         color: Theme.faint;
