@@ -25,7 +25,7 @@ struct History {
 }
 
 thread_local! {
-    // the rows hold images, so the history stays on the thread of the window
+    // the rows hold images of the window thread
     static HISTORY: RefCell<History> = RefCell::new(History {
         undo: Vec::new(),
         redo: Vec::new(),
@@ -44,7 +44,7 @@ fn moment(ui: &App, state: &State) -> Moment {
     }
 }
 
-// call before a change, a drag or a slider gives many changes and they count as one
+// call before a change, a gesture counts as one
 pub fn record(ui: &App, state: &mut State, gesture: bool) {
     touch(ui, state);
     HISTORY.with_borrow_mut(|history| {
@@ -107,7 +107,6 @@ pub fn travel(ui: &App, shared: &Shared, back: bool) {
     }
 }
 
-// takes back a change that is not possible, it leaves nothing to redo
 pub fn revert(ui: &App, shared: &Shared) {
     if let Some(target) = HISTORY.with_borrow_mut(|history| history.undo.pop()) {
         restore(ui, shared, target);

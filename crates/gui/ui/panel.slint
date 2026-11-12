@@ -780,7 +780,7 @@ export component Panel inherits Rectangle {
             }
         }
 
-        // the sections stay as they are while a copy hides them
+        // the sections stay as they are while hidden
         scroll := Scroll {
             vertical-stretch: root.configurable ? 1 : 0;
             max-height: root.configurable ? 100000px : 0;
@@ -1620,7 +1620,7 @@ export component Panel inherits Rectangle {
                     color: root.failed ? Theme.ink : Theme.faint;
                     font-size: 11px;
                     vertical-alignment: center;
-                    // the live numbers do not jitter in monospace, a finished line matches the action next to it
+                    // live numbers do not jitter in monospace
                     font-family: root.rendering ? "monospace" : "";
                     overflow: elide;
                     accessible-role: text;

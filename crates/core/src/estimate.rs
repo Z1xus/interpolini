@@ -107,7 +107,7 @@ pub fn estimate(
     cancel: &Cancel,
     sources: &mut Sources,
 ) -> Result<u64> {
-    // a render of single clips has the size of each clip
+    // single clips render at their own size
     let setup = &match timeline {
         Some(_) => *setup,
         None => Setup {

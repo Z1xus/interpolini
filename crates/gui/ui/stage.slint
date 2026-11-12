@@ -485,7 +485,7 @@ export component Stage inherits Rectangle {
                     }
                 }
             }
-            // the line and the box are in the touch area, so the wheel over them still zooms the preview
+            // inside the touch area the wheel still zooms
             if root.shown == "split": Rectangle {
                 x: line - 5px;
                 width: 11px;

@@ -403,7 +403,7 @@ impl Decoder {
     pub fn gpu(path: &Path) -> Option<Self> {
         let mut cpu = Self::open(path).ok()?;
         // these codecs decode bit exact by their spec, and the gpu gives 8 bit 4:2:0 and 4:4:4 as they are
-        // at an odd size the gpu is not exact, and a driver can abort
+        // at an odd size a driver can abort
         let exact = matches!(
             cpu.decoder.id(),
             codec::Id::H264 | codec::Id::HEVC | codec::Id::AV1 | codec::Id::VP9

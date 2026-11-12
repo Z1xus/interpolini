@@ -146,7 +146,7 @@ fn fry(picture: &mut frame::Video, k: f32) {
     }
 }
 
-// position counts samples on the timeline, held is the last sample of the call before at the position just before
+// held is the last sample of the call before
 pub fn crush(samples: &mut [Vec<f32>; 2], position: i64, munch: &Munch, held: &mut [f32; 2]) {
     let step = (1.0 + f64::from(munch.amount - 1) * 0.7).round() as i64;
     let levels = f32::from(1u16 << (16 - munch.amount));

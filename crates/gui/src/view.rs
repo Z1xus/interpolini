@@ -316,7 +316,6 @@ pub fn repeats(ui: &App, state: &State) -> f32 {
     }
 }
 
-// what the file gets: a copy has no setup, and a munch comes on top of the project
 pub fn setup(ui: &App, state: &State) -> Setup {
     match ui.get_mode() {
         Mode::Copy => Setup::default(),
@@ -446,7 +445,7 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
         setup.size.get_or_insert(base.size);
     }
     let canvas = setup.size.unwrap_or(base.size);
-    // a munch shows the pixels of the file, so it decodes them at full size
+    // a munch decodes at the full size
     let shrink = match mode {
         Mode::Munch => 1,
         _ => shrink(ui, canvas.0),

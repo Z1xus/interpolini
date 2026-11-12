@@ -507,7 +507,6 @@ impl Canvas {
         Ok(canvas)
     }
 
-    // a munched preview is drawn at the full size, so that it shows the pixels of the file
     pub fn preview(
         &mut self,
         layers: Vec<(Picture, Place, f32)>,

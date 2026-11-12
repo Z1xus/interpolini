@@ -117,7 +117,7 @@ pub fn jobs(
         Job {
             clip: entry.clip.clone(),
             config: match mode {
-                // hardware encoders refuse a picture as small as a munch can be
+                // hardware encoders refuse a small picture
                 Mode::Munch => {
                     let mut config = preview::source(&entry.config);
                     config.output.encoder = Encoder::Software;
