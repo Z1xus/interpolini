@@ -135,6 +135,19 @@ export component Preferences inherits Window {
                     }
                 }
                 FormRow {
+                    label: "Preview cache";
+                    Cell {
+                        Switch {
+                            label: "Preview cache";
+                            checked: root.prefs.cache;
+                            toggled(on) => {
+                                root.prefs.cache = on;
+                                root.changed();
+                            }
+                        }
+                    }
+                }
+                FormRow {
                     label: "Smooth scrolling";
                     Segment {
                         label: "Smooth scrolling";

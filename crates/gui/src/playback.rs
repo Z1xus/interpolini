@@ -1,13 +1,43 @@
 use std::sync::Arc;
+use std::time::Duration;
 
-use slint::ComponentHandle;
+use slint::{ComponentHandle, ModelRc, VecModel};
 
 use crate::settings::save_preferences;
 use crate::state::{Shared, lock, sounds};
 use crate::view::{only, refresh, seek, setup, timecode, wanted};
-use crate::{App, services, sound};
+use crate::{App, Span, preview, services, sound};
+
+thread_local! {
+    static CACHED: slint::Timer = slint::Timer::default();
+}
 
 pub fn wire(ui: &App, state: &Shared) {
+    let (weak, mut last) = (ui.as_weak(), Vec::new());
+    CACHED.with(|timer| {
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(250),
+            move || {
+                let Some(ui) = weak.upgrade() else {
+                    return;
+                };
+                let spans = if ui.get_prefs().cache {
+                    preview::cached()
+                } else {
+                    Vec::new()
+                };
+                if spans != last {
+                    let model = spans.iter().map(|&(from, to)| Span {
+                        from: from as f32,
+                        to: to as f32,
+                    });
+                    ui.set_cached(ModelRc::new(VecModel::from_iter(model)));
+                    last = spans;
+                }
+            },
+        );
+    });
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_step(move |frames, seconds| {
         let Some(ui) = weak.upgrade() else {

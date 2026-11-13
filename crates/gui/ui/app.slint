@@ -1,5 +1,5 @@
 import { Button, Keyboard, Modal, Piece, Popups, Theme, Tip } from "widgets.slint";
-import { Clip, Family, Ghost, Lane, Masks, Mode, Munch, Note, Prefs, Recent, Sections, Settings } from "types.slint";
+import { Clip, Family, Ghost, Lane, Masks, Mode, Munch, Note, Prefs, Recent, Sections, Settings, Span } from "types.slint";
 import { Timeline } from "timeline.slint";
 import { Menu } from "menu.slint";
 import { Code, Panel } from "panel.slint";
@@ -33,6 +33,7 @@ export component App inherits Window {
     // the sizes of the two panels, 0 is the usual size
     in property <int> videos;
     in property <[Ghost]> ghosts;
+    in property <[Span]> cached;
     // the panels stay in the window when it becomes smaller
     changed width => {
         root.rail = clamp(root.rail, 340px, max(340px, root.width - 770px));
@@ -792,6 +793,7 @@ export component App inherits Window {
                         root.lane-height(audio, index, height);
                     }
                     ghosts: root.ghosts;
+                    cached: root.cached;
                     art: root.art;
                     light: root.light;
                     lane-wheel(depth, delta) => {

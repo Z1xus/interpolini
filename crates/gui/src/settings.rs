@@ -5,7 +5,7 @@ use interpolini_core::config::{
     self, Algorithm, Backend, Codec, Config, Container, Effort, Encoder, Engine, Masking, Method,
     Rate, Resolution, Speed, Target, Tuning, Weighting,
 };
-use interpolini_core::{budget, effort, words};
+use interpolini_core::{budget, cache, effort, words};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::clips::pick;
@@ -219,7 +219,7 @@ pub fn save_preferences(ui: &App) {
     let prefs = ui.get_prefs();
     let munch = ui.get_munch();
     let mut text = format!(
-        "theme: {}\nmaximized: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\nprojects: {}\nautosave: {}\nasksave: {}\nreopen: {}\nconfirm: {}\nmemory: {}\nzoom: {}\nfolder: {}\npreset: {}\nsnapping: {}\nautofit: {}\nripple: {}\nscrolling: {}\nsecret: {}\nmunch: {}\nmunchfps: {}\nfry: {}\nloud: {}\n",
+        "theme: {}\nmaximized: {}\nlight: {}\nseparate: {}\nrail: {}\ndeck: {}\npreview: {}\nresolution: {}\nupdates: {}\nvolume: {}\nsections: {}\nprojects: {}\nautosave: {}\nasksave: {}\nreopen: {}\nconfirm: {}\nmemory: {}\ncache: {}\nzoom: {}\nfolder: {}\npreset: {}\nsnapping: {}\nautofit: {}\nripple: {}\nscrolling: {}\nsecret: {}\nmunch: {}\nmunchfps: {}\nfry: {}\nloud: {}\n",
         ui.get_theme(),
         yes(ui.window().is_maximized()),
         yes(ui.get_light()),
@@ -237,6 +237,7 @@ pub fn save_preferences(ui: &App) {
         yes(prefs.reopen),
         yes(prefs.confirm_delete),
         prefs.memory,
+        yes(prefs.cache),
         prefs.zoom,
         prefs.folder,
         prefs.preset,
@@ -276,6 +277,7 @@ pub fn load_prefs(ui: &App, saved: &str) {
         reopen: value("reopen: ") == Some("yes"),
         confirm_delete: value("confirm: ") == Some("yes"),
         memory: number("memory: ", 0).max(0),
+        cache: value("cache: ") != Some("no"),
         zoom: value("zoom: ")
             .and_then(|text| text.parse().ok())
             .unwrap_or(1.0f32)
@@ -311,7 +313,9 @@ pub fn presets() -> ModelRc<slint::SharedString> {
 }
 
 fn limit(ui: &App) {
-    budget::limit(ui.get_prefs().memory as usize * (1 << 20));
+    let prefs = ui.get_prefs();
+    budget::limit(prefs.memory as usize * (1 << 20));
+    cache::enable(prefs.cache);
 }
 
 pub fn attach(ui: &App, window: &Preferences) {

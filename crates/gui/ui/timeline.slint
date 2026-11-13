@@ -1,5 +1,5 @@
 import { Action, Art, Clock, Field, IconButton, Icons, MenuItem, MenuPopup, MenuRow, MenuSeparator, MenuSlider, Piece, Popups, Segment, Theme } from "widgets.slint";
-import { Clip, Ghost, Lane } from "types.slint";
+import { Clip, Ghost, Lane, Span } from "types.slint";
 
 global Curves {
     // the path of a fade over a width, from the height a to the height b
@@ -114,6 +114,7 @@ export component Timeline inherits Rectangle {
     in property <[Lane]> video;
     in property <[Lane]> audio;
     in property <[Ghost]> ghosts;
+    in property <[Span]> cached;
     in property <int> selected;
     in property <int> link;
     // the height of all tracks together
@@ -1316,6 +1317,13 @@ export component Timeline inherits Rectangle {
                         font-family: "monospace";
                         accessible-role: none;
                     }
+                }
+                for span in root.cached: Rectangle {
+                    x: span.from / root.extent * inner.width;
+                    y: root.ruler - 2px;
+                    width: (span.to - span.from) / root.extent * inner.width;
+                    height: 2px;
+                    background: Theme.ok.with-alpha(0.8);
                 }
                 scrub := TouchArea {
                     mouse-cursor: ew-resize;

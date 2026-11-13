@@ -1275,3 +1275,7 @@ pub fn waves(
         });
     });
 }
+
+pub fn cached() -> Vec<(f64, f64)> {
+    Vec::new()
+}
