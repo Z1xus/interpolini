@@ -13,6 +13,7 @@ mod demo;
 slint::include_modules!();
 
 const SUPERSAMPLE: f32 = 2.0;
+const MAX_DENSITY: f32 = 4.0;
 const REVEAL_EVERY: Duration = Duration::from_millis(200);
 const REFIT_AFTER: Duration = Duration::from_millis(100);
 
@@ -233,29 +234,26 @@ pub fn unmount() -> Result<(), JsValue> {
     Ok(())
 }
 
-fn size<C: ComponentHandle>(component: &C, logical: (u32, u32), scale: f32, ratio: f32) {
+fn size<C: ComponentHandle>(component: &C, logical: (u32, u32), density: f32) {
     let window = component.window();
     window.dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
-        scale_factor: scale,
+        scale_factor: density,
     });
     window.set_size(PhysicalSize::new(
-        (logical.0 as f32 * scale * ratio) as u32,
-        (logical.1 as f32 * scale * ratio) as u32,
+        (logical.0 as f32 * density) as u32,
+        (logical.1 as f32 * density) as u32,
     ));
 }
 
 #[wasm_bindgen]
 pub fn fit() {
     let ratio = web_sys::window().map_or(1.0, |window| window.device_pixel_ratio() as f32);
-    let scale = SUPERSAMPLE.max(ratio.ceil());
-    APP.with_borrow(|app| {
-        app.iter()
-            .for_each(|app| size(app, demo::WINDOW, scale, ratio))
-    });
+    let density = (SUPERSAMPLE * ratio).min(MAX_DENSITY);
+    APP.with_borrow(|app| app.iter().for_each(|app| size(app, demo::WINDOW, density)));
     DIALOG.with_borrow(|window| {
         window
             .iter()
-            .for_each(|window| size(window, demo::DIALOG, scale, ratio))
+            .for_each(|window| size(window, demo::DIALOG, density))
     });
 }
 
