@@ -25,6 +25,8 @@ const WIDTH: u32 = 1280;
 const SHOWN_FPS: f64 = 60.0;
 const AHEAD: usize = 8;
 const LEAD: Duration = Duration::from_millis(50);
+// the sound goes on while a picture is at most this late
+const LATE: Duration = Duration::from_millis(250);
 // 3 s at 60 fps
 const FILL: usize = 180;
 // the seconds before the end of a stretch when the clips of the next one open
@@ -830,13 +832,13 @@ fn show_frames(
     (ahead, fill): (usize, usize),
 ) -> bool {
     let mut clock: Option<(Instant, f64)> = None;
-    let (mut begun, mut made) = (None, 0);
+    let mut begun = None;
     let mut held = VecDeque::new();
     let mut room = ahead;
     let mut until = Instant::now();
     let mut shown = VecDeque::new();
     loop {
-        let (frame, (at, from), first) = match clock {
+        let (mut frame, (at, from), first) = match clock {
             None => {
                 while held.len() < room {
                     let step = match queue.recv(cancel) {
@@ -849,7 +851,7 @@ fn show_frames(
                         Err(_) => return false,
                     };
                     let begun: &Instant = begun.get_or_insert_with(Instant::now);
-                    let rate = (made + held.len() - 1) as f64 / begun.elapsed().as_secs_f64();
+                    let rate = (held.len() - 1) as f64 / begun.elapsed().as_secs_f64();
                     let left = end - time - held[0].moved;
                     let short = (1.0 / step - rate).max(0.0) * left;
                     if held.len() >= ahead + short as usize {
@@ -868,7 +870,7 @@ fn show_frames(
                 (frame, anchor, true)
             }
             Some(anchor) => {
-                while held.len() < room {
+                while held.len() < fill {
                     let Some(frame) = queue.try_recv() else {
                         break;
                     };
@@ -876,11 +878,11 @@ fn show_frames(
                 }
                 let frame = match held.pop_front() {
                     Some(frame) => frame,
-                    None => match queue.recv_until(cancel, Some(until)) {
+                    None => match queue.recv_until(cancel, Some(until + LATE)) {
                         Ok(Some(Some(frame))) => frame,
                         Ok(Some(None)) => return !cancel.stopped(),
                         Ok(None) => {
-                            clock = None;
+                            (clock, begun) = (None, None);
                             let cancel = cancel.clone();
                             let _ = ui.upgrade_in_event_loop(move |_| {
                                 if !cancel.stopped() {
@@ -896,7 +898,14 @@ fn show_frames(
                 (frame, anchor, false)
             }
         };
-        let due = at + Duration::from_secs_f64((frame.moved - from).max(0.0));
+        let when = |frame: &Frame| at + Duration::from_secs_f64((frame.moved - from).max(0.0));
+        while held
+            .front()
+            .is_some_and(|next| when(next) <= Instant::now())
+        {
+            frame = held.pop_front().unwrap_or(frame);
+        }
+        let due = when(&frame);
         if !cancel.pause(due) {
             return false;
         }
@@ -917,7 +926,6 @@ fn show_frames(
             false => String::new(),
         };
         post(ui, cancel, frame, text, Some(position), first);
-        made += 1;
     }
 }
 
