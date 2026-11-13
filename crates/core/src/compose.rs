@@ -4,6 +4,7 @@ use ffmpeg_next::format::Pixel;
 use ffmpeg_next::{color, ffi, frame};
 
 use crate::budget;
+use crate::cache::Cache;
 use crate::config::Config;
 use crate::decode::{Decoder, Meta};
 use crate::graph::{Graph, Image, image};
@@ -125,6 +126,7 @@ pub struct Source {
     kind: Kind,
     // the last picture, a clip with a low frame rate gives it more than once
     held: Option<(i32, frame::Video)>,
+    cache: Option<Cache>,
 }
 
 impl Source {
@@ -135,11 +137,19 @@ impl Source {
         sink: Sink,
         cancel: &Cancel,
     ) -> Result<Self> {
-        let kind = match still {
-            true => Kind::Still(image_file(clip)?),
-            false => Kind::Clip(Box::new(Graph::open(clip, config, sink, cancel)?)),
+        let (kind, cache) = match still {
+            true => (Kind::Still(image_file(clip)?), None),
+            false => {
+                let graph = Graph::open(clip, config, sink, cancel)?;
+                let cache = Cache::new(clip, config, &graph);
+                (Kind::Clip(Box::new(graph)), cache)
+            }
         };
-        Ok(Self { kind, held: None })
+        Ok(Self {
+            kind,
+            held: None,
+            cache,
+        })
     }
 
     pub fn graph(&self) -> Option<&Graph> {
@@ -170,6 +180,7 @@ impl Source {
         Ok(Self {
             kind: Kind::Still(picture),
             held: None,
+            cache: None,
         })
     }
 
@@ -178,12 +189,38 @@ impl Source {
             Kind::Clip(graph) => graph,
             Kind::Still(picture) => return Ok(Picture(share(picture))),
         };
-        let fps = graph.info.fps.0 as f64 / graph.info.fps.1 as f64;
-        let n = ((seconds * fps).round() as i32).clamp(0, graph.info.frames - 1);
+        let n = graph.info.number(seconds);
         if !matches!(&self.held, Some(held) if held.0 == n) {
             self.held = Some((n, graph.frame(n, cancel)?));
         }
         Ok(Picture(share(&self.held.as_ref().ok_or("no picture")?.1)))
+    }
+
+    pub fn play(&mut self, seconds: f64, cancel: &Cancel) -> Result<Picture> {
+        let (Kind::Clip(graph), Some(cache)) = (&self.kind, &mut self.cache) else {
+            return self.at(seconds, cancel);
+        };
+        let n = graph.info.number(seconds);
+        if !matches!(&self.held, Some(held) if held.0 == n) {
+            if let Some(picture) = cache.read(n) {
+                return Ok(Picture(picture));
+            }
+            self.held = Some((n, graph.frame(n, cancel)?));
+        }
+        let picture = &self.held.as_ref().ok_or("no picture")?.1;
+        cache.write(n, picture);
+        Ok(Picture(share(picture)))
+    }
+
+    pub fn cached(&self, seconds: f64) -> bool {
+        match (&self.kind, &self.cache) {
+            (Kind::Clip(graph), Some(cache)) => cache.has(graph.info.number(seconds)),
+            _ => false,
+        }
+    }
+
+    pub fn missing(&self, from: f64, to: f64) -> Option<(f64, f64)> {
+        self.cache.as_ref()?.missing(from, to)
     }
 }
 
@@ -253,6 +290,7 @@ impl Sources {
         };
         *config = to.clone();
         source.held = None;
+        source.cache = Cache::new(clip, to, graph);
         if graph.remask(to, gray, sink, cancel).is_err() {
             self.0.remove(index);
         }

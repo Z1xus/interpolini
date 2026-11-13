@@ -20,6 +20,7 @@ mod about;
 mod audio;
 mod blend;
 pub mod budget;
+pub mod cache;
 mod color;
 mod compose;
 pub mod config;

@@ -27,6 +27,13 @@ pub struct Info {
     pub frames: i32,
 }
 
+impl Info {
+    pub(crate) fn number(&self, seconds: f64) -> i32 {
+        let fps = self.fps.0 as f64 / self.fps.1 as f64;
+        ((seconds * fps).round() as i32).clamp(0, self.frames - 1)
+    }
+}
+
 enum Feed {
     File(Box<Mutex<Segments>>),
     Plain(Box<Ahead>),
@@ -526,6 +533,10 @@ impl Graph {
         };
         self.meta.tag(&mut picture);
         Ok(picture)
+    }
+
+    pub(crate) fn plain(&self) -> bool {
+        matches!(self.feed, Feed::Plain(_))
     }
 
     pub(crate) fn packs(&self) -> bool {

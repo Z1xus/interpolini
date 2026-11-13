@@ -77,7 +77,7 @@ fn presets(name: &str) -> Option<(&'static str, [&'static str; 4])> {
 }
 
 // the hardware encoders that open on this system, found once
-static OPENS: OnceLock<Vec<&'static str>> = OnceLock::new();
+pub(crate) static OPENS: OnceLock<Vec<&'static str>> = OnceLock::new();
 
 pub fn find_encoders() {
     OPENS.get_or_init(|| {
@@ -439,7 +439,7 @@ fn head(video: &encoder::video::Encoder) -> Vec<u8> {
     }
 }
 
-fn context(
+pub(crate) fn context(
     name: &str,
     meta: &Meta,
     base: Rational,
