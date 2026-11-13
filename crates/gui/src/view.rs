@@ -400,6 +400,7 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
             size: (0, 0),
             span: 0.0,
             save: None,
+            auto: false,
         });
         if ui.get_preview_off() {
             ui.set_preview(slint::Image::default());
@@ -450,6 +451,7 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
         Mode::Munch => 1,
         _ => shrink(ui, canvas.0),
     };
+    let auto = mode != Mode::Munch && ui.get_resolution() == "Auto";
     let place = |entry: &crate::state::Entry| match copying {
         true => Place::default(),
         false => entry.place,
@@ -489,6 +491,7 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
                     false => span.picture(),
                 },
                 fills: covers(index),
+                factor: 1,
             }
         };
         preview::Stretch {
@@ -519,6 +522,7 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
             size: canvas,
             span: state.span,
             save,
+            auto,
         };
         preview::show(request);
     };

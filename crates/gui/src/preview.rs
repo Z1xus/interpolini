@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
@@ -27,6 +27,18 @@ const AHEAD: usize = 8;
 const LEAD: Duration = Duration::from_millis(50);
 // the sound goes on while a picture is at most this late
 const LATE: Duration = Duration::from_millis(250);
+// on auto size the picture holds this long before playback waits
+const HOLD: Duration = Duration::from_secs(1);
+// the seconds that the composer may fall behind before the size goes down
+const DEBT: f64 = 0.2;
+// the seconds of ready frames that let a slow composer go on at its size
+const RESERVE: f64 = 1.0;
+// about the time of the first picture of a new source
+const SEEK: f64 = 1.0;
+// rife makes frames in bursts of 4, so a measure skips and takes at least that many
+const WARM: u32 = 4;
+// svp renders narrower pictures on the cpu, which is slower
+const SMALLEST: u32 = 480;
 // 3 s at 60 fps
 const FILL: usize = 180;
 // the seconds before the end of a stretch when the clips of the next one open
@@ -51,6 +63,7 @@ pub struct Layer {
     pub fade: Fade,
     pub fills: bool,
     pub missing: Option<(u32, u32)>,
+    pub factor: u32,
 }
 
 #[derive(Clone)]
@@ -84,6 +97,7 @@ pub struct Show {
     pub span: f64,
     // a frame to save at full size, the original or the result
     pub save: Option<bool>,
+    pub auto: bool,
 }
 
 pub struct Measure {
@@ -177,18 +191,33 @@ fn plain(layer: &Layer) -> Config {
     }
 }
 
+fn result(layer: &Layer) -> Config {
+    Config {
+        shrink: layer.config.shrink * layer.factor,
+        ..layer.config.clone()
+    }
+}
+
 fn used(layer: &Layer, original: bool) -> Config {
     match original {
         true => plain(layer),
-        false => layer.config.clone(),
+        false => result(layer),
     }
+}
+
+fn sized(layers: &[Layer], factor: u32) -> Vec<Layer> {
+    let mut layers = layers.to_vec();
+    for layer in layers.iter_mut().filter(|layer| !layer.still) {
+        layer.factor = factor;
+    }
+    layers
 }
 
 fn wanted(layers: &[Layer], view: View) -> Vec<(&Layer, Config)> {
     let mut wanted = Vec::new();
     for layer in layers {
         if view != View::Original || layer.still {
-            wanted.push((layer, layer.config.clone()));
+            wanted.push((layer, result(layer)));
         }
         if view != View::Result && !layer.still {
             wanted.push((layer, plain(layer)));
@@ -225,6 +254,22 @@ fn start(
 
 fn key((layer, config): &(&Layer, Config)) -> Key {
     (layer.clip.clone(), config.clone())
+}
+
+fn fill(
+    open: &mut Sources,
+    layers: &[Layer],
+    view: View,
+    warn: Sink,
+    cancel: &Cancel,
+) -> interpolini_core::Result<()> {
+    for (layer, config) in wanted(layers, view) {
+        if open.get(&layer.clip, &config).is_none() {
+            let source = start(layer, &config, warn, cancel)?;
+            open.add(layer.clip.clone(), config, source);
+        }
+    }
+    Ok(())
 }
 
 fn compose(
@@ -400,6 +445,7 @@ pub struct Worker {
     open: Sources,
     canvas: Option<(PathBuf, Setup, Canvas)>,
     recent: Vec<Key>,
+    smaller: Vec<(Key, u32)>,
 }
 
 struct Play {
@@ -411,6 +457,8 @@ struct Play {
     ahead: (usize, usize),
     held: Vec<Key>,
     setup: Setup,
+    auto: bool,
+    factor: u32,
 }
 
 // the most pixels of a picture, with the copies of it, that the memory of the preview holds
@@ -436,6 +484,7 @@ impl Worker {
             open: Sources::default(),
             canvas: None,
             recent: Vec::new(),
+            smaller: Vec::new(),
         }
     }
 
@@ -445,6 +494,7 @@ impl Worker {
             open,
             canvas,
             recent,
+            smaller,
         } = self;
         let Show {
             parts,
@@ -457,6 +507,7 @@ impl Worker {
             size,
             span,
             save,
+            auto,
         } = show;
         let Some(first) = parts.first() else {
             // a render gets all of the gpu
@@ -476,7 +527,25 @@ impl Worker {
             (View::Result, Some(true)) => View::Both,
             (view, _) => view,
         };
-        let shown = wanted(&first.layers, view);
+        let auto = auto && view != View::Original;
+        let factors = first.layers.iter().filter(|_| auto).filter_map(|layer| {
+            let base = (layer.clip.clone(), layer.config.clone());
+            smaller
+                .iter()
+                .find(|(key, _)| *key == base)
+                .map(|found| found.1)
+        });
+        let factor = factors.max().unwrap_or(1);
+        let scaled = parts
+            .iter()
+            .take(2)
+            .map(|stretch| sized(&stretch.layers, factor));
+        let scaled: Vec<Vec<Layer>> = scaled.collect();
+        let layers = match play {
+            true => &scaled[0],
+            false => &first.layers,
+        };
+        let shown = wanted(layers, view);
         let warn = warn(ui);
         // a remask must not stop halfway
         let whole = Cancel::default();
@@ -504,23 +573,14 @@ impl Worker {
             }
         }
         // the old graphs must free the gpu first
-        let near = parts.iter().take(2);
-        let near = near.flat_map(|stretch| wanted(&stretch.layers, view));
+        let near = parts.iter().take(2).map(|stretch| &stretch.layers);
+        let near = near.chain(&scaled).flat_map(|layers| wanted(layers, view));
         let mut near: Vec<Key> = near.map(|wanted| key(&wanted)).collect();
         near.extend(idle(&first.layers, view, size).iter().map(key));
         near.append(recent);
         drop(open.split(|clip, config| near.iter().any(|key| key.0 == clip && key.1 == *config)));
         *recent = shown.iter().map(key).collect();
-        let mut failed = None;
-        for (layer, config) in &shown {
-            if open.get(&layer.clip, config).is_some() {
-                continue;
-            }
-            match start(layer, config, &warn, cancel) {
-                Ok(source) => open.add(layer.clip.clone(), config.clone(), source),
-                Err(error) => failed = Some(error),
-            }
-        }
+        let mut failed = fill(open, layers, view, &warn, cancel).err();
         if cancel.stopped() {
             return None;
         }
@@ -571,6 +631,8 @@ impl Worker {
                 held: open.keys(),
                 setup,
                 parts,
+                auto,
+                factor,
             });
         }
         let (image, before) = pair(open, canvas, layers, view, 0.0, width, cancel).ok()?;
@@ -642,6 +704,7 @@ fn same(a: &Show, b: &Show) -> bool {
         && a.span == b.span
         && a.quiet == b.quiet
         && a.save == b.save
+        && a.auto == b.auto
         && a.parts.len() == b.parts.len()
         && a.parts.iter().zip(&b.parts).all(|(a, b)| stretch(a, b))
 }
@@ -684,11 +747,17 @@ pub fn measure(
     });
 }
 
-#[derive(Default)]
 struct Reach {
     current: AtomicUsize,
     made: AtomicU64,
     wake: (Mutex<()>, Condvar),
+    factor: AtomicU32,
+    floor: AtomicBool,
+    switching: AtomicBool,
+    opening: AtomicBool,
+    // the time on the timeline at begin, not a number while the clock stands
+    clock: AtomicU64,
+    begin: Instant,
 }
 
 impl Reach {
@@ -696,7 +765,13 @@ impl Reach {
         drop(locked(&self.wake.0));
         self.wake.1.notify_all();
     }
+
+    fn clock(&self) -> f64 {
+        f64::from_bits(self.clock.load(Ordering::Relaxed)) + self.begin.elapsed().as_secs_f64()
+    }
 }
+
+type Opened = interpolini_core::Result<Vec<(Key, Source)>>;
 
 // the next clips open while this stretch plays, so the picture does not stop
 fn open_next(
@@ -705,9 +780,10 @@ fn open_next(
     (view, held): (View, &[Key]),
     reach: &Reach,
     stop: &Cancel,
-    opened: &Sender<interpolini_core::Result<(Key, Source)>>,
+    opened: &Sender<Opened>,
 ) {
     let warn = warn(ui);
+    let mut there = held.to_vec();
     for (index, stretch) in parts.iter().enumerate().skip(1) {
         let from = parts[index - 1].end - EARLY;
         let early = || {
@@ -723,14 +799,10 @@ fn open_next(
                 .unwrap_or_else(|p| p.into_inner());
         }
         drop(waiting);
-        let mut there: Vec<Key> = match index {
-            1 => held.to_vec(),
-            _ => wanted(&parts[index - 1].layers, view)
-                .iter()
-                .map(key)
-                .collect(),
-        };
-        for wanted in wanted(&stretch.layers, view) {
+        let layers = sized(&stretch.layers, reach.factor.load(Ordering::Relaxed));
+        let mut sources = Vec::new();
+        reach.opening.store(true, Ordering::Relaxed);
+        for wanted in wanted(&layers, view) {
             let key = key(&wanted);
             if there.contains(&key) {
                 continue;
@@ -742,10 +814,19 @@ fn open_next(
             let layer = wanted.0;
             let source = start(layer, &key.1, &warn, stop)
                 .and_then(|mut source| source.at(layer.start, stop).map(|_| source));
-            there.push(key.clone());
-            if opened.send(source.map(|source| (key, source))).is_err() {
-                return;
+            match source {
+                Ok(source) => sources.push((key.clone(), source)),
+                Err(error) => {
+                    let _ = opened.send(Err(error));
+                    return;
+                }
             }
+            there.push(key);
+        }
+        there = wanted(&layers, view).iter().map(key).collect();
+        reach.opening.store(false, Ordering::Relaxed);
+        if opened.send(Ok(sources)).is_err() {
+            return;
         }
     }
 }
@@ -753,73 +834,152 @@ fn open_next(
 // in order: the host is slow after a picture that is left out
 fn compose_all(
     worker: &Mutex<Worker>,
-    play: (&Weak<App>, &[Stretch], View, u32, Setup),
+    play: (&Weak<App>, &[Stretch], View, u32, Setup, bool),
     reach: &Reach,
     stop: &Cancel,
-    ready: &Receiver<interpolini_core::Result<(Key, Source)>>,
+    ready: &Receiver<Opened>,
     pictures: &work::Sender<Frame>,
 ) {
-    let (ui, parts, view, width, setup) = play;
+    let (ui, parts, view, width, setup, auto) = play;
     let mut worker = locked(worker);
-    let Worker { open, canvas, .. } = &mut *worker;
+    let Worker {
+        open,
+        canvas,
+        smaller,
+        ..
+    } = &mut *worker;
     let Some((_, _, canvas)) = canvas else {
         return;
     };
+    let warn = warn(ui);
+    let failed = |error| {
+        if !stop.stopped() {
+            fail(ui, error);
+        }
+    };
+    let mut factor = reach.factor.load(Ordering::Relaxed);
     'play: for (index, stretch) in parts.iter().enumerate() {
-        let needs = wanted(&stretch.layers, view);
+        let mut layers = sized(&stretch.layers, factor);
         if index > 0 {
-            let missing = |open: &Sources| {
-                let there =
-                    |(layer, config): &(&Layer, Config)| open.get(&layer.clip, config).is_some();
-                !needs.iter().all(there)
+            let Ok(opened) = ready.recv() else {
+                break 'play;
             };
-            while missing(open) {
-                match ready.recv() {
-                    Ok(Ok(((clip, config), source))) => open.add(clip, config, source),
-                    Ok(Err(error)) => {
-                        if !stop.stopped() {
-                            fail(ui, error);
-                        }
-                        break 'play;
+            // the size can go down after the opener made its sources
+            let filled = opened.and_then(|sources| {
+                for ((clip, config), source) in sources {
+                    match open.get(&clip, &config) {
+                        Some(_) => services::close(source),
+                        None => open.add(clip, config, source),
                     }
-                    Err(_) => break 'play,
                 }
+                fill(open, &layers, view, &warn, stop)
+            });
+            if let Err(error) = filled {
+                failed(error);
+                break 'play;
             }
+            let needs = wanted(&layers, view);
             let needed = |clip: &Path, config: &Config| {
-                let result = |layer: &Layer| layer.clip == clip && layer.config == *config;
-                let idle = view == View::Original && stretch.layers.iter().any(result);
-                idle || needs
-                    .iter()
-                    .any(|(layer, wanted)| layer.clip == clip && wanted == config)
+                let base = |layer: &Layer| layer.clip == clip && layer.config == *config;
+                stretch.layers.iter().any(base)
+                    || needs
+                        .iter()
+                        .any(|(layer, wanted)| layer.clip == clip && wanted == config)
             };
             services::close(open.split(needed));
             reach.current.store(index, Ordering::Relaxed);
             reach.notify();
         }
-        let (details, fps) = details(open, &stretch.layers, view == View::Original, &setup);
+        let original = view == View::Original;
+        let (mut text, fps) = details(open, &layers, original, &setup);
         let step = 1.0 / fps.min(SHOWN_FPS);
-        let layers = &stretch.layers;
-        for moved in (0..).map(|index| f64::from(index) * step) {
-            let Ok((image, before)) = pair(open, canvas, layers, view, moved, width, stop) else {
+        let last = (((stretch.end - stretch.time) / step).ceil() as u32).saturating_sub(1);
+        let (mut count, mut warm, mut spent, mut done, mut debt) = (0, WARM, 0.0, 0, 0.0);
+        loop {
+            let moved = f64::from(count) * step;
+            let begun = Instant::now();
+            let Ok((image, before)) = pair(open, canvas, &layers, view, moved, width, stop) else {
                 break 'play;
             };
-            let made = (stretch.time + moved).to_bits();
-            reach.made.store(made, Ordering::Relaxed);
+            // the opener slows the composer down for a moment
+            match warm {
+                _ if reach.opening.load(Ordering::Relaxed) => {}
+                0 => {
+                    let took = begun.elapsed().as_secs_f64();
+                    (spent, done, debt) = (spent + took, done + 1, (debt + took - step).max(0.0));
+                }
+                _ => warm -= 1,
+            }
+            let made = stretch.time + moved;
+            reach.made.store(made.to_bits(), Ordering::Relaxed);
             reach.notify();
             let sent = pictures.send(Frame {
-                moved: stretch.time + moved - parts[0].time,
+                moved: made - parts[0].time,
                 image,
                 before,
-                details: details.clone(),
+                details: text.clone(),
                 fps,
                 step,
             });
             if sent.is_err() {
                 break 'play;
             }
-            if stretch.time + moved + step >= stretch.end {
+            reach.switching.store(false, Ordering::Relaxed);
+            if made + step >= stretch.end {
                 break;
             }
+            count += 1;
+            if !auto || done < WARM || debt < DEBT || made - reach.clock() > RESERVE {
+                continue;
+            }
+            // the area goes down by the square of the step, with some room
+            let short = 1.15 * spent / (f64::from(done) * step);
+            let by = [2, 4, 8].into_iter().find(|by| f64::from(by * by) >= short);
+            let mut by = by.unwrap_or(8);
+            let widths = layers
+                .iter()
+                .filter(|layer| !layer.still)
+                .filter_map(|layer| {
+                    Some(open.get(&layer.clip, &result(layer))?.graph()?.info.width)
+                });
+            let narrowest = widths.min().unwrap_or(0);
+            while by > 1 && narrowest / by < SMALLEST {
+                by /= 2;
+            }
+            if by == 1 {
+                // a stop into the wait needs a second of measure
+                if spent >= 1.0 {
+                    reach.floor.store(true, Ordering::Relaxed);
+                }
+                continue;
+            }
+            reach.switching.store(true, Ordering::Relaxed);
+            let gone: Vec<Key> = layers
+                .iter()
+                .filter(|layer| layer.factor > 1)
+                .map(|layer| (layer.clip.clone(), result(layer)))
+                .collect();
+            factor *= by;
+            reach.factor.store(factor, Ordering::Relaxed);
+            layers = sized(&stretch.layers, factor);
+            if let Err(error) = fill(open, &layers, view, &warn, stop) {
+                failed(error);
+                break 'play;
+            }
+            let kept = |clip: &Path, config: &Config| {
+                !gone.iter().any(|key| key.0 == clip && key.1 == *config)
+            };
+            services::close(open.split(kept));
+            for layer in stretch.layers.iter().filter(|layer| !layer.still) {
+                let base = (layer.clip.clone(), layer.config.clone());
+                smaller.retain(|(key, _)| *key != base);
+                smaller.push((base, factor));
+            }
+            // the new sources seek, so the frames until they are ready are left out
+            let ready = ((reach.clock() + SEEK - stretch.time) / step).ceil() as u32;
+            count = count.max(ready).min(last);
+            text = details(open, &layers, original, &setup).0;
+            (warm, spent, done, debt) = (WARM, 0.0, 0, 0.0);
         }
     }
 }
@@ -830,6 +990,7 @@ fn show_frames(
     cancel: &Cancel,
     (time, end, span): (f64, f64, f64),
     (ahead, fill): (usize, usize),
+    (reach, auto): (&Reach, bool),
 ) -> bool {
     let mut clock: Option<(Instant, f64)> = None;
     let mut begun = None;
@@ -866,6 +1027,8 @@ fn show_frames(
                     return !cancel.stopped();
                 };
                 let anchor = (Instant::now() + LEAD, frame.moved);
+                let origin = time + anchor.1 - (anchor.0 - reach.begin).as_secs_f64();
+                reach.clock.store(origin.to_bits(), Ordering::Relaxed);
                 clock = Some(anchor);
                 (frame, anchor, true)
             }
@@ -876,13 +1039,21 @@ fn show_frames(
                     };
                     held.push_back(frame);
                 }
+                // a size switch makes no frames, and a wait would not make it faster
+                let switching = reach.switching.load(Ordering::Relaxed);
+                let deadline = match auto && !reach.floor.load(Ordering::Relaxed) {
+                    true => (!switching).then(|| shown.back().copied().unwrap_or(until) + HOLD),
+                    false => Some(until + LATE),
+                };
                 let frame = match held.pop_front() {
                     Some(frame) => frame,
-                    None => match queue.recv_until(cancel, Some(until + LATE)) {
+                    None => match queue.recv_until(cancel, deadline) {
                         Ok(Some(Some(frame))) => frame,
                         Ok(Some(None)) => return !cancel.stopped(),
+                        Ok(None) if reach.switching.load(Ordering::Relaxed) => continue,
                         Ok(None) => {
                             (clock, begun) = (None, None);
+                            reach.clock.store(f64::NAN.to_bits(), Ordering::Relaxed);
                             let cancel = cancel.clone();
                             let _ = ui.upgrade_in_event_loop(move |_| {
                                 if !cancel.stopped() {
@@ -939,12 +1110,25 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
         ahead,
         held,
         setup,
+        auto,
+        factor,
     } = play;
     let time = parts[0].time;
     let parts = Arc::new(parts);
     let (pictures, queue) = work::channel(ahead.0);
     let (opened, ready) = channel();
-    let (reach, stop) = (Arc::new(Reach::default()), Cancel::default());
+    let reach = Arc::new(Reach {
+        current: AtomicUsize::new(0),
+        made: AtomicU64::new(0),
+        wake: Default::default(),
+        factor: AtomicU32::new(factor),
+        floor: AtomicBool::new(false),
+        switching: AtomicBool::new(false),
+        opening: AtomicBool::new(false),
+        clock: AtomicU64::new(f64::NAN.to_bits()),
+        begin: Instant::now(),
+    });
+    let stop = Cancel::default();
     budget::preview(true);
     let opener = work::spawn("opener", {
         let (ui, parts, reach, stop) = (
@@ -959,12 +1143,19 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
         let (ui, worker, parts) = (ui.clone(), Arc::clone(worker), Arc::clone(&parts));
         let (reach, stop) = (Arc::clone(&reach), stop.clone());
         move || {
-            let play = (&ui, &parts[..], view, width, setup);
+            let play = (&ui, &parts[..], view, width, setup, auto);
             compose_all(&worker, play, &reach, &stop, &ready, &pictures)
         }
     });
     let end = parts[parts.len() - 1].end;
-    let finished = show_frames(&ui, &queue, cancel, (time, end, span), ahead);
+    let finished = show_frames(
+        &ui,
+        &queue,
+        cancel,
+        (time, end, span),
+        ahead,
+        (&reach, auto),
+    );
     stop.stop();
     drop(queue);
     reach.notify();
