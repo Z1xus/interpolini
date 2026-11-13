@@ -30,7 +30,7 @@ Uninstalling deletes the whole folder, including your configs and downloaded mod
 
 Open interpolini, drop your clips into the window and press Render.
 
-It assumes you have used svpflow and rife before and know what you're doing. I might add more docs in the future, but for now refer to wonderful guides such as [smoothie's recipe page](https://ctt.cx/video/smoothie/recipe/) and [blur's recommended settings](https://github.com/f0e/blur#recommended-settings-for-gameplay-footage).
+For more info, check out the [<img src="assets/interpolini.svg" width="16" height="16" align="absmiddle"> interpolini documentation](https://z1xus.github.io/interpolini/).
 
 There is also a CLI:
 
