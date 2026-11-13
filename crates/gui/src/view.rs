@@ -431,6 +431,7 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
     let Some(base) = base.map(|index| &state.entries[index]) else {
         // only sound is here, so playback walks on by the clock
         empty();
+        preview::timeline(Vec::new());
         let walk = ui.get_playing() && !state.entries.is_empty();
         drop(state);
         if walk {
@@ -470,15 +471,19 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
         let layer = |index: &usize| {
             let (entry, span) = (&state.entries[*index], &spans[*index]);
             let speed = f64::from(entry.speed);
+            let config = preview::shown(Config {
+                shrink,
+                shown: preview::SHOWN_FPS / speed,
+                ..match mode {
+                    Mode::Render => entry.settled().retimed(speed),
+                    _ => preview::source(&entry.config),
+                }
+            });
+            let plan = Plan::new(entry.fps, &config);
             preview::Layer {
                 clip: entry.clip.clone(),
-                config: preview::shown(Config {
-                    shrink,
-                    ..match mode {
-                        Mode::Render => entry.settled().retimed(speed),
-                        _ => preview::source(&entry.config),
-                    }
-                }),
+                plain: plan.plain(&config) && !plan.blended,
+                config,
                 still: entry.still || entry.missing,
                 missing: entry.missing.then_some(entry.size),
                 place: place(entry),
@@ -491,6 +496,7 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
                     false => span.picture(),
                 },
                 fills: covers(index),
+                wide: entry.size.0,
                 factor: 1,
             }
         };
@@ -506,6 +512,8 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
         let later = later.skip_while(move |other| other.start < end - 0.0005);
         later.take_while(|other| !other.clips.is_empty())
     };
+    let whole = all.iter().filter(|part| !part.clips.is_empty());
+    preview::timeline(whole.map(|part| stretch(part, part.start)).collect());
     let ask = |parts: Vec<preview::Stretch>,
                quiet: bool,
                view: preview::View,

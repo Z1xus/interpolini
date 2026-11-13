@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use interpolini_core::cache;
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 use crate::settings::save_preferences;
@@ -13,7 +14,7 @@ thread_local! {
 }
 
 pub fn wire(ui: &App, state: &Shared) {
-    let (weak, mut last) = (ui.as_weak(), Vec::new());
+    let (weak, mut last, mut seen) = (ui.as_weak(), Vec::new(), 0);
     CACHED.with(|timer| {
         timer.start(
             slint::TimerMode::Repeated,
@@ -22,6 +23,11 @@ pub fn wire(ui: &App, state: &Shared) {
                 let Some(ui) = weak.upgrade() else {
                     return;
                 };
+                let changes = cache::changes();
+                if changes == seen {
+                    return;
+                }
+                seen = changes;
                 let spans = if ui.get_prefs().cache {
                     preview::cached()
                 } else {
@@ -128,6 +134,10 @@ pub fn wire(ui: &App, state: &Shared) {
         drop(state);
         if last || !ui.get_playing() {
             ui.set_playing(false);
+            if last {
+                // the last picture gets its full size, and the cache fills
+                seek(&ui, &shared);
+            }
             return;
         }
         ui.set_position(next as f32 + 0.000_01);

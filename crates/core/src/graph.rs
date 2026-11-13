@@ -107,7 +107,7 @@ impl Plan {
         }
     }
 
-    fn plain(&self, config: &Config) -> bool {
+    pub fn plain(&self, config: &Config) -> bool {
         !config.dedup.enabled && self.pre.is_none() && !self.interpolate
     }
 }

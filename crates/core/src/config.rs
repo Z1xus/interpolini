@@ -357,6 +357,9 @@ pub struct Config {
     // the preview divides the picture by this, a render keeps 1
     #[serde(skip)]
     pub shrink: u32,
+    // the preview shows at most this many frames for each second of the clip, a render keeps 0
+    #[serde(skip)]
+    pub shown: f64,
 }
 
 impl Default for Dedup {
@@ -482,6 +485,7 @@ impl Default for Config {
             upscale: Upscale::default(),
             output: Output::default(),
             shrink: 1,
+            shown: 0.0,
         }
     }
 }

@@ -197,26 +197,40 @@ impl Source {
     }
 
     pub fn play(&mut self, seconds: f64, cancel: &Cancel) -> Result<Picture> {
+        self.keep(seconds, false, cancel)
+    }
+
+    // the frame goes into the cache, which waits for room
+    pub fn store(&mut self, seconds: f64, cancel: &Cancel) -> Result<()> {
+        self.keep(seconds, true, cancel).map(drop)
+    }
+
+    fn keep(&mut self, seconds: f64, wait: bool, cancel: &Cancel) -> Result<Picture> {
         let (Kind::Clip(graph), Some(cache)) = (&self.kind, &mut self.cache) else {
             return self.at(seconds, cancel);
         };
-        let n = graph.info.number(seconds);
+        let index = cache.index(seconds);
+        let n = index * cache.every;
         if !matches!(&self.held, Some(held) if held.0 == n) {
-            if let Some(picture) = cache.read(n) {
+            if let Some(picture) = cache.read(index) {
                 return Ok(Picture(picture));
             }
             self.held = Some((n, graph.frame(n, cancel)?));
         }
         let picture = &self.held.as_ref().ok_or("no picture")?.1;
-        cache.write(n, picture);
-        Ok(Picture(share(picture)))
+        match cache.write(index, picture, wait.then_some(cancel)) || !wait {
+            true => Ok(Picture(share(picture))),
+            false => Err("the cache has no encoder".into()),
+        }
     }
 
     pub fn cached(&self, seconds: f64) -> bool {
-        match (&self.kind, &self.cache) {
-            (Kind::Clip(graph), Some(cache)) => cache.has(graph.info.number(seconds)),
-            _ => false,
-        }
+        let cache = self.cache.as_ref();
+        cache.is_some_and(|cache| cache.has(cache.index(seconds)))
+    }
+
+    pub fn every(&self) -> usize {
+        self.cache.as_ref().map_or(1, |cache| cache.every as usize)
     }
 
     pub fn missing(&self, from: f64, to: f64) -> Option<(f64, f64)> {

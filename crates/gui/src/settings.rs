@@ -612,6 +612,7 @@ pub fn wire(ui: &App, state: &Shared) {
     ui.on_prefs_changed(move || {
         if let Some(ui) = weak.upgrade() {
             limit(&ui);
+            crate::view::seek(&ui, &shared);
             if !ui.get_prefs().secret && ui.get_mode() == Mode::Munch {
                 ui.set_mode(Mode::Render);
             }
