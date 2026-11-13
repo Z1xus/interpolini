@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.32
+- Fixed: Image masks did not render
+
 ## 0.1.31
 - New: Secret quality options
 - New: AV1 decoding on the GPU
