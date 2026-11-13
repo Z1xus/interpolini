@@ -33,7 +33,7 @@ jobs:
           auth=(-H "Authorization: token $TOKEN")
           gh release download "$TAG" -D "$RUNNER_TEMP/dist"
           git push "https://Z1xus:$TOKEN@codeberg.org/Z1xus/interpolini.git" \
-            'refs/remotes/origin/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
+            '+refs/remotes/origin/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
           curl -sS "${auth[@]}" -X DELETE "$api/releases/tags/$TAG" > /dev/null
           id=$(gh release view "$TAG" --json tagName,body --jq '{tag_name: .tagName, name: .tagName, body}' |
             curl -sS --fail-with-body "${auth[@]}" -H 'Content-Type: application/json' -d @- "$api/releases" | jq .id)
