@@ -3,6 +3,8 @@ import type { RouteId } from "$app/types";
 
 type Slug<T extends string = RouteId> = T extends `/${infer Name}` ? Name : never;
 
+export const origin = "https://z1xus.github.io";
+
 type Entry = { id: string; title: string };
 export type Page = {
 	title: string;

@@ -1,9 +1,7 @@
 import { resolve } from "$app/paths";
-import { pages, route } from "#lib/pages.ts";
+import { origin, pages, route } from "#lib/pages.ts";
 
 export const prerender = true;
-
-const origin = "https://z1xus.github.io";
 
 export const GET = () => {
 	const urls = pages.map((page) => {

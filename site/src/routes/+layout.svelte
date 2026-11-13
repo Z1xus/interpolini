@@ -1,14 +1,16 @@
 <script lang="ts">
 	import "#lib/app.css";
 	import { afterNavigate, beforeNavigate } from "$app/navigation";
+	import { asset } from "$app/paths";
 	import { page } from "$app/state";
+	import type { AssetPath } from "$app/types";
 	import Footer from "#lib/components/Footer.svelte";
 	import Header from "#lib/components/Header.svelte";
 	import PageNav from "#lib/components/PageNav.svelte";
 	import Pane from "#lib/components/Pane.svelte";
 	import Sidebar from "#lib/components/Sidebar.svelte";
 	import { providePane } from "#lib/pane.svelte.ts";
-	import { pages, route } from "#lib/pages.ts";
+	import { origin, pages, route } from "#lib/pages.ts";
 
 	let { children } = $props();
 	const pane = providePane();
@@ -29,11 +31,19 @@
 
 	const index = $derived(pages.findIndex((entry) => route(entry) === page.route.id));
 	const current = $derived(pages[index]);
+	const title = $derived(current.slug ? `${current.title} | interpolini` : current.title);
 </script>
 
 <svelte:head>
-	<title>{current.slug ? `${current.title} | interpolini` : current.title}</title>
+	<title>{title}</title>
 	<meta name="description" content={current.description} />
+	<meta name="theme-color" content="#e8483a" />
+	<meta property="og:site_name" content="interpolini" />
+	<meta property="og:title" content={title} />
+	<meta property="og:description" content={current.description} />
+	<meta property="og:url" content={new URL(page.url.pathname, origin).href} />
+	<meta property="og:image" content={new URL(asset("media/logo.png" as AssetPath), origin).href} />
+	<meta name="twitter:card" content="summary" />
 </svelte:head>
 
 <svelte:window onhashchange={() => pane.restore(location.hash)} />
