@@ -1,6 +1,6 @@
 <script lang="ts">
 	import "#lib/app.css";
-	import { afterNavigate, beforeNavigate } from "$app/navigation";
+	import { afterNavigate, beforeNavigate, preloadData } from "$app/navigation";
 	import { asset } from "$app/paths";
 	import { page } from "$app/state";
 	import type { AssetPath } from "$app/types";
@@ -21,12 +21,24 @@
 		if (!shallow) pane.restore(location.hash);
 	});
 
-	let dwell = 0;
-	const ahead = ({ target }: PointerEvent) => {
-		clearTimeout(dwell);
+	let last = { x: 0, y: 0, time: 0 };
+	let warmed: HTMLAnchorElement | null = null;
+	const ahead = ({
+		clientX: x,
+		clientY: y,
+		timeStamp: time,
+		target,
+		pointerType
+	}: PointerEvent) => {
+		const pxPerMs = Math.hypot(x - last.x, y - last.y) / Math.max(time - last.time, 1);
+		const slow = pxPerMs < 0.3;
+		last = { x, y, time };
 		const link = target instanceof Element ? target.closest("a") : null;
-		if (!link || link.origin !== location.origin || link.pathname === location.pathname) return;
-		dwell = window.setTimeout(() => pane.warm(link).catch(console.error), 80);
+		if (!link || link === warmed || !slow || pointerType === "touch") return;
+		if (link.origin !== location.origin || link.pathname === location.pathname) return;
+		warmed = link;
+		preloadData(link.href).catch(console.error);
+		pane.warm(link).catch(console.error);
 	};
 
 	const index = $derived(pages.findIndex((entry) => route(entry) === page.route.id));
@@ -47,7 +59,7 @@
 </svelte:head>
 
 <svelte:window onhashchange={() => pane.restore(location.hash)} />
-<svelte:document onpointerover={ahead} />
+<svelte:document onpointermove={ahead} />
 
 <a
 	href="#content"
