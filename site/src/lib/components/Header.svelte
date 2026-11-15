@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { asset, resolve } from "$app/paths";
+	import Icon from "#lib/components/Icon.svelte";
 	import IconButton from "#lib/components/IconButton.svelte";
 	import Search from "#lib/components/Search.svelte";
 	import { isDark } from "#lib/theme.ts";
@@ -37,8 +38,12 @@
 		<Search />
 		<a
 			href="https://github.com/Z1xus/interpolini"
-			class="cursor-pointer text-muted hover:text-ink pointer-coarse:py-3">GitHub</a
+			aria-label="GitHub"
+			title="GitHub"
+			class="grid size-8 cursor-pointer place-items-center rounded-sm text-muted hover:bg-raised hover:text-ink pointer-coarse:size-10"
 		>
+			<Icon name="github" class="size-5" />
+		</a>
 		<IconButton icon="contrast" label="Switch theme" onclick={toggleTheme} />
 	</nav>
 </header>
