@@ -28,7 +28,8 @@
 		2160p.
 	</p>
 	<p>
-		interpolini never scales down. A clip with a short side at or above this value does not change.
+		interpolini never scales down, so a clip with a short side at or above this value stays as it
+		is.
 	</p>
 </Section>
 

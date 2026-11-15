@@ -59,9 +59,8 @@
 		</tbody>
 	</table>
 	<p>
-		The hardware encoders are NVENC, AMF, QSV and VAAPI, and Vulkan and VideoToolbox for h264 and
-		hevc. Hardware encoders are usually faster. Software encoders usually make a smaller file at the
-		same quality.
+		The hardware encoders are NVENC, AMF, QSV, VAAPI, Vulkan and VideoToolbox. Hardware encoders are
+		usually faster. Software encoders usually make a smaller file at the same quality.
 	</p>
 </Section>
 
@@ -103,23 +102,15 @@
 
 <Section id="output-size" focus={{ ...at("size", "size"), show: result }}>
 	<Setting name="output.size" range="1 to 100000 MB" initial="10 MB" />
-	<p>
-		Sets the size of the file in MB when the target is size. The file can end a little under this
-		size.
-	</p>
-	<p>
-		If the file is larger, interpolini renders again with a lower bitrate, and then with the
-		software encoder. If it is still larger, a warning shows. A size too small for the length of the
-		clip gives an error.
-	</p>
+	<p>Sets the size of the file in MB when the target is size.</p>
 </Section>
 
 <Section id="output-effort" focus={{ ...at("output", "effort"), show: result }}>
 	<Setting name="output.effort" range="fastest, fast, balanced, best" initial="fast" />
 	<p>
 		Sets how much time the encoder spends on each frame. A higher effort usually makes a smaller
-		file at the same quality and renders slower. It sets the encoder preset. The tip of the Effort
-		row shows the preset of each choice. A preset in <Term id="output-options" /> replaces the effort.
+		file at the same quality and renders slower. A preset in <Term id="output-options" /> replaces the
+		effort.
 	</p>
 </Section>
 
@@ -127,13 +118,7 @@
 	<Setting name="output.audio" range="separate, mix" initial="mix" />
 	<p>Sets what happens to the audio tracks of a clip, for example game, voice and music.</p>
 	<p>
-		The mix option gives one track. interpolini removes tracks that repeat others and mixes the
-		rest. The separate option copies each track as it is. In a timeline export, separate gives one
-		track for each audio track of the timeline.
-	</p>
-	<p>
-		A target size, a clip with another speed and a timeline export encode the sound again to AAC at
-		192 kb/s.
+		The mix option mixes all tracks into one, and the separate option keeps each track as it is.
 	</p>
 </Section>
 

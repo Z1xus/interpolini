@@ -161,7 +161,7 @@
 	{/if}
 	{#if model === "loading"}
 		<p class="border-t border-seam px-4 py-2 text-xs text-faint motion-safe:animate-pulse">
-			Loading search by meaning…
+			Loading full search…
 		</p>
 	{/if}
 </dialog>

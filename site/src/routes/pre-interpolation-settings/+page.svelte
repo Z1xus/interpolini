@@ -26,11 +26,11 @@
 	<Setting name="pre-interpolation.enabled" range="yes, no" initial="no" />
 	<p>
 		RIFE raises the frame rate first, and the svp engine interpolates the result from closer frames.
-		The render is slower. The section shows only when <Term id="interp-engine">Engine</Term> is svp.
+		The render is slower.
 	</p>
 	<p>
-		The previews interpolate a 60 fps copy of the clip to 240 fps, and recorded shows the 240 fps
-		clip. Here, svp alone loses the sword, and pre-interpolation keeps it.
+		The previews interpolate a 60 fps copy of the clip to 240 fps. Pick recorded to compare with the
+		real 240 fps frame. Here, svp alone loses the sword, and pre-interpolation keeps it.
 	</p>
 </Section>
 
@@ -45,9 +45,9 @@
 		2x or 2.5x.
 	</p>
 	<p>
-		A higher rate gives svp closer frames and costs more time. At the <Term id="interp-fps"
-			>interpolation frame rate</Term
-		>, here 4x, RIFE makes all the interpolated frames.
+		A higher rate gives svp closer frames, but the render is slower. When it matches the <Term
+			id="interp-fps">interpolation frame rate</Term
+		>, RIFE makes all the frames.
 	</p>
 </Section>
 
@@ -60,11 +60,8 @@
 	<p>
 		Sets how RIFE runs on the GPU. The vulkan backend works on any GPU with Vulkan. The tensorrt
 		backend needs an NVIDIA GPU and the <Term id="components-tensorrt">TensorRT component</Term>.
-		When TensorRT is not ready, interpolini uses vulkan and shows a warning.
 	</p>
-	<p>
-		The frames of the two backends are almost identical (within noise), as the difference shows.
-	</p>
+	<p>The frames of the two backends are almost identical, as the difference shows.</p>
 </Section>
 
 <Section id="pre-model" focus={{ ...picture, show: tile("models", "rife-v4.6") }} control={models}>
@@ -80,6 +77,5 @@
 	<p>
 		These examples run RIFE alone at 4x. Each model breaks the sword edge in its own way, and here
 		rife-v4.15-lite blurs the right edge. No model is best for every clip, so compare them on yours.
-		The backend and the model also apply to the <Term id="interp-rife">rife engine</Term>.
 	</p>
 </Section>

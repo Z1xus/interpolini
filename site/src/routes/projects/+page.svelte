@@ -12,15 +12,14 @@
 
 <Section id="projects-enable" focus={row(projects)}>
 	<p>
-		Project files are off by default. Turn on Project files in Settings &gt; Projects. The Project
-		items then appear in the File menu.
+		Project files are off by default. To use them, turn on Project files in Settings &gt; Projects.
 	</p>
 </Section>
 
 <Section id="projects-save" focus={on("file-menu", "menu", "file-save")}>
 	<p>
-		Save, or Ctrl S, writes a <code>.lini</code> file. Save as, or Ctrl Shift S, asks for a new name.
-		The file holds the timeline, the settings of each clip and the view.
+		Save, or Ctrl S, writes the project to a <code>.lini</code> file with the timeline, the settings of
+		each clip and the view.
 	</p>
 	<p>
 		It holds the paths of the source clips, not the clips themselves, so if you move them, choose
@@ -31,29 +30,29 @@
 <Section id="projects-open" focus={on("file-menu", "menu", "file-open")}>
 	<p>
 		New project is Ctrl N and Open project is Ctrl O. You can also drop a <code>.lini</code>
-		file on the window. With unsaved changes, interpolini asks first when Ask to save in Settings is on.
+		file on the window. If you have unsaved changes, interpolini asks to save them first. Turn off Ask
+		to save in Settings to skip this.
 	</p>
 </Section>
 
 <Section id="projects-recent" focus={on("recent-menu", "menu", "recent")}>
 	<p>
-		Open recent lists the last 8 projects. Clear list empties it. Reopen last project in Settings
+		Open recent lists the last 8 projects. With Reopen last project on in Settings, interpolini
 		opens the latest project at start.
 	</p>
 </Section>
 
 <Section id="projects-autosave" focus={row(autosave)}>
 	<p>
-		Autosave writes a recovery copy when the project has unsaved changes. Set it to Off, 1, 5 or 10
-		minutes. The copy is next to the project file, with <code>.rec</code> at the end of the name, or next
-		to the app when the project has no file. The project file stays as you saved it.
+		Autosave writes a recovery copy when the project has unsaved changes, and the project file stays
+		as you saved it.
 	</p>
 </Section>
 
 <Section id="projects-recover" focus={on("recover", "modal")}>
 	<p>
-		When a recovery copy is left, interpolini offers it at the next start, for example after a
-		crash. Recover opens the changes. Discard deletes the copy. Later keeps it.
+		If interpolini closes with unsaved changes, for example after a crash, it offers to recover them
+		at the next start.
 	</p>
 </Section>
 

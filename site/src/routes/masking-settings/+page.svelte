@@ -96,10 +96,7 @@
 		Peel counts a pixel as HUD when it does not follow the motion of the scene. A higher limit marks
 		fewer pixels as HUD.
 	</p>
-	<p>
-		At 20, parts of the chat do not count as HUD and smear. Values below 6 give the same result in
-		this clip.
-	</p>
+	<p>At 20, parts of the chat do not count as HUD and smear.</p>
 </Section>
 
 <Section
@@ -122,9 +119,9 @@
 >
 	<Setting name="mask.edge" range="0 to 20" initial="5" />
 	<p>
-		Edge and Tolerance belong to the still method. A pixel also counts as still when its detail is
-		stronger than Edge, on a scale of 0 to 255, and stays the same between two frames. Lowering it
-		lets weaker detail count.
+		Edge and Tolerance mark detail that stays the same between two frames as still, such as text.
+		Edge is the lowest strength of that detail, on a scale of 0 to 255. Lowering it lets weaker
+		detail count.
 	</p>
 	<p>
 		At 0, the texture of the moving wall counts as still and shows as grain. Tolerance is 100 in
@@ -139,8 +136,8 @@
 >
 	<Setting name="mask.tolerance" range="0 to 100%" initial="30%" />
 	<p>
-		Sets how much that detail may change between two frames, as a percent of its strength. Raising
-		it marks more pixels as still.
+		Sets how much a detail may change between two frames and still count as still, as a percent of
+		its strength. Raising it marks more pixels as still.
 	</p>
 	<p>
 		At 100, the texture of the moving wall counts as still and shows as grain. Edge is 0 in this
@@ -156,7 +153,7 @@
 	</p>
 	<p>
 		To add a mask, press + to draw one on the clip or import an image, or drop PNG, JPG, WebP or BMP
-		files on the section. Right-click a mask for more actions.
+		files on the section.
 	</p>
 </Section>
 
@@ -167,8 +164,8 @@
 >
 	<Setting name="mask.soft edge" range="0 to 100" initial="0" />
 	<p>
-		Appears once you choose a mask, and in the editor. Blurs the mask out from its edge, so the
-		original frame fades into the interpolated frame. The value is in pixels at 1080p.
+		Blurs the mask out from its edge, so the original frame fades into the interpolated frame. The
+		value is in pixels at 1080p.
 	</p>
 	<p>
 		At 0, the wall in the box ends at the top edge of the box. At 100, it fades out above the box.
@@ -178,8 +175,7 @@
 <Section id="mask-editor" focus={editor}>
 	<p>
 		To open the editor in the Masking section, choose Draw on the clip or Edit, or double-click a
-		mask. Paint the parts of the preview that keep the original frame. Save writes the mask to the
-		<code>masks</code> folder under Name.
+		mask. Paint the parts of the preview that keep the original frame.
 	</p>
 </Section>
 

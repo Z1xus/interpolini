@@ -22,7 +22,7 @@
 		repeats. With dedup off the blur shows a separate copy of the wall edge, and with dedup on it is
 		smooth.
 	</p>
-	<p>The header shows the share of repeats when it is 5% or more.</p>
+	<p>The header shows the share of repeated frames in the clip.</p>
 </Section>
 
 <Section

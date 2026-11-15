@@ -9,7 +9,6 @@
 		Render makes one file from the whole timeline. The file goes next to the first video clip as
 		<code>name - interpolini.mp4</code>, or to the <Term id="render-folder" />.
 	</p>
-	<p>After a render, Copy file puts the file on the clipboard.</p>
 </Section>
 
 <Section id="render-separate" focus={on("separate-menu", "menu", "file-separate")}>

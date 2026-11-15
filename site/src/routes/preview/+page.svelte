@@ -18,9 +18,8 @@
 
 <Section id="preview-views" focus={on("plain", "stage", "tabs")} control={views}>
 	<p>
-		The tabs above the preview set the view. Original shows the clip as it is. Result shows the clip
-		with your settings. Split divides the picture at a line that you drag. Side shows the two next
-		to each other.
+		The tabs above the preview switch between the original clip and the result with your settings,
+		or show both at once, split by a line that you drag or side by side.
 	</p>
 </Section>
 
@@ -46,12 +45,8 @@
 	}}
 >
 	<p>
-		Scroll over the preview to zoom. Drag to move the picture. The zoom button shows Fit or the zoom
-		level. Press it to fit the picture, or double-click the picture to return to the default zoom.
-	</p>
-	<p>
-		Default preview zoom in Settings sets that zoom. When it is Fit, a double-click fits the picture
-		too.
+		Scroll over the preview to zoom. Drag to move the picture. Press the zoom button to fit the
+		picture, or double-click the picture to return to the Default preview zoom from Settings.
 	</p>
 </Section>
 
@@ -72,7 +67,7 @@
 >
 	<p>
 		Save frame, or Ctrl Shift E, saves the picture in the preview as a PNG file next to the source
-		clip. A note appears with Copy file and Show in folder.
+		clip.
 	</p>
 </Section>
 

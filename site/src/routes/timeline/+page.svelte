@@ -60,7 +60,7 @@
 <Section id="timeline-track-menu" focus={on("track-menu", "menu-joint", "menu")}>
 	<p>
 		To open this menu, right-click a track name or press T. Remove track also removes the clips on
-		the track, and the last video track always stays.
+		the track.
 	</p>
 </Section>
 
@@ -73,8 +73,8 @@
 >
 	<p>
 		A file you drop on the timeline lands on the track and time where you drop it, and overwrites
-		the clips it covers. A video with sound also adds one audio clip for each of its audio tracks,
-		and an image lasts 5 seconds.
+		the clips it covers. A video with sound also adds one audio clip for each of its audio tracks.
+		An image lasts 5 seconds.
 	</p>
 	<p>
 		To swap the file of a clip, choose Replace in the clip menu. The clip keeps its place, its cuts

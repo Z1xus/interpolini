@@ -35,7 +35,8 @@ interpolini-cli --json clip.mp4`;
 {"event":"progress","frame":120,"frames":1800,"fps":96.5}
 {"event":"done","clip":"clip.mp4","output":"clip - interpolini.mp4","seconds":18.7}`;
 
-	const ini = `[interpolation]
+	const ini = `; a line that starts with ; or # is a comment
+[interpolation]
 engine: rife
 fps: 480
 
@@ -55,7 +56,7 @@ quality: 18`;
 <Section id="cli-usage" focus={{ rect: regions.window, mark: regions.render }}>
 	<p>
 		<code>interpolini-cli</code> renders clips without the window. It is in the same folder as the
-		app. It saves each result as <Term id="render">Render</Term> describes.
+		app. It saves each result where <Term id="render">Render</Term> does.
 	</p>
 	<CodeBlock code={usage} lang="shell" />
 	<dl class="my-4 divide-y divide-seam border-y border-seam text-sm">
@@ -73,41 +74,31 @@ quality: 18`;
 
 <Section id="cli-settings" focus={at("blending", "fps")}>
 	<p>
-		<code class="whitespace-nowrap">-s section.key=value</code> replaces one setting of the config for
-		this run. Repeat it for more settings. The names are the names in the config file. A key with a space
-		needs quotes.
+		To change one setting for this run, pass <code class="whitespace-nowrap"
+			>-s section.key=value</code
+		>. Repeat it for more settings. The names are the same as in the config file, and a key with a
+		space needs quotes.
 	</p>
 	<CodeBlock code={settings} lang="shell" />
-	<p>
-		An unknown name or value gives a warning, and the run continues. An argument in another form
-		stops the run with exit code 2.
-	</p>
 </Section>
 
 <Section id="cli-range" focus={on("plain", "editor-joint", "cut-tools")}>
 	<p>
-		<code>--from</code> and <code>--to</code> render a part of the clip.
+		To render a part of the clip, pass <code>--from</code> and <code>--to</code> in seconds. To
+		leave out an audio track, pass <code>--mute</code> with its number, for example
 		<code class="whitespace-nowrap">--mute 2</code>
-		leaves out the second audio track. The first track is 1. <code>--join</code> puts all clips into one
-		file, in the order you give them.
+		for the second track. To put all clips into one file in the order you give them, pass
+		<code>--join</code>.
 	</p>
 	<CodeBlock code={range} lang="shell" />
 </Section>
 
 <Section id="cli-batch" focus={on("plain", "panel-top", "config")}>
-	<p>
-		interpolini renders several clips one after the other. Each clip takes its own config. <code
-			class="whitespace-nowrap">--config name</code
-		>
-		loads
-		<code>interpolini.name.ini</code>
-		for every clip.
-		<code>--global</code> skips the configs in the folders of the clips.
-	</p>
+	<p>interpolini renders the clips one after the other, and each clip takes its own config.</p>
 	<CodeBlock code={batch} lang="shell" />
 	<p>
-		<code>--json</code> prints one JSON line for each event: start, info, warning, preparing, progress,
-		done and failed.
+		With <code>--json</code>, the CLI prints one JSON line for each event: start, info, warning,
+		preparing, progress, done and failed.
 	</p>
 	<CodeBlock code={events} lang="json" />
 	<p>
@@ -118,17 +109,14 @@ quality: 18`;
 
 <Section id="cli-wrap" focus={{ rect: regions.window }}>
 	<p>
-		If you decide to use <code>interpolini-cli</code> in your own project, a script or an app that
-		wraps it, run it with <code class="whitespace-nowrap">--json</code> and read the events from
-		stdout. Take the path of the result from the <code>done</code> event, because interpolini never overwrites
-		a file and adds a number to the name when it is taken.
+		To use <code>interpolini-cli</code> from a script or another app, run it with
+		<code class="whitespace-nowrap">--json</code>
+		and read the events from stdout. Take the path of the result from the <code>done</code> event, because
+		interpolini never overwrites a file and adds a number to the name when it is taken.
 	</p>
 	<p>
-		Pass the arguments as a list and not as one shell string, and give each clip as a full path. The
-		CLI has no marker for the end of the options, so a relative path to a clip named <code
-			class="whitespace-nowrap">--join</code
-		>
-		would turn that option on. Always pass at least one clip, because without one the CLI opens a
+		Pass the arguments as a list and not as one shell string, and give each clip as a full path.
+		Always pass at least one clip, because without one the CLI opens a
 		<Term id="cli-picker">file dialog</Term> and waits. Pass <code>-c</code> with the path of your
 		own ini file as well, so the settings don't depend on an <code>interpolini.ini</code> next to the
 		clip or the app.
@@ -151,39 +139,31 @@ quality: 18`;
 
 <Section id="cli-picker" focus={on("plain", "editor-joint", "import")}>
 	<p>
-		Start <code>interpolini-cli</code> without a clip to choose clips in a file dialog, which is also
-		what happens when you double-click the program. On Linux it opens a terminal first, and the terminal
-		stays open until you press Enter.
+		Start <code>interpolini-cli</code> without a clip to choose clips in a file dialog.
 	</p>
 </Section>
 
 <Section id="config-file" focus={on("plain", "panel-top", "config")}>
 	<p>
-		A config is a text file named <code>interpolini.ini</code>, or <code>interpolini.name.ini</code>
-		for a named config. A line is <code>key: value</code> and a section starts with
-		<code>[name]</code>. A line that starts with <code>;</code> or <code>#</code> is a comment.
+		interpolini reads its settings from a text file named <code>interpolini.ini</code>. A setting
+		that is missing from the file uses its default.
 	</p>
 	<CodeBlock code={ini} lang="ini" />
 	<p>
-		Write only the keys you want to change. The others keep their defaults. The window writes these
-		files too: Save in the Config row of the panel writes the file of the config, and New adds
-		<code>interpolini.name.ini</code> next to the app.
+		To save the settings of the panel to this file, press Save in the Config row. New creates a
+		named config.
 	</p>
 </Section>
 
 <Section id="config-lookup" focus={on("plain", "panel-top", "config")}>
-	<p>For each clip, interpolini looks for the config in this order:</p>
+	<p>For each clip, interpolini uses the first config it finds:</p>
 	<ol>
-		<li>the folder of the clip</li>
-		<li>the folder of the app</li>
+		<li><code>interpolini.ini</code> in the folder of the clip</li>
+		<li><code>interpolini.ini</code> in the folder of the app</li>
 		<li>the built-in defaults</li>
 	</ol>
 	<p>
-		The default config is <code>interpolini.ini</code>.
-		<code class="whitespace-nowrap">--config name</code>
-		looks for
-		<code>interpolini.name.ini</code> in the same places, and the file must exist. A path to an ini
-		file loads that file. The app creates
-		<code>interpolini.ini</code> next to itself at first start.
+		With <code class="whitespace-nowrap">--config name</code>, it looks for
+		<code>interpolini.name.ini</code> instead.
 	</p>
 </Section>

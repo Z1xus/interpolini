@@ -30,7 +30,7 @@ const list = [
 			{
 				title: "Get started",
 				slug: "get-started",
-				description: "Render a clip.",
+				description: "Render your first clip with interpolini.",
 				sections: [
 					{ id: "add-clips", title: "Add clips" },
 					{ id: "check-settings", title: "Check the settings" },
@@ -40,7 +40,8 @@ const list = [
 			{
 				title: "Concepts",
 				slug: "concepts",
-				description: "Interpolation, blending and artifacts.",
+				description:
+					"How interpolation and blending make motion blur, and where artifacts come from.",
 				sections: [
 					{ id: "interpolation", title: "Interpolation" },
 					{ id: "blending", title: "Blending" },
@@ -56,7 +57,7 @@ const list = [
 			{
 				title: "Timeline",
 				slug: "timeline",
-				description: "Arrange, cut and move clips.",
+				description: "How to arrange, trim and cut clips on the timeline.",
 				sections: [
 					{ id: "timeline-tracks", title: "Tracks" },
 					{ id: "timeline-track-menu", title: "Track menu" },
@@ -76,7 +77,7 @@ const list = [
 			{
 				title: "Preview",
 				slug: "preview",
-				description: "Compare, zoom and transform.",
+				description: "How to compare the result with the original, zoom and transform clips.",
 				sections: [
 					{ id: "preview-views", title: "Views" },
 					{ id: "preview-hold", title: "Hold to compare" },
@@ -91,9 +92,9 @@ const list = [
 				]
 			},
 			{
-				title: "Settings scope",
-				slug: "settings-scope",
-				description: "Change settings for all clips or for one clip.",
+				title: "Clip settings",
+				slug: "clip-settings",
+				description: "How to use different settings for each clip, and how to share your config.",
 				sections: [
 					{ id: "scope-all", title: "All clips" },
 					{ id: "scope-clip", title: "This clip" },
@@ -104,7 +105,7 @@ const list = [
 			{
 				title: "Projects",
 				slug: "projects",
-				description: "Save, open and recover your timeline.",
+				description: "How to save, open and recover projects.",
 				sections: [
 					{ id: "projects-enable", title: "Turn on project files" },
 					{ id: "projects-save", title: "Save" },
@@ -118,7 +119,7 @@ const list = [
 			{
 				title: "Render",
 				slug: "render",
-				description: "Make a file from the timeline.",
+				description: "How to render the timeline to a file.",
 				sections: [
 					{ id: "render-button", title: "Render" },
 					{ id: "render-separate", title: "Export each clip separately" },
@@ -134,7 +135,7 @@ const list = [
 			{
 				title: "Dedup",
 				slug: "dedup-settings",
-				description: "Settings in the Dedup section.",
+				description: "How dedup replaces the repeated frames of a recording.",
 				sections: [
 					{ id: "dedup-section", title: "Dedup section" },
 					{ id: "dedup-repeats", title: "Repeats replaced" }
@@ -143,7 +144,7 @@ const list = [
 			{
 				title: "Pre-interpolation",
 				slug: "pre-interpolation-settings",
-				description: "Settings in the Pre-interpolation section.",
+				description: "How RIFE raises the frame rate before the svp engine.",
 				sections: [
 					{ id: "pre-section", title: "Pre-interpolation section" },
 					{ id: "pre-fps", title: "Frame rate" },
@@ -154,7 +155,7 @@ const list = [
 			{
 				title: "Interpolation",
 				slug: "interpolation-settings",
-				description: "Settings in the Interpolation section.",
+				description: "The interpolation engines and their settings.",
 				sections: [
 					{ id: "interp-section", title: "Interpolation section" },
 					{ id: "interp-engine", title: "Engine" },
@@ -169,7 +170,7 @@ const list = [
 			{
 				title: "Masking",
 				slug: "masking-settings",
-				description: "Settings in the Masking section.",
+				description: "How masking keeps the HUD and other fixed parts from warping.",
 				sections: [
 					{ id: "masking-section", title: "Masking section" },
 					{ id: "mask-method", title: "Method" },
@@ -186,7 +187,7 @@ const list = [
 			{
 				title: "Blending",
 				slug: "blending-settings",
-				description: "Settings in the Blending section.",
+				description: "How blending turns the interpolated frames into motion blur.",
 				sections: [
 					{ id: "blending-section", title: "Blending section" },
 					{ id: "blending-fps", title: "Frame rate" },
@@ -198,7 +199,7 @@ const list = [
 			{
 				title: "Color",
 				slug: "color-settings",
-				description: "Settings in the Color section.",
+				description: "How to change the colors of the result.",
 				sections: [
 					{ id: "color-section", title: "Color section" },
 					{ id: "color-brightness", title: "Brightness" },
@@ -211,7 +212,7 @@ const list = [
 			{
 				title: "Upscale",
 				slug: "upscale-settings",
-				description: "Settings in the Upscale section.",
+				description: "How to scale the result to a higher resolution.",
 				sections: [
 					{ id: "upscale-section", title: "Upscale section" },
 					{ id: "upscale-resolution", title: "Resolution" },
@@ -221,7 +222,7 @@ const list = [
 			{
 				title: "Output",
 				slug: "output-settings",
-				description: "Settings in the Output section.",
+				description: "How interpolini encodes the result.",
 				sections: [
 					{ id: "output-section", title: "Output section" },
 					{ id: "output-codec", title: "Codec" },
@@ -243,7 +244,8 @@ const list = [
 			{
 				title: "Install",
 				slug: "install",
-				description: "Trust, Send to on Windows and the app menu on Linux.",
+				description:
+					"How to verify a download and add interpolini to Explorer or the Linux app menu.",
 				sections: [
 					{ id: "trust", title: "Trust" },
 					{ id: "send-to", title: "Send to on Windows" },
@@ -253,7 +255,7 @@ const list = [
 			{
 				title: "Components",
 				slug: "components",
-				description: "RIFE models, TensorRT and FFmpeg.",
+				description: "How to install RIFE models and TensorRT, and choose the FFmpeg libraries.",
 				sections: [
 					{ id: "components-open", title: "Open Components" },
 					{ id: "components-rife", title: "RIFE models" },
@@ -269,7 +271,7 @@ const list = [
 			{
 				title: "CLI and config",
 				slug: "cli",
-				description: "Render without the window and keep settings in files.",
+				description: "How to render with interpolini-cli and write config files.",
 				sections: [
 					{ id: "cli-usage", title: "Usage" },
 					{ id: "cli-settings", title: "Settings" },
@@ -284,7 +286,7 @@ const list = [
 			{
 				title: "Elsewhere",
 				slug: "elsewhere",
-				description: "Related tools and where to read about them.",
+				description: "Other tools and guides for recording, sharing and encoding.",
 				sections: [
 					{ id: "elsewhere-recording", title: "Recording" },
 					{ id: "elsewhere-sharing", title: "Sharing" },

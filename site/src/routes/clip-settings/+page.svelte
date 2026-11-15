@@ -20,9 +20,9 @@
 
 <Section id="scope-config" focus={on("plain", "panel-top", "config")}>
 	<p>
-		A new clip takes its settings from the <code>interpolini.ini</code> in its folder. When the
-		folder has no such file, it takes the settings on screen, which start from Default preset in
-		Settings &gt; General. <Term id="config-lookup">Lookup order</Term> has the full rules.
+		A new clip takes its settings from the <code>interpolini.ini</code> in its folder. When the folder
+		has no such file, it takes the settings on screen, which start from Default preset in Settings &gt;
+		General.
 	</p>
 	<p>To load another config for the selected clip, choose it in the Config list.</p>
 </Section>
@@ -30,7 +30,9 @@
 <Section id="scope-share" focus={on("share", "share-area", "popup")}>
 	<p>
 		To share your config, open Share and press Copy, which puts the settings of the panel on the
-		clipboard as a short code. A LUT file is not part of the code.
+		clipboard as a short code. A LUT file is not part of the code. You can also send the config file
+		itself, which is the <code>.ini</code> file next to the app, or in the folder of the clip when
+		the clip has its own <code>interpolini.ini</code>.
 	</p>
 	<p>
 		To use a code from someone else, paste it under Use a code and press Apply. Like any other

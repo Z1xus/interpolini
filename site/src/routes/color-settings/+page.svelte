@@ -86,7 +86,7 @@
 >
 	<Setting name="color.lut" range="a .cube file" initial="none" />
 	<p>
-		Applies a 3D LUT from a <code>.cube</code> file after the four settings above. Choose picks a file,
-		and × removes it. The example LUT tints shadows blue and highlights warm.
+		Applies a 3D LUT from a <code>.cube</code> file after the four settings above. The example LUT tints
+		shadows blue and highlights warm.
 	</p>
 </Section>

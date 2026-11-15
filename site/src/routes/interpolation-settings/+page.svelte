@@ -24,12 +24,11 @@
 >
 	<Setting name="interpolation.enabled" range="yes, no" initial="yes" />
 	<p>
-		With interpolation off, <Term id="blending">blending</Term> averages the recorded frames, or the frames
-		of pre-interpolation when that is on.
+		With interpolation off, <Term id="blending">blending</Term> averages the recorded frames.
 	</p>
 	<p>
 		Except for Frame rate, the previews on this page interpolate a 60 fps copy of the clip to 240
-		fps, so that recorded can show the frame of the 240 fps clip at the same moment.
+		fps. Pick recorded to compare with the real 240 fps frame.
 	</p>
 </Section>
 
@@ -45,10 +44,7 @@
 		edge, and rife keeps it closer to the recorded frame, but neither engine wins on every clip.
 		Which one to use depends on your footage and on the look you like.
 	</p>
-	<p>
-		Each engine shows its own settings in the panel. The svp engine can also run after
-		<Term id="pre-section">pre-interpolation</Term>.
-	</p>
+	<p>The svp engine can also run after <Term id="pre-section">pre-interpolation</Term>.</p>
 </Section>
 
 <Section
@@ -83,7 +79,7 @@
 		<tbody>
 			<tr>
 				<th>medium</th>
-				<td>8 px blocks, or 16 px without a GPU, with refinement</td>
+				<td>8 px blocks, with refinement</td>
 			</tr>
 			<tr>
 				<th>fast</th>
@@ -107,7 +103,7 @@
 			<tr><th>weak</th><td>a more thorough search for motion</td></tr>
 			<tr>
 				<th>smooth, film</th>
-				<td>the standard search, with the same result. The example shows film.</td>
+				<td>the standard search, with the same result</td>
 			</tr>
 			<tr>
 				<th>animation</th>

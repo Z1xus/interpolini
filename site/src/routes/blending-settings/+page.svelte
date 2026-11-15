@@ -33,8 +33,8 @@
 	<Setting name="blending.enabled" range="yes, no" initial="yes" />
 	<p>The graph shows how many frames blend and the weight of each frame.</p>
 	<p>
-		Blending runs only when Frame rate is below the rate of the frames that reach it. These come
-		from interpolation, or from pre-interpolation or the clip when interpolation is off.
+		Blending only works when its Frame rate is lower than the rate of the incoming frames. With the
+		defaults, those are the 960 fps from interpolation.
 	</p>
 </Section>
 
@@ -42,8 +42,8 @@
 	<Setting name="blending.fps" range="1 to 1000" initial="60" />
 	<p>
 		Sets the output frame rate. A lower rate blends more <Term id="interpolation">interpolated</Term
-		> frames into each output frame, so the blur is longer. From 960 fps, a blend has 5 frames at 240
-		fps, 17 at 60 fps and 33 at 30 fps.
+		> frames into each output frame, so the blur is longer. From 960 fps, each output frame blends 17
+		frames at 60 fps and 33 frames at 30 fps.
 	</p>
 </Section>
 
@@ -69,7 +69,6 @@
 	<p>
 		Sets how brightness blends. At 1 the blend is a plain average, and a bright spot fades into the
 		dark around it. Raising it gives bright pixels more weight, so the spot leaves a bright streak.
-		Only brightness blends this way. Colors blend as a plain average.
 	</p>
 </Section>
 
