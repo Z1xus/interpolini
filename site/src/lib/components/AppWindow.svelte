@@ -136,10 +136,7 @@
 	});
 </script>
 
-<div
-	bind:clientWidth={width}
-	class={["absolute inset-0 transition-opacity duration-300", status !== "ready" && "opacity-0"]}
->
+<div bind:clientWidth={width} class="absolute inset-0">
 	<canvas
 		{id}
 		{@attach mount}

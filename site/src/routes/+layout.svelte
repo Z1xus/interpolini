@@ -1,6 +1,6 @@
 <script lang="ts">
 	import "#lib/app.css";
-	import { afterNavigate, beforeNavigate, preloadData } from "$app/navigation";
+	import { afterNavigate, beforeNavigate, onNavigate, preloadData } from "$app/navigation";
 	import { asset } from "$app/paths";
 	import { page } from "$app/state";
 	import type { AssetPath } from "$app/types";
@@ -16,6 +16,15 @@
 	const pane = providePane();
 	beforeNavigate(({ to }) => {
 		if (to?.url.pathname !== page.url.pathname) pane.reset();
+	});
+	onNavigate(({ from, to, complete }) => {
+		if (!document.startViewTransition || from?.url.pathname === to?.url.pathname) return;
+		return new Promise<void>((ready) => {
+			document.startViewTransition(async () => {
+				ready();
+				await complete;
+			});
+		});
 	});
 	afterNavigate(({ shallow }) => {
 		if (!shallow) pane.restore(location.hash);
@@ -79,7 +88,7 @@
 				<article
 					id="content"
 					tabindex="-1"
-					class="arrive min-w-0 pt-8 pb-[max(4rem,calc((100svh-var(--reading-top))*0.65-9rem))] outline-none lg:pt-14"
+					class="min-w-0 pt-8 pb-[max(4rem,calc((100svh-var(--reading-top))*0.65-9rem))] outline-none lg:pt-14"
 				>
 					<h1 class="text-3xl font-semibold tracking-tight">{current.title}</h1>
 					{@render children()}

@@ -200,10 +200,6 @@
 	animation: fade 0.3s ease-out 0.4s backwards;
 }
 
-.arrive {
-	animation: fade 0.25s ease-out;
-}
-
 dialog,
 dialog::backdrop {
 	transition:

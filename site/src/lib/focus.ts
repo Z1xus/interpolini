@@ -66,7 +66,8 @@ export const reach = (pixels: number) => pixels / regions.preview.w;
 
 export function camera(focus: Focus, band: boolean, width: number, height: number, pixels: number) {
 	if (!width || !height) return { scale: 1, x: 0, y: 0, mark: focus.mark };
-	const base = Math.min(width / height > aspect ? height * aspect : width, reach(pixels));
+	const fit = width / height > aspect ? height * aspect : width;
+	const base = Math.min(fit, reach(pixels));
 	const baseHeight = base / aspect;
 	const { target, margin, padding } = framed(focus, band);
 	const zoom = (rect: Rect) =>
@@ -98,7 +99,7 @@ export function camera(focus: Focus, band: boolean, width: number, height: numbe
 	const view = { x: x - visibleX / 2, y: y - visibleY / 2, w: visibleX, h: visibleY };
 	const { mark } = focus;
 	return {
-		scale,
+		scale: (scale * base) / fit,
 		x: (0.5 - x) * scale * base,
 		y: (0.5 - y) * scale * baseHeight,
 		mark: mark && overlap(mark, view) >= (mark.w * mark.h) / 2 ? mark : undefined

@@ -2,7 +2,7 @@
 	import AppWindow from "#lib/components/AppWindow.svelte";
 	import Chip from "#lib/components/Chip.svelte";
 	import PlaybackBar from "#lib/components/PlaybackBar.svelte";
-	import { camera, reach } from "#lib/focus.ts";
+	import { camera } from "#lib/focus.ts";
 	import { usePane } from "#lib/pane.svelte.ts";
 	import { assetOf } from "#lib/show.ts";
 	import { pixelsOf } from "#lib/source.ts";
@@ -28,6 +28,10 @@
 	const shape = $derived(camera(focus, band.current, width, height, pixels));
 	const problem = $derived(status === "failed" || broken || entry?.status === "failed");
 	const waiting = $derived(status === "loading" || entry?.status === "loading");
+	let shown = $state(false);
+	$effect(() => {
+		if (!waiting) shown = true;
+	});
 
 	const retry = () => {
 		if (status === "failed" || broken) {
@@ -64,9 +68,12 @@
 	>
 		<div
 			inert
-			class="relative transition-[scale,translate] duration-[900ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
+			class={[
+				"relative duration-[900ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+				shown ? "transition-[scale,translate,opacity]" : "opacity-0"
+			]}
 			style:aspect-ratio={aspect}
-			style:width="min(100cqw, {aspect * 100}cqh, {reach(pixels)}px)"
+			style:width="min(100cqw, {aspect * 100}cqh)"
 			style:scale={shape.scale}
 			style:translate="{shape.x}px {shape.y}px"
 			style:--zoom={shape.scale}
