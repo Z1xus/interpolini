@@ -11,7 +11,7 @@ use ffmpeg_next::packet::Mut;
 use ffmpeg_next::software::scaling;
 use ffmpeg_next::{Packet, color, ffi, frame, media};
 
-use crate::budget;
+use crate::budget::{self, Class};
 use crate::compose::share;
 use crate::svp::Reader;
 use crate::work::{self, Follow};
@@ -258,6 +258,7 @@ pub fn origin(input: &format::context::Input) -> i64 {
 }
 
 pub(crate) const PAST: usize = 16;
+const HISTORY: usize = 192 << 20;
 pub(crate) const REFERENCES: usize = 16;
 // a shorter step forward is decoded through, a longer one seeks
 const NEAR: i32 = 64;
@@ -283,6 +284,9 @@ pub struct Decoder {
     frame: frame::Video,
     at: i32,
     past: VecDeque<(i32, frame::Video)>,
+    keep: usize,
+    // the number that the decoder goes to, the gpu gives only the pictures near it
+    wanted: i32,
     ahead: frame::Video,
     after: Option<i32>,
     meta: Meta,
@@ -566,6 +570,13 @@ impl Decoder {
         if meta.width == 0 || meta.height == 0 {
             return Err("the clip has no picture size".into());
         }
+        // the preview jumps, and the host then reads pictures back that a seek makes slow
+        let luma = meta.width as usize * meta.height as usize;
+        let picture = luma + 2 * (luma >> (meta.shift() * 2));
+        let keep = match budget::current() {
+            Class::Interactive => (HISTORY / picture).clamp(PAST, 64),
+            _ => PAST,
+        };
         Ok(Self {
             path: path.to_owned(),
             input,
@@ -575,6 +586,8 @@ impl Decoder {
             frame: frame::Video::empty(),
             at: -1,
             past: VecDeque::new(),
+            keep,
+            wanted: i32::MIN,
             ahead: frame::Video::empty(),
             after: None,
             full: (meta.width, meta.height),
@@ -613,12 +626,12 @@ impl Decoder {
         loop {
             self.cancel.check()?;
             if self.decoder.receive_frame(&mut self.ahead).is_ok() {
-                if self.gpu {
-                    self.download()?;
-                }
                 let ticks = self.ahead.timestamp().map(|time| time - self.start);
                 let timed = ticks.map(|ticks| (ticks as f64 * self.frames_per_tick).round() as i32);
                 let timed = timed.unwrap_or(self.at + 1);
+                if self.gpu && timed.saturating_add(self.keep as i32) >= self.wanted {
+                    download(&mut self.ahead)?;
+                }
                 if unsafe { (*self.ahead.as_ptr()).decode_error_flags } != 0 {
                     self.damaged(timed);
                 }
@@ -644,25 +657,6 @@ impl Decoder {
                 Err(error) => return Err(error.into()),
             }
         }
-    }
-
-    fn download(&mut self) -> Result<()> {
-        if unsafe { (*self.ahead.as_ptr()).hw_frames_ctx.is_null() } {
-            return Err("the gpu does not decode this clip".into());
-        }
-        let mut copy = frame::Video::empty();
-        let code = unsafe {
-            let (to, from) = (copy.as_mut_ptr(), self.ahead.as_ptr());
-            match ffi::av_hwframe_transfer_data(to, from, 0) {
-                0 => ffi::av_frame_copy_props(to, from),
-                code => code,
-            }
-        };
-        if code < 0 {
-            return Err(ffmpeg_next::Error::from(code).into());
-        }
-        self.ahead = copy;
-        Ok(())
     }
 
     fn seek(&mut self, n: i32) -> Result<()> {
@@ -754,10 +748,34 @@ impl Decoder {
     }
 }
 
+fn hardware(picture: &frame::Video) -> bool {
+    !unsafe { (*picture.as_ptr()).hw_frames_ctx.is_null() }
+}
+
+fn download(picture: &mut frame::Video) -> Result<()> {
+    if !hardware(picture) {
+        return Err("the gpu does not decode this clip".into());
+    }
+    let mut copy = frame::Video::empty();
+    let code = unsafe {
+        let (to, from) = (copy.as_mut_ptr(), picture.as_ptr());
+        match ffi::av_hwframe_transfer_data(to, from, 0) {
+            0 => ffi::av_frame_copy_props(to, from),
+            code => code,
+        }
+    };
+    if code < 0 {
+        return Err(ffmpeg_next::Error::from(code).into());
+    }
+    *picture = copy;
+    Ok(())
+}
+
 impl Decoder {
     fn find(&mut self, n: i32) -> Result<Option<usize>> {
         // a file can end before its frame count says so, and then the last picture stays
         let mut aim = None;
+        self.wanted = n;
         if n < self.at {
             // after a jump the host reads some pictures back, and a seek for each one is slow
             if let Some(index) = self.past.iter().rposition(|past| past.0 <= n) {
@@ -793,10 +811,10 @@ impl Decoder {
                 Some(number) if number <= n || self.at < 0 => {
                     std::mem::swap(&mut self.frame, &mut self.ahead);
                     let last = std::mem::replace(&mut self.ahead, frame::Video::empty());
-                    if self.at >= 0 {
+                    if self.at >= 0 && !hardware(&last) {
                         self.past.push_back((self.at, last));
                     }
-                    if self.past.len() > PAST {
+                    if self.past.len() > self.keep {
                         self.past.pop_front();
                     }
                     self.at = number;
@@ -807,6 +825,9 @@ impl Decoder {
         }
         if self.at < 0 {
             return Err(Error("the clip has no frames".into()));
+        }
+        if hardware(&self.frame) {
+            download(&mut self.frame)?;
         }
         Ok(None)
     }
