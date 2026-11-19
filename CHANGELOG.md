@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.33
+- New: Preview cache, played parts play again at once
+- New: Ready parts show on the timeline ruler
+- Changed: Playback never waits
+
 ## 0.1.32
 - Fixed: Image masks did not render
 

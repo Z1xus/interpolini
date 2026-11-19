@@ -52,10 +52,17 @@
 
 <Section id="preview-playback" focus={on("plain", "stage-transport", "resolution")}>
 	<p>
-		Playback resolution sets the size of the preview: Auto, Full, 1/2 or 1/4. A lower size plays
-		more smoothly. Turn off Preview in the right-click menu of the picture to hide the preview.
+		Playback resolution sets the size of the preview. Playback never stops to wait for frames. When
+		your settings are too slow to play in real time, Auto lowers the size, and Full, 1/2 and 1/4
+		keep their size and show fewer frames.
 	</p>
-	<p>Preview memory in Settings sets how much memory the preview can use.</p>
+	<p>
+		interpolini keeps the frames that it has processed, so a part that has played is not processed
+		again. While the preview is paused it also prepares the frames after the playhead, and a line on
+		the ruler of the timeline marks the parts that are ready. Preview cache in Settings turns this
+		off, and Preview memory sets how much memory the preview can use.
+	</p>
+	<p>Turn off Preview in the right-click menu of the picture to hide the preview.</p>
 </Section>
 
 <Section
