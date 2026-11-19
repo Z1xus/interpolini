@@ -4,12 +4,38 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::Result;
 use crate::budget::{self, Class};
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
+static SHOWING: Mutex<(usize, Option<Instant>)> = Mutex::new((0, None));
+// the time after a picture of the preview that the measures in the background stay away
+const QUIET: Duration = Duration::from_secs(2);
+
+// the preview makes a picture, and the measures in the background wait for it
+pub fn showing<R>(run: impl FnOnce() -> R) -> R {
+    locked(&SHOWING).0 += 1;
+    let result = run();
+    let mut showing = locked(&SHOWING);
+    *showing = (showing.0 - 1, Some(Instant::now()));
+    result
+}
+
+pub fn after_showing(cancel: &Cancel) -> Result<()> {
+    loop {
+        let quiet = match *locked(&SHOWING) {
+            (0, last) => last.is_none_or(|last| last.elapsed() >= QUIET),
+            _ => false,
+        };
+        if quiet {
+            return cancel.check();
+        }
+        cancel.pause(Instant::now() + Duration::from_millis(50));
+        cancel.check()?;
+    }
+}
 
 pub fn live() -> usize {
     LIVE.load(Ordering::Relaxed)

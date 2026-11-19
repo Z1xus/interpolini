@@ -38,6 +38,8 @@ const RESERVE: f64 = 1.0;
 const SEEK: f64 = 1.0;
 // the frames after a seek that a measure leaves out, the first one holds the seek
 const WARM: u32 = 1;
+// the seconds after the playhead that the cache fills even when older pieces must go
+const CLOSE: f64 = 10.0;
 // rife makes frames in bursts of 4, so a measure takes at least that many
 const BURST: u32 = 4;
 // the narrowest picture of a playback that is too slow at its size
@@ -119,6 +121,8 @@ pub struct Measure {
 }
 
 type Pixels = SharedPixelBuffer<Rgba8Pixel>;
+type Posted = (Cancel, Frame, String, Option<f32>, bool);
+static NEWEST: Mutex<Option<Posted>> = Mutex::new(None);
 
 struct Frame {
     moved: f64,
@@ -320,8 +324,8 @@ fn compose(
             true => source.play(seconds, cancel),
             false => source.at(seconds, cancel),
         });
-        if let Some(Ok(picture)) = picture {
-            pictures.push((picture, layer.place, level(layer)));
+        if let Some(picture) = picture {
+            pictures.push((picture?, layer.place, level(layer)));
         }
     }
     canvas.preview(pictures, width, !original)
@@ -348,9 +352,15 @@ fn pair(
     )?);
     let before = match view {
         View::Result => None,
-        View::Both => compose(open, canvas, layers, (true, play), moved, width, cancel)
-            .ok()
-            .map(|before| pixels(&before)),
+        View::Both => Some(pixels(&compose(
+            open,
+            canvas,
+            layers,
+            (true, play),
+            moved,
+            width,
+            cancel,
+        )?)),
         View::Original => Some(image.clone()),
     };
     Ok((image, before))
@@ -417,8 +427,12 @@ fn warn(ui: &Weak<App>) -> impl Fn(Event) + Sync + '_ {
     }
 }
 
-fn fail(ui: &Weak<App>, error: interpolini_core::Error) {
+fn fail(ui: &Weak<App>, cancel: &Cancel, error: interpolini_core::Error) {
+    let cancel = cancel.clone();
     let _ = ui.upgrade_in_event_loop(move |ui| {
+        if cancel.stopped() {
+            return;
+        }
         LAST.take();
         ui.set_failed(true);
         ui.set_status(error.to_string().into());
@@ -435,18 +449,34 @@ fn post(
     position: Option<f32>,
     first: bool,
 ) {
-    let Frame {
-        image,
-        before,
-        details,
-        fps,
-        ..
-    } = frame;
+    let mut newest = locked(&NEWEST);
+    let same = newest.as_ref().is_some_and(|held| held.0.same(cancel));
+    let first = first || same && newest.as_ref().is_some_and(|held| held.4);
+    newest.replace((cancel.clone(), frame, text, position, first));
+    drop(newest);
+    if same {
+        return;
+    }
     let cancel = cancel.clone();
     let _ = ui.upgrade_in_event_loop(move |ui| {
+        let mut newest = locked(&NEWEST);
+        if !newest.as_ref().is_some_and(|held| held.0.same(&cancel)) {
+            return;
+        }
+        let Some((cancel, frame, text, position, first)) = newest.take() else {
+            return;
+        };
+        drop(newest);
         if cancel.stopped() {
             return;
         }
+        let Frame {
+            image,
+            before,
+            details,
+            fps,
+            ..
+        } = frame;
         ui.set_preview(slint::Image::from_rgba8(image));
         if let Some(before) = before {
             ui.set_original(slint::Image::from_rgba8(before));
@@ -644,7 +674,7 @@ impl Worker {
             };
         }
         if let Some(error) = failed {
-            fail(ui, error);
+            fail(ui, cancel, error);
             return None;
         }
         let (_, _, canvas) = canvas.as_mut()?;
@@ -660,7 +690,13 @@ impl Worker {
                 u32::MAX,
                 cancel,
             );
-            let path = image.ok().and_then(|image| write(layers, &image));
+            let path = match image {
+                Ok(image) => write(layers, &image),
+                Err(error) => {
+                    fail(ui, cancel, error);
+                    return None;
+                }
+            };
             let _ = ui.upgrade_in_event_loop(move |ui| match path {
                 Some(path) => {
                     say(&ui, "Saved".into(), Note::Brief, -1.0);
@@ -685,22 +721,38 @@ impl Worker {
                 factor,
             });
         }
-        let (image, before) = pair(open, canvas, layers, (view, false), 0.0, width, cancel).ok()?;
         let (details, fps) = details(open, layers, view == View::Original, &setup);
-        let frame = Frame {
+        let frame = |(image, before)| Frame {
             moved: 0.0,
             image,
             before,
-            details,
+            details: details.clone(),
             fps,
             step: 1.0 / fps,
         };
-        post(ui, cancel, frame, String::new(), None, false);
+        // a cached picture shows at once, and the exact one takes its place
+        let solid = layers.iter().filter(|layer| !layer.still);
+        if view != View::Original
+            && solid.into_iter().all(|layer| hit(open, layer, 0.0))
+            && let Ok(quick) = pair(open, canvas, layers, (view, true), 0.0, width, cancel)
+        {
+            post(ui, cancel, frame(quick), String::new(), None, false);
+        }
+        let exact = match pair(open, canvas, layers, (view, false), 0.0, width, cancel) {
+            Ok(exact) => exact,
+            Err(error) => {
+                fail(ui, cancel, error);
+                return None;
+            }
+        };
+        post(ui, cancel, frame(exact), String::new(), None, false);
         for (layer, config) in idle(layers, view, size) {
             open.open(&layer.clip, &config, false, &|_| {}, cancel)
                 .ok()?;
         }
-        let _ = compose(open, canvas, layers, (false, false), 0.0, width, cancel);
+        if view == View::Original {
+            let _ = compose(open, canvas, layers, (false, false), 0.0, width, cancel);
+        }
         None
     }
 }
@@ -709,9 +761,9 @@ fn run(worker: &Arc<Mutex<Worker>>, show: Show, cancel: &Cancel) {
     let idle = !show.play && !show.quiet && show.save.is_none() && show.view != View::Original;
     let first = show.parts.first().filter(|_| idle).cloned();
     let auto = show.auto;
-    let play = locked(worker).show(show, cancel);
+    let play = work::showing(|| locked(worker).show(show, cancel));
     match (play, first) {
-        (Some(play), _) => playback(worker, play, cancel),
+        (Some(play), _) => work::showing(|| playback(worker, play, cancel)),
         (None, Some(first)) => fill_cache(worker, first, auto, cancel),
         _ => {}
     }
@@ -778,7 +830,7 @@ fn fill_cache(worker: &Mutex<Worker>, first: Stretch, auto: bool, cancel: &Cance
         };
         services::close(open.split(used));
         own.retain(|key| open.get(&key.0, &key.1).is_some());
-        for layer in &stretch.layers {
+        'layer: for layer in &stretch.layers {
             let (clip, config) = (&layer.clip, &layer.config);
             if cancel.stopped() || !cache::enabled() {
                 break 'fill;
@@ -811,12 +863,26 @@ fn fill_cache(worker: &Mutex<Worker>, first: Stretch, auto: bool, cancel: &Cance
                 .get(clip, config)
                 .and_then(|source| source.missing(from, to))
             {
+                if end <= from {
+                    break;
+                }
                 let frames = (begin * fps).round() as i32..(end * fps).round() as i32;
-                for n in frames.step_by(every) {
-                    if cancel.stopped() || !cache::room() {
+                for (count, n) in frames.step_by(every).enumerate() {
+                    let seconds = f64::from(n) / fps;
+                    if cancel.stopped() {
                         break 'fill;
                     }
-                    let seconds = f64::from(n) / fps;
+                    if count % cache::PIECE as usize == 0 && !cache::room() {
+                        let near = index == 0 && (seconds - layer.start) / layer.speed < CLOSE;
+                        let held = open.get(clip, config);
+                        let held = held.is_some_and(|source| source.cached(layer.start));
+                        let kept = held || count < 2 * cache::PIECE as usize;
+                        match (near && kept, index) {
+                            (true, _) => {}
+                            (false, 0) => break 'layer,
+                            (false, _) => break 'fill,
+                        }
+                    }
                     let begun = Instant::now();
                     // the wait for the encoder is not part of the speed
                     let stored = open.get_mut(clip, config).map(|source| {
@@ -1070,7 +1136,7 @@ fn compose_all(
     stop: &Cancel,
     ready: &Receiver<Opened>,
     pictures: &work::Sender<Frame>,
-) {
+) -> interpolini_core::Result<bool> {
     let (ui, parts, view, width, setup, auto) = play;
     let mut worker = locked(worker);
     let Worker {
@@ -1080,20 +1146,19 @@ fn compose_all(
         ..
     } = &mut *worker;
     let Some((_, _, canvas)) = canvas else {
-        return;
+        return Ok(false);
     };
     let warn = warn(ui);
-    let failed = |error| {
-        if !stop.stopped() {
-            fail(ui, error);
-        }
+    let failed = |error| match stop.stopped() {
+        true => Ok(false),
+        false => Err(error),
     };
     let mut factor = reach.factor.load(Ordering::Relaxed);
-    'play: for (index, stretch) in parts.iter().enumerate() {
+    for (index, stretch) in parts.iter().enumerate() {
         let mut layers = sized(&stretch.layers, factor);
         if index > 0 {
             let Ok(opened) = ready.recv() else {
-                break 'play;
+                return Ok(false);
             };
             // the size can go down after the opener made its sources
             let filled = opened.and_then(|sources| {
@@ -1106,8 +1171,7 @@ fn compose_all(
                 fill(open, &layers, view, &warn, stop)
             });
             if let Err(error) = filled {
-                failed(error);
-                break 'play;
+                return failed(error);
             }
             let needs = wanted(&layers, view);
             let needed = |clip: &Path, config: &Config| {
@@ -1138,8 +1202,9 @@ fn compose_all(
             let solid = layers.iter().filter(|layer| !layer.still);
             let cached = !original && solid.into_iter().all(|layer| hit(open, layer, moved));
             let shown = pair(open, canvas, &layers, (view, true), moved, width, stop);
-            let Ok((image, before)) = shown else {
-                break 'play;
+            let (image, before) = match shown {
+                Ok(shown) => shown,
+                Err(error) => return failed(error),
             };
             // the opener slows the composer down for a moment
             if cached {
@@ -1166,7 +1231,7 @@ fn compose_all(
                 step,
             });
             if sent.is_err() {
-                break 'play;
+                return Ok(false);
             }
             if made + step >= stretch.end {
                 break;
@@ -1194,8 +1259,7 @@ fn compose_all(
             reach.factor.store(factor, Ordering::Relaxed);
             layers = next;
             if let Err(error) = fill(open, &layers, view, &warn, stop) {
-                failed(error);
-                break 'play;
+                return failed(error);
             }
             let kept = |clip: &Path, config: &Config| {
                 !gone.iter().any(|key| key.0 == clip && key.1 == *config)
@@ -1213,6 +1277,7 @@ fn compose_all(
             (warm, spent, done, debt) = (WARM, 0.0, 0, 0.0);
         }
     }
+    Ok(true)
 }
 
 fn show_frames(
@@ -1341,15 +1406,26 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
     drop(queue);
     reach.notify();
     let _ = opener.join();
-    let _ = composer.join();
+    let composed = composer.join().unwrap_or(Ok(false));
     budget::preview(false);
-    if finished {
-        let _ = ui.upgrade_in_event_loop(|ui| {
-            LAST.take();
-            ui.set_speed("".into());
-            say(&ui, String::new(), Note::Sticky, -1.0);
-            ui.invoke_ended();
-        });
+    if !finished {
+        return;
+    }
+    match composed {
+        Err(error) => fail(&ui, cancel, error),
+        Ok(false) => {}
+        Ok(true) => {
+            let cancel = cancel.clone();
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                if cancel.stopped() {
+                    return;
+                }
+                LAST.take();
+                ui.set_speed("".into());
+                say(&ui, String::new(), Note::Sticky, -1.0);
+                ui.invoke_ended();
+            });
+        }
     }
 }
 

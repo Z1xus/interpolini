@@ -103,8 +103,10 @@ impl DerefMut for Entry {
 impl Entry {
     pub fn settled(&self) -> Config {
         let mut config = self.config.clone();
-        let share = config.dedup.repeats / 100.0;
-        config.dedup.threshold = interpolini_core::threshold(&self.differences, share);
+        if config.dedup.enabled {
+            let share = config.dedup.repeats / 100.0;
+            config.dedup.threshold = interpolini_core::threshold(&self.differences, share);
+        }
         config
     }
 }

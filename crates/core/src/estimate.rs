@@ -9,7 +9,7 @@ use crate::encode::{Encoder, GOP, Plan};
 use crate::munch::Muncher;
 use crate::queue::{Job, kept};
 use crate::upscale::Upscaler;
-use crate::work::Cancel;
+use crate::work::{self, Cancel};
 
 const SPOTS: usize = 3;
 const FRAMES: i32 = 24;
@@ -60,9 +60,10 @@ fn encode(
         encoded = muncher.meta;
     }
     let plan = Plan::Encode { titles: Vec::new() };
+    work::after_showing(cancel)?;
     let mut encoder = Encoder::open(void()?, &encoded, fps, &job.config.output, None, plan)?;
     for n in 0..FRAMES {
-        cancel.check()?;
+        work::after_showing(cancel)?;
         let picture = picture(n)?;
         let picture = match &upscaler {
             Some(upscaler) => upscaler.run(&picture)?,
@@ -152,6 +153,7 @@ pub fn estimate(
         if spots.is_empty() {
             continue;
         }
+        work::after_showing(cancel)?;
         sources.with(
             &job.clip,
             &job.config.retimed(job.speed),

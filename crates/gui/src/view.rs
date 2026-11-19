@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use interpolini_core::config::{self, Config, Ease};
 use interpolini_core::{Fade, Munch, Part, Place, Plan, Setup, lossless};
@@ -374,6 +374,7 @@ pub fn seek(ui: &App, shared: &Shared) {
 }
 
 fn show(ui: &App, shared: &Shared, edited: bool) {
+    WALK.with(slint::Timer::stop);
     timecode(ui, shared);
     if edited {
         crate::estimate::ask(ui, shared);
@@ -580,27 +581,32 @@ thread_local! {
 pub fn idle(ui: &App, shared: &Shared) {
     const STEP: Duration = Duration::from_millis(33);
     ui.invoke_sounding();
+    let begin = (Instant::now(), lock(shared).time(ui.get_position()));
     let (weak, shared) = (ui.as_weak(), Arc::clone(shared));
     WALK.with(|walk| {
         walk.start(slint::TimerMode::Repeated, STEP, move || {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
+            if !ui.get_playing() {
+                WALK.with(slint::Timer::stop);
+                return;
+            }
             let state = lock(&shared);
-            let next = state.time(ui.get_position()) + STEP.as_secs_f64();
+            let next = (begin.1 + begin.0.elapsed().as_secs_f64()).min(state.seconds());
             let position = (next / state.span.max(0.001)) as f32;
-            let over = next >= state.seconds() || !ui.get_playing();
+            let over = next >= state.seconds();
             let clip = !ui.get_preview_off() && state.locate(position).is_some();
             drop(state);
             if over || clip {
                 WALK.with(slint::Timer::stop);
             }
-            if over && ui.get_playing() {
+            ui.set_position(position.min(1.0));
+            timecode(&ui, &shared);
+            if over {
                 ui.set_playing(false);
                 return;
             }
-            ui.set_position(position.min(1.0));
-            timecode(&ui, &shared);
             if clip {
                 seek(&ui, &shared);
             }

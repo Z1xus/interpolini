@@ -6,6 +6,8 @@
 - Changed: Playback never waits
 - Changed: Aligned Settings window
 - Changed: Debug info shows the last crash
+- Faster: Seeks while paused
+- Fixed: Stutter at playback start
 - Fixed: Full played below full size
 - Fixed: Wrong playback fps
 
