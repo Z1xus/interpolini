@@ -503,9 +503,10 @@ fn widest(size: (u32, u32)) -> u32 {
     ((pixels as f64 * wide / high).sqrt() as u32).max(WIDTH)
 }
 
-fn ahead(size: (u32, u32), view: View) -> (usize, usize) {
+fn ahead(size: (u32, u32), width: u32, view: View) -> (usize, usize) {
     let (wide, high) = (u64::from(size.0.max(1)), u64::from(size.1.max(1)));
-    let frame = u64::from(WIDTH) * (u64::from(WIDTH) * high / wide + 1) * 4;
+    let width = u64::from(width.max(1));
+    let frame = width * (width * high / wide + 1) * 4;
     let copies = if view == View::Both { 2 } else { 1 };
     let fits = (budget::bytes(Class::Interactive) as u64 / 4 / (frame * copies)) as usize;
     let capacity = fits.clamp(2, AHEAD);
@@ -675,8 +676,8 @@ impl Worker {
                 ui: ui.clone(),
                 view,
                 span,
-                width: width.min(WIDTH),
-                ahead: ahead(size, view),
+                width,
+                ahead: ahead(size, width, view),
                 held: open.keys(),
                 setup,
                 parts,
@@ -1276,8 +1277,12 @@ fn show_frames(
         }
         let position = ((time + frame.moved) / span) as f32;
         let rate = 1.0 / frame.step;
-        let speed = (shown.len() - 1) as f64 / (now - shown[0]).as_secs_f64().max(0.001);
-        let text = match shown.len() > 1 {
+        let since = now
+            .saturating_duration_since(at)
+            .as_secs_f64()
+            .clamp(0.001, 1.0);
+        let speed = shown.len() as f64 / since;
+        let text = match now.saturating_duration_since(at) >= Duration::from_millis(500) {
             true => format!("{:.0} of {rate:.0} fps", speed.min(rate)),
             false => String::new(),
         };
