@@ -5,7 +5,7 @@ export struct Download {
     installed: bool,
 }
 
-component Group inherits VerticalLayout {
+export component Group inherits VerticalLayout {
     in property <string> title;
     Rectangle {
         height: 36px;
@@ -32,7 +32,7 @@ component Hint inherits HorizontalLayout {
     in property <string> text;
     in property <bool> alert;
     height: 28px;
-    padding-left: 150px;
+    padding-left: 182px;
     padding-right: 16px;
     Rectangle {
         width: 8px;
@@ -98,6 +98,8 @@ component Item inherits FormRow {
         padding-top: 3px;
         padding-bottom: 3px;
         Button {
+            // the width of Download, so every row has the same button
+            least: 80px;
             text: root.loading ? "Cancel" : root.installed ? "Remove" : root.get;
             accessible: self.text + " " + root.label;
             main: !root.loading && !root.installed;

@@ -232,7 +232,7 @@ export component Row inherits HorizontalLayout {
 }
 
 export component FormRow inherits Row {
-    label-width: 132px;
+    label-width: 164px;
     padding-left: 16px;
     padding-right: 16px;
 }
@@ -908,9 +908,10 @@ export component Button inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> top;
     in property <string> accessible;
+    in property <length> least;
     callback clicked <=> touch.clicked;
     forward-focus: keys;
-    width: label.preferred-width + 20px;
+    width: max(root.least, label.preferred-width + 20px);
     border-width: 1px;
     border-color: root.main && root.enabled ? Theme.accent : Theme.seam;
     background: touch.has-hover ? Theme.ghost : transparent;

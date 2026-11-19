@@ -1,5 +1,5 @@
 import { Action, Button, Cell, Dropdown, FormRow, Segment, Slider, Switch, Tabs, Theme } from "widgets.slint";
-import { Download, Parts } from "components.slint";
+import { Download, Group, Parts } from "components.slint";
 import { Prefs } from "types.slint";
 
 export component Preferences inherits Window {
@@ -33,8 +33,8 @@ export component Preferences inherits Window {
     background: Theme.rack;
     default-font-size: 12px;
     width: 520px;
-    // the Components tab with every row it can show
-    height: 41px + 402px;
+    // the General tab with every row it can show
+    height: 41px + 496px;
     keys := FocusScope {
         focus-on-click: false;
         key-pressed(event) => {
@@ -62,177 +62,187 @@ export component Preferences inherits Window {
                 background: Theme.seam;
             }
             if root.section == "General": VerticalLayout {
-                padding-top: 8px;
-                padding-bottom: 8px;
-                FormRow {
-                    label: "Check for updates";
-                    Cell {
-                        Switch {
-                            label: "Check for updates";
-                            checked: root.updates;
-                            toggled(on) => {
-                                root.updates = on;
-                                root.changed();
+                Group {
+                    title: "App";
+                    FormRow {
+                        label: "Check for updates";
+                        Cell {
+                            Switch {
+                                label: "Check for updates";
+                                checked: root.updates;
+                                toggled(on) => {
+                                    root.updates = on;
+                                    root.changed();
+                                }
                             }
                         }
                     }
-                }
-                FormRow {
-                    label: "Default preset";
-                    Cell {
-                        Dropdown {
-                            label: "Default preset";
-                            width: 160px;
-                            height: 22px;
-                            options: root.presets;
-                            value: root.prefs.preset;
-                            changed(choice) => {
-                                root.prefs.preset = choice;
-                                root.changed();
-                            }
-                        }
-                    }
-                }
-                FormRow {
-                    label: "Render folder";
-                    Cell {
-                        Button {
-                            height: 22px;
-                            text: "Choose…";
-                            clicked => {
-                                root.choose-folder();
-                            }
-                        }
-                    }
-                    Text {
-                        horizontal-stretch: 1;
-                        text: root.prefs.folder == "" ? "Next to the clip" : root.prefs.folder;
-                        color: Theme.muted;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-                    if root.prefs.folder != "": Action {
-                        text: "Reset";
-                        accessible: "Reset render folder";
-                        clicked => {
-                            root.prefs.folder = "";
-                            root.changed();
-                        }
-                    }
-                }
-                FormRow {
-                    label: "Preview memory";
-                    Segment {
-                        label: "Preview memory";
-                        alignment: start;
-                        options: ["Auto", "512 MB", "1 GB", "2 GB", "4 GB"];
-                        value: root.prefs.memory == 0 ? "Auto" : root.prefs.memory == 512 ? "512 MB" : "\{root.prefs.memory / 1024} GB";
-                        changed(choice) => {
-                            root.prefs.memory = choice == "Auto" ? 0 : choice == "512 MB" ? 512 : choice.to-float() * 1024;
-                            root.changed();
-                        }
-                    }
-                }
-                FormRow {
-                    label: "Preview cache";
-                    Cell {
-                        Switch {
-                            label: "Preview cache";
-                            checked: root.prefs.cache;
-                            toggled(on) => {
-                                root.prefs.cache = on;
-                                root.changed();
-                            }
-                        }
-                    }
-                }
-                FormRow {
-                    label: "Smooth scrolling";
-                    Segment {
+                    FormRow {
                         label: "Smooth scrolling";
-                        alignment: start;
-                        tips: ["Follow the system setting", "Always smooth", "Never smooth"];
-                        options: ["System", "On", "Off"];
-                        value: root.prefs.scrolling == "on" ? "On" : root.prefs.scrolling == "off" ? "Off" : "System";
-                        changed(choice) => {
-                            root.prefs.scrolling = choice == "On" ? "on" : choice == "Off" ? "off" : "system";
-                            root.changed();
+                        Segment {
+                            fill: true;
+                            label: "Smooth scrolling";
+                            tips: ["Follow the system setting", "Always smooth", "Never smooth"];
+                            options: ["System", "On", "Off"];
+                            value: root.prefs.scrolling == "on" ? "On" : root.prefs.scrolling == "off" ? "Off" : "System";
+                            changed(choice) => {
+                                root.prefs.scrolling = choice == "On" ? "on" : choice == "Off" ? "off" : "system";
+                                root.changed();
+                            }
                         }
                     }
                 }
-                FormRow {
-                    label: "Default preview zoom";
-                    Slider {
+                Group {
+                    title: "Render";
+                    FormRow {
+                        label: "Default preset";
+                        Cell {
+                            horizontal-stretch: 1;
+                            Dropdown {
+                                label: "Default preset";
+                                height: 22px;
+                                options: root.presets;
+                                value: root.prefs.preset;
+                                changed(choice) => {
+                                    root.prefs.preset = choice;
+                                    root.changed();
+                                }
+                            }
+                        }
+                    }
+                    FormRow {
+                        label: "Render folder";
+                        Cell {
+                            Button {
+                                height: 22px;
+                                text: "Choose…";
+                                clicked => {
+                                    root.choose-folder();
+                                }
+                            }
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: root.prefs.folder == "" ? "Next to the clip" : root.prefs.folder;
+                            color: Theme.muted;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        if root.prefs.folder != "": Action {
+                            text: "Reset";
+                            accessible: "Reset render folder";
+                            clicked => {
+                                root.prefs.folder = "";
+                                root.changed();
+                            }
+                        }
+                    }
+                    if root.prefs.secret: FormRow {
+                        label: "Secret quality options";
+                        Cell {
+                            Switch {
+                                label: "Secret quality options";
+                                checked: root.prefs.secret;
+                                toggled(on) => {
+                                    root.prefs.secret = on;
+                                    root.changed();
+                                }
+                            }
+                        }
+                    }
+                }
+                Group {
+                    title: "Preview";
+                    FormRow {
+                        label: "Preview memory";
+                        Segment {
+                            fill: true;
+                            label: "Preview memory";
+                            options: ["Auto", "512 MB", "1 GB", "2 GB", "4 GB"];
+                            value: root.prefs.memory == 0 ? "Auto" : root.prefs.memory == 512 ? "512 MB" : "\{root.prefs.memory / 1024} GB";
+                            changed(choice) => {
+                                root.prefs.memory = choice == "Auto" ? 0 : choice == "512 MB" ? 512 : choice.to-float() * 1024;
+                                root.changed();
+                            }
+                        }
+                    }
+                    FormRow {
+                        label: "Preview cache";
+                        Cell {
+                            Switch {
+                                label: "Preview cache";
+                                checked: root.prefs.cache;
+                                toggled(on) => {
+                                    root.prefs.cache = on;
+                                    root.changed();
+                                }
+                            }
+                        }
+                    }
+                    FormRow {
                         label: "Default preview zoom";
-                        minimum: 0.1;
-                        maximum: 4;
-                        readout: root.zoom-text;
-                        value: root.prefs.zoom;
-                        changed(zoom) => {
-                            root.prefs.zoom = round(zoom * 10) / 10;
-                            root.changed();
-                        }
-                    }
-                    Text {
-                        width: 38px;
-                        text: root.zoom-text;
-                        color: Theme.ink;
-                        font-size: 12px;
-                        font-family: "monospace";
-                        horizontal-alignment: right;
-                        vertical-alignment: center;
-                        accessible-role: none;
-                    }
-                }
-                FormRow {
-                    label: "Confirm removal";
-                    Cell {
-                        Switch {
-                            label: "Confirm removal";
-                            checked: root.prefs.confirm-delete;
-                            toggled(on) => {
-                                root.prefs.confirm-delete = on;
+                        Slider {
+                            label: "Default preview zoom";
+                            minimum: 0.1;
+                            maximum: 4;
+                            readout: root.zoom-text;
+                            value: root.prefs.zoom;
+                            changed(zoom) => {
+                                root.prefs.zoom = round(zoom * 10) / 10;
                                 root.changed();
                             }
                         }
-                    }
-                }
-                FormRow {
-                    label: "Auto fit timeline to clips";
-                    Cell {
-                        Switch {
-                            label: "Auto fit timeline to clips";
-                            checked: root.prefs.autofit;
-                            toggled(on) => {
-                                root.prefs.autofit = on;
-                                root.changed();
-                            }
+                        Text {
+                            width: 38px;
+                            text: root.zoom-text;
+                            color: Theme.ink;
+                            font-size: 12px;
+                            font-family: "monospace";
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                            accessible-role: none;
                         }
                     }
                 }
-                FormRow {
-                    label: "Ripple delete by default";
-                    Cell {
-                        Switch {
-                            label: "Ripple delete by default";
-                            checked: root.prefs.ripple;
-                            toggled(on) => {
-                                root.prefs.ripple = on;
-                                root.changed();
+                Group {
+                    title: "Timeline";
+                    FormRow {
+                        label: "Confirm removal";
+                        Cell {
+                            Switch {
+                                label: "Confirm removal";
+                                checked: root.prefs.confirm-delete;
+                                toggled(on) => {
+                                    root.prefs.confirm-delete = on;
+                                    root.changed();
+                                }
                             }
                         }
                     }
-                }
-                if root.prefs.secret: FormRow {
-                    label: "Secret quality options";
-                    Cell {
-                        Switch {
-                            label: "Secret quality options";
-                            checked: root.prefs.secret;
-                            toggled(on) => {
-                                root.prefs.secret = on;
-                                root.changed();
+                    FormRow {
+                        label: "Auto fit timeline to clips";
+                        Cell {
+                            Switch {
+                                label: "Auto fit timeline to clips";
+                                checked: root.prefs.autofit;
+                                toggled(on) => {
+                                    root.prefs.autofit = on;
+                                    root.changed();
+                                }
+                            }
+                        }
+                    }
+                    FormRow {
+                        label: "Ripple delete by default";
+                        Cell {
+                            Switch {
+                                label: "Ripple delete by default";
+                                checked: root.prefs.ripple;
+                                toggled(on) => {
+                                    root.prefs.ripple = on;
+                                    root.changed();
+                                }
                             }
                         }
                     }
@@ -257,8 +267,8 @@ export component Preferences inherits Window {
                 FormRow {
                     label: "Autosave";
                     Segment {
+                        fill: true;
                         label: "Autosave";
-                        alignment: start;
                         options: ["Off", "1 min", "5 min", "10 min"];
                         value: root.prefs.autosave == 0 ? "Off" : "\{root.prefs.autosave} min";
                         changed(choice) => {

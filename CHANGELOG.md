@@ -4,6 +4,7 @@
 - New: Preview cache, played parts play again at once
 - New: Ready parts show on the timeline ruler
 - Changed: Playback never waits
+- Changed: Aligned Settings window
 
 ## 0.1.32
 - Fixed: Image masks did not render
