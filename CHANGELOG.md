@@ -5,6 +5,9 @@
 - New: Ready parts show on the timeline ruler
 - Changed: Playback never waits
 - Changed: Aligned Settings window
+- Changed: Debug info shows the last crash
+- Fixed: Full played below full size
+- Fixed: Wrong playback fps
 
 ## 0.1.32
 - Fixed: Image masks did not render

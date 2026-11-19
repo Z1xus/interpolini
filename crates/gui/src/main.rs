@@ -61,6 +61,12 @@ fn main() -> Result<(), slint::PlatformError> {
     #[cfg(windows)]
     config::mark();
     config::create();
+    let report = config::app_dir().join("panic.txt");
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = std::fs::write(&report, format!("{} {info}", env!("CARGO_PKG_VERSION")));
+        previous(info);
+    }));
     let _ = slint::set_xdg_app_id("interpolini");
     let ui = App::new()?;
     let weak = ui.as_weak();

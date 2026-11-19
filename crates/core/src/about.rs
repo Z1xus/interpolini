@@ -209,6 +209,12 @@ pub fn about() -> String {
             "tensorrt libraries",
             installed(crate::tensorrt::libraries()).into(),
         ),
+        (
+            "last panic",
+            std::fs::read_to_string(directory.join("panic.txt"))
+                .unwrap_or_default()
+                .replace('\n', " "),
+        ),
     ]);
     let lines = lines.into_iter().filter(|line| !line.1.trim().is_empty());
     let mut text: Vec<String> = lines
