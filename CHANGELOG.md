@@ -12,6 +12,9 @@
 - Fixed: Wrong playback fps
 - Fixed: Mask editor undo
 - Fixed: Ctrl drag of a selection
+- Fixed: Raw video streams
+- Fixed: Rare crashes
+- Fixed: Hang on close
 
 ## 0.1.32
 - Fixed: Image masks did not render

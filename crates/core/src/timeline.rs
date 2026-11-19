@@ -54,7 +54,8 @@ pub struct Part {
 // a higher track is over a lower one, and on one track the later clip is over the earlier one
 pub fn parts(clips: &[Placed]) -> Vec<Part> {
     let mut edges = vec![0.0];
-    for clip in clips {
+    // a clip with nothing kept does not make the file longer
+    for clip in clips.iter().filter(|clip| clip.length > 0.0) {
         edges.extend([clip.at, clip.at + clip.length]);
     }
     edges.sort_by(f64::total_cmp);

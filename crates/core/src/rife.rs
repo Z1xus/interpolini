@@ -103,7 +103,8 @@ fn wait(sink: Sink, cancel: &Cancel) -> Result<Building> {
             sink(Event::Preparing(done));
         }
         build = locked(&PREPARE.0);
-        if build.busy && build.done == done {
+        // a stop between the checks has no wake
+        if build.busy && build.done == done && !cancel.stopped() {
             build = PREPARE
                 .1
                 .wait(build)
@@ -262,7 +263,11 @@ impl Rife {
             width: width as u32,
             height: height as u32,
             fps: (i64::from(fps), 1),
-            frames: (i64::from(from.frames) * step.1 / step.0) as i32,
+            frames: i32::try_from(
+                i128::from(from.frames) * i128::from(step.1) / i128::from(step.0),
+            )
+            .unwrap_or(i32::MAX)
+            .max(1),
         };
         let rife = Self {
             engine: ManuallyDrop::new(engine),

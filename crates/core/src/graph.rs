@@ -173,7 +173,9 @@ pub fn covering(frames: i32, from: (i64, i64), to: (i64, i64)) -> i32 {
         i128::from(frames) * i128::from(from.1) * i128::from(to.0),
         i128::from(from.0) * i128::from(to.1),
     );
-    ((num + den - 1) / den) as i32
+    i32::try_from((num + den - 1) / den)
+        .unwrap_or(i32::MAX)
+        .max(1)
 }
 
 impl Graph {
@@ -503,6 +505,13 @@ impl Graph {
 
     pub(crate) fn frame(&self, n: i32, cancel: &Cancel) -> Result<frame::Video> {
         self.follow.set(cancel);
+        let picture = self.made_frame(n, cancel);
+        // the host reads ahead after the call
+        self.follow.set(&Cancel::default());
+        picture
+    }
+
+    fn made_frame(&self, n: i32, cancel: &Cancel) -> Result<frame::Video> {
         let Info { width, height, .. } = self.info;
         let picture = match &self.feed {
             Feed::File(segments) => {
@@ -612,9 +621,10 @@ pub fn thumbs(
 }
 
 pub fn image(scaler: &Scaler, picture: &frame::Video, width: u32) -> Result<Image> {
-    let width = width.min(picture.width()) & !1;
-    let height =
-        (u64::from(width) * u64::from(picture.height()) / u64::from(picture.width())) as u32;
+    let width = (width.min(picture.width()) & !1).max(2);
+    let height = ((u64::from(width) * u64::from(picture.height()) / u64::from(picture.width()))
+        as u32)
+        .max(1);
     // the scaler writes past the end of a row, and a frame has the space for that
     let mut scaled = frame::Video::new(Pixel::RGBA, width, height);
     scaler.run(&mut scaled, picture)?;

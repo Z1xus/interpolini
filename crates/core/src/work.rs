@@ -16,11 +16,17 @@ const QUIET: Duration = Duration::from_secs(2);
 
 // the preview makes a picture, and the measures in the background wait for it
 pub fn showing<R>(run: impl FnOnce() -> R) -> R {
+    // a panic of the preview also ends its count
+    struct Shown;
+    impl Drop for Shown {
+        fn drop(&mut self) {
+            let mut showing = locked(&SHOWING);
+            *showing = (showing.0 - 1, Some(Instant::now()));
+        }
+    }
     locked(&SHOWING).0 += 1;
-    let result = run();
-    let mut showing = locked(&SHOWING);
-    *showing = (showing.0 - 1, Some(Instant::now()));
-    result
+    let _shown = Shown;
+    run()
 }
 
 pub fn after_showing(cancel: &Cancel) -> Result<()> {
@@ -369,6 +375,11 @@ pub fn channel<T>(room: usize) -> (Sender<T>, Receiver<T>) {
 }
 
 impl<T> Sender<T> {
+    pub fn narrow(&self, room: usize) {
+        let mut line = locked(&self.0.line);
+        line.room = line.room.min(room);
+    }
+
     // gives the item back when the reader has left
     pub fn send(&self, item: T) -> std::result::Result<(), T> {
         let mut line = locked(&self.0.line);

@@ -8,10 +8,10 @@ use crate::audio::{BITRATE, Mixer, Sound, keep};
 use crate::compose::{Canvas, Place, Setup, Source};
 use crate::config::{self, Audio, Config, Target};
 use crate::copy::copy;
-use crate::decode::{Meta, Probe, damage, probe};
+use crate::decode::{Meta, Probe, absolute, damage, probe};
 use crate::dedup::{differences, threshold};
 use crate::encode::{Encoder, Plan};
-use crate::graph::{Plan as Shape, lossless};
+use crate::graph::{Graph, Plan as Shape, lossless};
 use crate::munch::Muncher;
 use crate::segments::Made;
 use crate::timeline::{Fade, Part, Placed, parts};
@@ -81,13 +81,20 @@ pub(crate) fn kept(job: &Job, probe: &Probe) -> f64 {
         Some((start, end)) => end.min(probe.seconds) - start,
         None => probe.seconds,
     };
-    length / job.speed + job.hold
+    // a cut that starts after the end of the clip keeps nothing, and holds nothing
+    match length > 0.0 {
+        true => length / job.speed + job.hold,
+        false => 0.0,
+    }
 }
 
 pub fn sounds(jobs: &[Job]) -> Result<Vec<Sound>> {
     let mut sounds = Vec::new();
     for job in jobs {
         let probe = named(job)?;
+        if kept(job, &probe) <= 0.0 {
+            continue;
+        }
         for stream in (0..probe.tracks.len()).filter(|track| !job.muted.contains(track)) {
             sounds.push(Sound {
                 clip: job.clip.clone(),
@@ -109,7 +116,8 @@ pub fn sounds(jobs: &[Job]) -> Result<Vec<Sound>> {
 fn base(jobs: &[(usize, &Job)]) -> Result<usize> {
     let mut videos = Vec::new();
     for (index, (_, job)) in jobs.iter().enumerate() {
-        if probe(&job.clip)?.fps > 0.0 {
+        let probe = probe(&job.clip)?;
+        if probe.fps > 0.0 && kept(job, &probe) > 0.0 {
             videos.push(index);
         }
     }
@@ -140,7 +148,7 @@ fn cover(seconds: f64, rate: f64) -> i32 {
 }
 
 // ntsc rates divide by 1001
-fn rational(fps: f64) -> (i64, i64) {
+pub(crate) fn rational(fps: f64) -> (i64, i64) {
     let ntsc = [24, 30, 60, 120]
         .into_iter()
         .find(|rate| (fps - f64::from(*rate) * 1000.0 / 1001.0).abs() < 0.01);
@@ -289,7 +297,17 @@ fn encode(
         .map(|munch| Muncher::new(&encoded, &munch))
         .transpose()?;
     let encoded = muncher.as_ref().map_or(encoded, |muncher| muncher.meta);
-    let mut encoder = Encoder::open(format::output(output)?, &encoded, fps, config, bits, plan)?;
+    let changed = upscaler.is_some() || muncher.is_some();
+    let packed = packs(job, graph, timeline.is_some(), changed);
+    let mut encoder = Encoder::open(
+        format::output(&absolute(output))?,
+        &encoded,
+        fps,
+        config,
+        bits,
+        plan,
+        packed,
+    )?;
     encoder.munch = setup.munch;
     let fallback = if meta.yuv444 && !encoder.yuv444 {
         " in 4:2:0, it has no 4:4:4"
@@ -301,17 +319,13 @@ fn encode(
         encoder.name
     )));
     let from = ((start - job.at) * rate).round().max(0.0) as i32;
-    let alone = timeline.is_none() && upscaler.is_none() && job.fade.none() && job.speed == 1.0;
-    let alone = alone && muncher.is_none() && job.place == Place::default();
-    let fused = match first.graph() {
-        Some(graph) if alone && graph.packs() => encoder
+    let fused = packed
+        && encoder
             .spare()
-            .is_some_and(|spare| graph.encode(spare, from, from + frames)),
-        _ => false,
-    };
-    let frames = match (fused, first.graph()) {
-        (true, Some(graph)) => frames.min(graph.info.frames - from),
-        _ => frames,
+            .is_some_and(|spare| graph.encode(spare, from, from + frames));
+    let frames = match fused {
+        true => frames.min(graph.info.frames - from),
+        false => frames,
     };
     if timeline.is_none() {
         encoder.begin(&job.clip, start, &silenced[base])?;
@@ -323,7 +337,7 @@ fn encode(
     let started = Instant::now();
     let mut reported = started;
     let mut written = 0;
-    for (index, part) in parts.iter().enumerate() {
+    'parts: for (index, part) in parts.iter().enumerate() {
         if cancel.stopped() {
             break;
         }
@@ -338,20 +352,28 @@ fn encode(
         let shown = &part.clips[part.clips.iter().rposition(solid).unwrap_or(0)..];
         for clip in shown {
             if !sources.contains_key(clip) {
-                sources.insert(*clip, open(*clip)?);
+                let source = match open(*clip) {
+                    Err(_) if cancel.stopped() => break 'parts,
+                    source => source?,
+                };
+                sources.insert(*clip, source);
             }
         }
         let last = match index + 1 == parts.len() {
             true => frames,
             false => ((part.end * rate).round() as i32).min(frames),
         };
-        while written < last && !cancel.stopped() {
+        'frames: while written < last && !cancel.stopped() {
             let made = match sources.get_mut(&base).filter(|_| fused) {
-                Some(source) => Some(source.made(from + written, cancel)?),
+                // a stopped render still closes its file
+                Some(source) => match source.made(from + written, cancel) {
+                    Err(_) if cancel.stopped() => break 'frames,
+                    made => Some(made?),
+                },
                 None => None,
             };
             match made {
-                Some(Made::Packets(packets)) => encoder.pass(packets, written)?,
+                Some(Made::Packets(packets)) => encoder.pass(packets)?,
                 Some(Made::Picture(picture)) => encoder.write(picture, written)?,
                 None => {
                     let time = f64::from(written) / rate;
@@ -367,11 +389,11 @@ fn encode(
                         let job = jobs[*clip].1;
                         let inside = job.cut.map_or(0.0, |cut| cut.0) + (time - job.at) * job.speed;
                         if let Some(source) = sources.get_mut(clip) {
-                            layers.push((
-                                source.at(inside, cancel)?,
-                                job.place,
-                                level(clip) as f32,
-                            ));
+                            let picture = match source.at(inside, cancel) {
+                                Err(_) if cancel.stopped() => break 'frames,
+                                picture => picture?,
+                            };
+                            layers.push((picture, job.place, level(clip) as f32));
                         }
                     }
                     let picture = canvas.compose(layers)?;
@@ -500,6 +522,12 @@ fn render(
         sink,
         cancel,
     )
+}
+
+// a clip on its own with blended frames can go to both encoders of the card at once
+pub(crate) fn packs(job: &Job, graph: &Graph, joined: bool, changed: bool) -> bool {
+    let alone = !joined && !changed && job.fade.none() && job.speed == 1.0;
+    alone && job.place == Place::default() && graph.packs()
 }
 
 pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, setup: &Setup, sink: Sink, cancel: &Cancel) {

@@ -11,11 +11,15 @@ use crate::config::Blending;
 use crate::decode;
 
 const SHIFT: u32 = 15;
+// the low mantissa bits that the inverse curve leaves out
+const INEXACT: u32 = 13;
 
 pub struct Blend {
     weights: Vec<u32>,
-    gamma: f32,
+    exact: Vec<f32>,
     curve: Option<[f32; 256]>,
+    // the way back from the curve, found by the top bits of the sum
+    inverse: Vec<u8>,
     step: (i64, i64),
     last: i64,
     held: Mutex<Vec<(i64, frame::Video)>>,
@@ -24,25 +28,44 @@ pub struct Blend {
 
 impl Blend {
     pub fn new(weights: &[f64], from: (i64, i64), blending: &Blending, frames: i32) -> Self {
-        let scale = f64::from(1 << SHIFT);
-        let mut fixed: Vec<u32> = weights
+        // steps of the rounded running sum add up to one
+        let (scale, sum) = (f64::from(1 << SHIFT), weights.iter().sum::<f64>());
+        let (mut total, mut before) = (0.0, 0);
+        let fixed = weights
             .iter()
-            .map(|weight| (weight * scale).round() as u32)
+            .map(|weight| {
+                total += weight;
+                let at = (total / sum * scale).round() as u32;
+                let weight = at.saturating_sub(before);
+                before = before.max(at);
+                weight
+            })
             .collect();
-        let total: u32 = fixed.iter().sum();
-        let middle = fixed.len() / 2;
-        fixed[middle] = fixed[middle] + (1 << SHIFT) - total;
         let step = (from.0, from.1 * i64::from(blending.fps));
         let gamma = blending.gamma;
         let curve = |value| (value as f32 / 255.0).powf(gamma);
+        let back = |index: u32| {
+            let middle = f32::from_bits((index << INEXACT) | (1 << (INEXACT - 1)));
+            (middle.min(1.0).powf(1.0 / gamma) * 255.0).round() as u8
+        };
+        let inverse = match gamma != 1.0 {
+            true => (0..=1f32.to_bits() >> INEXACT).map(back).collect(),
+            false => Vec::new(),
+        };
         Self {
             weights: fixed,
-            gamma,
+            exact: weights.iter().map(|weight| (weight / sum) as f32).collect(),
             curve: (gamma != 1.0).then(|| std::array::from_fn(curve)),
+            inverse,
             step,
             last: i64::from(frames - 1),
             held: Mutex::new(Vec::new()),
-            frames: ((i64::from(frames) * step.1 + step.0 - 1) / step.0).max(1) as i32,
+            frames: i32::try_from(
+                (i128::from(frames) * i128::from(step.1) + i128::from(step.0) - 1)
+                    / i128::from(step.0),
+            )
+            .unwrap_or(i32::MAX)
+            .max(1),
         }
     }
 
@@ -119,40 +142,32 @@ impl Blend {
                         || vec![0f32; width],
                         |sums, (y, row)| {
                             sums.fill(0.0);
-                            for &(data, stride, weight) in &lines {
-                                let weight = weight as f32 / (1 << SHIFT) as f32;
+                            for (&(data, stride, _), &weight) in lines.iter().zip(&self.exact) {
                                 for (sum, &sample) in sums.iter_mut().zip(&data[y * stride..]) {
                                     *sum += weight * curve[usize::from(sample)];
                                 }
                             }
                             for (sample, sum) in row.iter_mut().zip(sums.iter()) {
-                                *sample = (sum.powf(1.0 / self.gamma) * 255.0).round() as u8;
+                                let index = sum.clamp(0.0, 1.0).to_bits() >> INEXACT;
+                                *sample = self.inverse[index as usize];
                             }
                         },
                     )
                 });
                 continue;
             }
-            // 16 bits hold a sum with 7 bits after the point, and each product loses half a step
-            let start = 64 + lines.len() as u16 / 2;
             budget::install(|| {
                 rows.for_each_init(
-                    || (vec![0u16; width], vec![0u16; width]),
-                    |(sums, wide), (y, row)| {
-                        sums.fill(start);
+                    || vec![0u32; width],
+                    |sums, (y, row)| {
+                        sums.fill(1 << (SHIFT - 1));
                         for &(data, stride, weight) in &lines {
-                            // a separate pass, so that the compiler multiplies in 16 bits
-                            let line = &data[y * stride..];
-                            for (wide, &sample) in wide.iter_mut().zip(line) {
-                                *wide = u16::from(sample) << 8;
-                            }
-                            let weight = weight as u16;
-                            for (sum, &wide) in sums.iter_mut().zip(wide.iter()) {
-                                *sum += ((u32::from(wide) * u32::from(weight)) >> 16) as u16;
+                            for (sum, &sample) in sums.iter_mut().zip(&data[y * stride..]) {
+                                *sum += u32::from(sample) * weight;
                             }
                         }
                         for (sample, sum) in row.iter_mut().zip(sums.iter()) {
-                            *sample = (sum >> 7) as u8;
+                            *sample = (sum >> SHIFT).min(255) as u8;
                         }
                     },
                 )

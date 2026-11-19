@@ -39,16 +39,17 @@ struct Packer(encoder::video::Encoder);
 unsafe impl Send for Packer {}
 
 impl Packer {
-    fn drain(&mut self, packets: &mut Vec<Packet>) {
+    fn drain(&mut self, packets: &mut Vec<Packet>) -> Result<()> {
         let mut packet = Packet::empty();
-        while self.0.receive_packet(&mut packet).is_ok() {
+        while crate::encode::received(self.0.receive_packet(&mut packet))? {
             packets.push(std::mem::replace(&mut packet, Packet::empty()));
         }
+        Ok(())
     }
 
     fn end(&mut self, packets: &mut Vec<Packet>) -> Result<()> {
         self.0.send_eof()?;
-        self.drain(packets);
+        self.drain(packets)?;
         unsafe { ffi::avcodec_flush_buffers(self.0.as_mut_ptr()) };
         Ok(())
     }
@@ -62,7 +63,7 @@ impl Packer {
         let mut packets = Vec::new();
         match last {
             true => self.end(&mut packets)?,
-            false => self.drain(&mut packets),
+            false => self.drain(&mut packets)?,
         }
         Ok(Made::Packets(packets))
     }
@@ -151,6 +152,8 @@ fn run(lane: Lane) {
         };
         decoder = Some((0, Ahead::new(found.shrink(by))));
     }
+    // an encoder ends each part with a flush, so the next part uses it again
+    let mut packer: Option<Packer> = None;
     loop {
         let mut queue = jobs
             .queue
@@ -177,16 +180,16 @@ fn run(lane: Lane) {
             }
         };
         drop(queue);
-        let encoder = spare.as_ref().filter(|_| packets).map(|spare| spare());
-        let mut packer = match encoder {
-            Some(Ok(encoder)) => Some(Packer(encoder)),
-            Some(Err(error)) => {
-                let _ = made.send(Err(error));
-                continue;
-            }
-            None => None,
-        };
+        if packets && packer.is_none() {
+            let encoder = spare.as_ref().map(|spare| spare());
+            packer = encoder.and_then(Result::ok).map(Packer);
+        }
+        // the room was sized for packets
+        if packets && packer.is_none() {
+            made.narrow(2);
+        }
         let (first, end) = (frames.start, frames.end);
+        let mut ended = false;
         for n in frames {
             let picture = |decoder: &mut Option<(usize, Ahead)>| {
                 if !gpu && decoder.as_ref().is_none_or(|decoder| decoder.0 != threads) {
@@ -199,16 +202,21 @@ fn run(lane: Lane) {
                 blend.frame(source, n, size.0, size.1)
             };
             let made_now = picture(&mut decoder);
-            let made_now = match packer.as_mut() {
+            let made_now = match packer.as_mut().filter(|_| packets) {
                 Some(packer) => made_now.and_then(|mut picture| {
                     meta.tag(&mut picture);
                     packer.pack(picture, n - from, n == first, n + 1 == end)
                 }),
                 None => made_now.map(Made::Picture),
             };
+            ended = n + 1 == end && made_now.is_ok();
             if made.send(made_now).is_err() {
                 break;
             }
+        }
+        // a part that stops early leaves frames in the encoder
+        if !ended {
+            packer = None;
         }
     }
 }
@@ -230,12 +238,13 @@ impl Segments {
         let cores = budget::threads(class);
         let luma = width as usize * height as usize;
         let picture = luma + 2 * (luma >> (meta.shift() * 2));
+        let history = probe.history();
         // a quarter of the memory: half for the pictures of the lanes, half for the frames that wait
         let budget = budget::bytes(class);
         let useful = budget::useful(height).min(cores);
-        let held = math.window() + PAST + REFERENCES + AHEAD + useful;
+        let held = math.window() + REFERENCES + AHEAD + useful;
         // a clip that does not fit still runs with one lane and few frames in flight
-        let lanes = (budget / 2 / (held * picture)).max(1);
+        let lanes = (budget / 2 / (held * picture + history)).max(1);
         let most = (cores / useful).clamp(1, lanes);
         Ok(Self {
             clip: clip.to_owned(),
@@ -274,7 +283,8 @@ impl Segments {
     }
 
     fn end(&mut self, start: i32) -> i32 {
-        if self.most == 1 && !self.packing() {
+        // one lane reads on, a second lane would seek for each part
+        if self.most == 1 && self.fits <= self.most && !self.packing() {
             return start.saturating_add(PAST as i32).min(self.frames);
         }
         // each part starts with a key frame, so short parts make the file large
@@ -419,6 +429,9 @@ impl Segments {
         if !(self.parts.front().is_some_and(near) && n <= self.planned) {
             if self.started > 1 {
                 self.stop();
+            } else {
+                let queue = self.jobs.queue.lock();
+                queue.unwrap_or_else(|poison| poison.into_inner()).0.clear();
             }
             self.parts.clear();
             (self.planned, self.next, self.longest) = (n, None, 0);

@@ -579,11 +579,11 @@ impl Options {
             _ => 2,
         };
         let search = match tuning {
-            Tuning::Animation => "type:2,distance:-6,satd:false},distance:0,",
+            Tuning::Animation => "type:2,distance:-6,satd:false,",
             Tuning::Weak => "distance:-1,trymany:true,",
             _ => "distance:-10,",
         };
-        let distance = if animation || speed == Speed::Faster {
+        let distance = if speed == Speed::Faster && !animation {
             ""
         } else {
             "distance:0,"

@@ -163,6 +163,47 @@ impl Meta {
     }
 }
 
+// ffmpeg reads a name with a colon as a protocol
+pub fn absolute(path: &Path) -> PathBuf {
+    match path.is_relative() {
+        true => Path::new(".").join(path),
+        false => path.to_owned(),
+    }
+}
+
+// a file that cannot seek, such as a raw stream, has its packets counted from its start
+fn length(path: &Path, index: usize, start: Option<i64>, ticks: f64) -> Option<(i64, i64)> {
+    let open = || format::input(&absolute(path)).ok();
+    let mut packet = Packet::empty();
+    let mut scan = |input: &mut format::context::Input, once: bool| {
+        let (mut first, mut last, mut count) = (None, None, 0);
+        while next(&mut packet, input).is_ok() {
+            if packet.stream() == index {
+                let time = packet.pts().or(packet.dts());
+                first = first.or(time);
+                last = last.max(time);
+                count += 1;
+                if once {
+                    break;
+                }
+            }
+        }
+        (first, last, count)
+    };
+    let mut input = open()?;
+    let first = start.or_else(|| scan(&mut input, true).0);
+    // a time that wraps around has its packets counted
+    if let Some(first) = first
+        && input.seek(i64::MAX, ..).is_ok()
+        && let (_, Some(last), _) = scan(&mut input, false)
+        && last > first
+    {
+        return Some((((last - first) as f64 * ticks).round() as i64 + 1, first));
+    }
+    let (first, _, count) = scan(&mut open()?, false);
+    Some((count, start.or(first).unwrap_or(0))).filter(|(count, _)| *count > 0)
+}
+
 // newer ffmpeg puts an mp4 track name in name
 pub fn title(stream: &format::stream::Stream) -> String {
     let metadata = stream.metadata();
@@ -196,12 +237,12 @@ pub fn probe(path: &Path) -> Result<Probe> {
             .collect();
         (
             tracks,
-            input.duration() as f64 / f64::from(ffi::AV_TIME_BASE),
+            input.duration().max(0) as f64 / f64::from(ffi::AV_TIME_BASE),
         )
     };
     let (meta, (tracks, length)) = match Decoder::open(path) {
         Ok(decoder) => (Some(decoder.meta), read(&decoder.input)),
-        Err(error) => match read(&format::input(path)?) {
+        Err(error) => match read(&format::input(&absolute(path))?) {
             (tracks, _) if tracks.is_empty() => return Err(error),
             sound => (None, sound),
         },
@@ -212,7 +253,8 @@ pub fn probe(path: &Path) -> Result<Probe> {
         seconds: match (meta, video) {
             (_, Some(meta)) => f64::from(meta.frames) / fps,
             (Some(_), None) => 0.0,
-            (None, _) => length,
+            (None, _) if length > 0.0 => length,
+            (None, _) => return Err("the clip has no length".into()),
         },
         fps,
         tracks,
@@ -285,6 +327,7 @@ pub struct Decoder {
     at: i32,
     past: VecDeque<(i32, frame::Video)>,
     keep: usize,
+    picture: usize,
     // the number that the decoder goes to, the gpu gives only the pictures near it
     wanted: i32,
     ahead: frame::Video,
@@ -295,6 +338,11 @@ pub struct Decoder {
     stream: usize,
     gpu: bool,
     drained: bool,
+    // the decoder was full, so the packet goes again
+    pending: bool,
+    // a seek that gave no picture yet, a stop can leave the file anywhere after it
+    lost: bool,
+    raw: bool,
     start: i64,
     frames_per_tick: f64,
     cancel: Follow,
@@ -469,6 +517,10 @@ impl Decoder {
         self
     }
 
+    pub fn history(&self) -> usize {
+        self.keep * self.picture
+    }
+
     pub fn by(&self) -> u32 {
         self.by
     }
@@ -482,7 +534,7 @@ impl Decoder {
         if gpu.is_none() {
             ffmpeg_next::log::set_level(Level::Error);
         }
-        let input = format::input(path)?;
+        let input = format::input(&absolute(path))?;
         let stream = video(&input).ok_or("the clip has no video")?;
         let mut rate = stream.avg_frame_rate();
         if rate.numerator() <= 0 {
@@ -500,24 +552,25 @@ impl Decoder {
         if lossy {
             rate = real;
         }
+        let rate = rate.reduce();
         let fps = f64::from(rate);
         let time_base = f64::from(stream.time_base());
         let seconds = if stream.duration() > 0 {
             stream.duration() as f64 * time_base
         } else {
-            input.duration() as f64 / f64::from(ffi::AV_TIME_BASE)
+            input.duration().max(0) as f64 / f64::from(ffi::AV_TIME_BASE)
         };
-        let frames = match stream.frames() {
-            frames if frames > 0 && !lossy => frames,
-            _ => (seconds * fps).round() as i64,
-        };
-        let start = match stream.start_time() {
-            ffi::AV_NOPTS_VALUE => 0,
-            start => start,
-        };
+        let known = Some(stream.start_time()).filter(|start| *start != ffi::AV_NOPTS_VALUE);
         let index = stream.index();
         let format = input.format();
         let still = format.name() == "image2" || format.name().ends_with("_pipe");
+        let raw = unsafe { (*(*input.as_ptr()).iformat).flags } & ffi::AVFMT_NOTIMESTAMPS != 0;
+        let (frames, start) = match stream.frames() {
+            frames if frames > 0 && !lossy => (frames, known.unwrap_or(0)),
+            _ if seconds > 0.0 => ((seconds * fps).round() as i64, known.unwrap_or(0)),
+            _ if still => (1, known.unwrap_or(0)),
+            _ => length(path, index, known, time_base * fps).ok_or("the clip has no length")?,
+        };
 
         let mut context = codec::Context::from_parameters(stream.parameters())?;
         context.set_threading(threading::Config {
@@ -571,8 +624,11 @@ impl Decoder {
             return Err("the clip has no picture size".into());
         }
         // the preview jumps, and the host then reads pictures back that a seek makes slow
-        let luma = meta.width as usize * meta.height as usize;
-        let picture = luma + 2 * (luma >> (meta.shift() * 2));
+        let (wide, high) = (decoder.width() as i32, decoder.height() as i32);
+        let picture = unsafe { ffi::av_image_get_buffer_size(format.into(), wide, high, 1) };
+        // a format with no size, such as a gpu one, counts as 4:2:0 with 16 bits
+        let picture = usize::try_from(picture).ok().filter(|size| *size > 0);
+        let picture = picture.unwrap_or(wide.max(1) as usize * high.max(1) as usize * 3);
         let keep = match budget::current() {
             Class::Interactive => (HISTORY / picture).clamp(PAST, 64),
             _ => PAST,
@@ -587,6 +643,7 @@ impl Decoder {
             at: -1,
             past: VecDeque::new(),
             keep,
+            picture,
             wanted: i32::MIN,
             ahead: frame::Video::empty(),
             after: None,
@@ -596,6 +653,9 @@ impl Decoder {
             stream: index,
             gpu: gpu.is_some(),
             drained: false,
+            pending: false,
+            lost: false,
+            raw,
             start,
             frames_per_tick: time_base * fps,
             cancel: Follow::default(),
@@ -625,25 +685,58 @@ impl Decoder {
     fn advance(&mut self) -> Result<Option<i32>> {
         loop {
             self.cancel.check()?;
-            if self.decoder.receive_frame(&mut self.ahead).is_ok() {
-                let ticks = self.ahead.timestamp().map(|time| time - self.start);
-                let timed = ticks.map(|ticks| (ticks as f64 * self.frames_per_tick).round() as i32);
-                let timed = timed.unwrap_or(self.at + 1);
-                if self.gpu && timed.saturating_add(self.keep as i32) >= self.wanted {
-                    download(&mut self.ahead)?;
+            match self.decoder.receive_frame(&mut self.ahead) {
+                Ok(()) => {
+                    // a cpu picture means the gpu decode failed
+                    if self.gpu && !hardware(&self.ahead) {
+                        return Err("the gpu does not decode this clip".into());
+                    }
+                    let ticks = self.ahead.timestamp().map(|time| time - self.start);
+                    let timed =
+                        ticks.map(|ticks| (ticks as f64 * self.frames_per_tick).round() as i32);
+                    let timed = timed.unwrap_or(self.at + 1);
+                    if self.gpu && timed.saturating_add(self.keep as i32) >= self.wanted {
+                        download(&mut self.ahead)?;
+                    }
+                    if unsafe { (*self.ahead.as_ptr()).decode_error_flags } != 0 {
+                        self.damaged(timed);
+                    }
+                    return Ok(Some(timed));
                 }
-                if unsafe { (*self.ahead.as_ptr()).decode_error_flags } != 0 {
-                    self.damaged(timed);
+                Err(ffmpeg_next::Error::Eof) => return Ok(None),
+                Err(error)
+                    if self.gpu
+                        && !matches!(
+                            error,
+                            ffmpeg_next::Error::Other {
+                                errno: ffmpeg_next::error::EAGAIN
+                            }
+                        ) =>
+                {
+                    return Err(error.into());
                 }
-                return Ok(Some(timed));
+                Err(_) => {}
             }
             if self.drained {
                 return Ok(None);
             }
-            match next(&mut self.packet, &mut self.input) {
+            let again = std::mem::take(&mut self.pending);
+            let read = match again {
+                true => Ok(()),
+                false => next(&mut self.packet, &mut self.input),
+            };
+            match read {
                 Ok(()) if self.packet.stream() == self.stream => {
-                    // a broken packet must not stop the clip
-                    if self.decoder.send_packet(&self.packet).is_err() {
+                    let sent = self.decoder.send_packet(&self.packet);
+                    let full = ffmpeg_next::Error::Other {
+                        errno: ffmpeg_next::error::EAGAIN,
+                    };
+                    // a decoder that stays full after it gave no picture would spin, so the packet is lost
+                    if !again && sent.is_err_and(|error| error == full) {
+                        self.pending = true;
+                    } else if self.gpu {
+                        sent?;
+                    } else if sent.is_err() {
                         let time = self.packet.pts().or(self.packet.dts());
                         let ticks = time.map_or(0, |time| time - self.start);
                         self.damaged((ticks as f64 * self.frames_per_tick).round() as i32);
@@ -660,21 +753,31 @@ impl Decoder {
     }
 
     fn seek(&mut self, n: i32) -> Result<()> {
-        // mid-frame, so rounding cannot miss a keyframe at n
-        let target = self.start + ((f64::from(n) + 0.5) / self.frames_per_tick) as i64;
-        let code = unsafe {
-            ffi::av_seek_frame(
-                self.input.as_mut_ptr(),
-                self.stream as i32,
-                target,
-                ffi::AVSEEK_FLAG_BACKWARD,
-            )
-        };
-        if code < 0 {
-            return Err(ffmpeg_next::Error::from(code).into());
+        // a raw stream cannot seek: it decodes on to a later frame, and opens again for an earlier one
+        if self.raw && n > self.at {
+            return Ok(());
+        }
+        if self.raw {
+            self.input = format::input(&absolute(&self.path))?;
+        } else {
+            // mid-frame, so rounding cannot miss a keyframe at n
+            let target = self.start + ((f64::from(n) + 0.5) / self.frames_per_tick) as i64;
+            let code = unsafe {
+                ffi::av_seek_frame(
+                    self.input.as_mut_ptr(),
+                    self.stream as i32,
+                    target,
+                    ffi::AVSEEK_FLAG_BACKWARD,
+                )
+            };
+            if code < 0 {
+                return Err(ffmpeg_next::Error::from(code).into());
+            }
         }
         self.decoder.flush();
         self.drained = false;
+        self.pending = false;
+        self.lost = true;
         self.at = -1;
         self.past.clear();
         self.after = None;
@@ -684,7 +787,7 @@ impl Decoder {
     // only a file with an index gives a seek that ends on a keyframe
     pub fn key(&mut self, n: i32) -> Result<i32> {
         let stream = self.input.stream(self.stream).ok_or("no stream")?;
-        if unsafe { ffi::avformat_index_get_entries_count(stream.as_ptr()) } < 2 {
+        if self.raw || unsafe { ffi::avformat_index_get_entries_count(stream.as_ptr()) } < 2 {
             return Err("the file has no index".into());
         }
         self.seek(n)?;
@@ -782,7 +885,7 @@ impl Decoder {
                 return Ok(Some(index));
             }
             aim = Some(n);
-        } else if n > self.at + NEAR && !self.drained {
+        } else if n > self.at + NEAR && !self.drained || self.lost {
             aim = Some(n);
         }
         if let Some(aim) = aim {
@@ -795,7 +898,7 @@ impl Decoder {
             }
             // in a file without an index a seek can end after the frame, then it goes further back
             let late = self.after.is_none_or(|number| number > n);
-            if let Some(from) = aim.filter(|aim| *aim >= 0 && self.at < 0 && late) {
+            if let Some(from) = aim.filter(|aim| *aim >= 0 && self.at < 0 && late && !self.raw) {
                 // the last try is before the start, where a time of 0 can still end after the first picture
                 let back = match from {
                     0 => -64,
@@ -811,14 +914,17 @@ impl Decoder {
                 Some(number) if number <= n || self.at < 0 => {
                     std::mem::swap(&mut self.frame, &mut self.ahead);
                     let last = std::mem::replace(&mut self.ahead, frame::Video::empty());
-                    if self.at >= 0 && !hardware(&last) {
-                        self.past.push_back((self.at, last));
+                    // a gap in the history gives wrong pictures
+                    match self.at >= 0 && !hardware(&last) {
+                        true => self.past.push_back((self.at, last)),
+                        false => self.past.clear(),
                     }
                     if self.past.len() > self.keep {
                         self.past.pop_front();
                     }
                     self.at = number;
                     self.after = None;
+                    self.lost = false;
                 }
                 _ => break,
             }
@@ -894,8 +1000,13 @@ impl Ahead {
                 let n = match asked {
                     Ok(n) => n,
                     Err(TryRecvError::Empty) => {
-                        made.push_back((next, decoder.fetch(next)));
-                        next += 1;
+                        match decoder.fetch(next) {
+                            Ok(picture) => {
+                                made.push_back((next, picture));
+                                next += 1;
+                            }
+                            Err(_) => order = false,
+                        }
                         continue;
                     }
                     Err(TryRecvError::Disconnected) => break,
@@ -905,7 +1016,7 @@ impl Ahead {
                     made.pop_front();
                 }
                 let picture = match made.pop_front() {
-                    Some((index, picture)) if index == n => picture,
+                    Some((index, picture)) if index == n => Ok(picture),
                     _ => {
                         made.clear();
                         next = n + 1;

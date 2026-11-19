@@ -5,14 +5,14 @@ use std::time::{Duration, Instant};
 use ffmpeg_next::{Discard, Packet, Rational, codec, encoder, ffi, format, media};
 
 use crate::audio::name;
-use crate::decode::title;
+use crate::decode::{absolute, title};
 use crate::queue::Job;
 use crate::work::Cancel;
 use crate::{Event, Result, Sink};
 
 pub fn keyframes(clip: &Path, cancel: &Cancel) -> Result<Vec<f64>> {
     ffmpeg_next::init()?;
-    let mut input = format::input(clip)?;
+    let mut input = format::input(&absolute(clip))?;
     let video = crate::decode::video(&input).ok_or("the clip has no video")?;
     let (video, base) = (video.index(), f64::from(video.time_base()));
     let begin = crate::decode::origin(&input) as f64 / 1e6;
@@ -38,8 +38,8 @@ pub fn keyframes(clip: &Path, cancel: &Cancel) -> Result<Vec<f64>> {
 // copies the packets of the cut without a new encode, so the cut starts on a keyframe
 pub fn copy(job: &Job, output: &Path, sink: Sink, cancel: &Cancel) -> Result<()> {
     ffmpeg_next::init()?;
-    let mut input = format::input(&job.clip)?;
-    let mut target = format::output(output)?;
+    let mut input = format::input(&absolute(&job.clip))?;
+    let mut target = format::output(&absolute(output))?;
     let video = crate::decode::video(&input).ok_or("the clip has no video")?;
     let (video, rate) = (video.index(), f64::from(video.avg_frame_rate()));
 
@@ -60,22 +60,35 @@ pub fn copy(job: &Job, output: &Path, sink: Sink, cancel: &Cancel) -> Result<()>
         streams.push(Some(added.index()));
     }
 
-    let seconds = input
+    let begin = crate::decode::origin(&input);
+    // the length from the start of the picture
+    let length = input
         .stream(video)
         .map_or(0.0, |stream| match stream.duration() {
-            ffi::AV_NOPTS_VALUE => input.duration() as f64 / f64::from(ffi::AV_TIME_BASE),
-            ticks => (ticks + stream.start_time().max(0)) as f64 * f64::from(stream.time_base()),
+            ticks if ticks > 0 => ticks as f64 * f64::from(stream.time_base()),
+            _ if input.duration() > 0 => {
+                let first = match unsafe { (*input.as_ptr()).start_time } {
+                    ffi::AV_NOPTS_VALUE => begin,
+                    first => first,
+                };
+                (input.duration() + first - begin) as f64 / f64::from(ffi::AV_TIME_BASE)
+            }
+            _ => f64::INFINITY,
         });
     let (start, end) = job.cut.unwrap_or((0.0, f64::INFINITY));
-    let begin = unsafe {
-        let context = input.as_mut_ptr();
-        let begin = (*context).start_time.max(0);
-        // a start on a keyframe must not fall before it
-        let position = begin + ((start + 0.001) * f64::from(ffi::AV_TIME_BASE)) as i64;
-        ffi::av_seek_frame(context, -1, position, ffi::AVSEEK_FLAG_BACKWARD);
-        begin as f64 / f64::from(ffi::AV_TIME_BASE)
-    };
-    let end = end.min(seconds - begin);
+    // a start on a keyframe must not fall before it
+    let position = begin + ((start + 0.001) * f64::from(ffi::AV_TIME_BASE)) as i64;
+    let sought =
+        unsafe { ffi::av_seek_frame(input.as_mut_ptr(), -1, position, ffi::AVSEEK_FLAG_BACKWARD) };
+    if sought < 0 && start > 0.0 {
+        return Err("the clip cannot jump to the cut".into());
+    }
+    let begin = begin as f64 / f64::from(ffi::AV_TIME_BASE);
+    let end = end.min(length);
+    // a seek past the end lands on the last key frame
+    if start >= end {
+        return Err("the cut has no picture".into());
+    }
     target.write_header()?;
     if !job.copy {
         sink(Event::Info("nothing to render, copying the streams".into()));
@@ -90,6 +103,7 @@ pub fn copy(job: &Job, output: &Path, sink: Sink, cancel: &Cancel) -> Result<()>
     let mut waiting = VecDeque::new();
     let mut held = Vec::new();
     let mut packet = Packet::empty();
+    let mut last = None;
     while !cancel.stopped() {
         let stream = match waiting.pop_front() {
             Some(held) => {
@@ -101,34 +115,50 @@ pub fn copy(job: &Job, output: &Path, sink: Sink, cancel: &Cancel) -> Result<()>
                     .iter()
                     .zip(&finished)
                     .all(|(stream, done)| stream.is_none() || *done)
-                    || crate::decode::next(&mut packet, &mut input).is_err()
                 {
                     break;
+                }
+                match crate::decode::next(&mut packet, &mut input) {
+                    Err(ffmpeg_next::Error::Eof) => break,
+                    read => read?,
+                }
+                // a held packet came before the end, only new ones of a finished stream go
+                if finished.get(packet.stream()) == Some(&true) {
+                    continue;
                 }
                 packet.stream()
             }
         };
-        let Some(index) = streams[stream] else {
+        let Some(index) = streams.get(stream).copied().flatten() else {
             continue;
         };
         let base = input
             .stream(stream)
             .map_or(Rational(1, 1), |stream| stream.time_base());
         let moment = match stream == video {
-            true => packet.dts(),
+            true => packet.dts().or(packet.pts()),
             false => packet.pts().or(packet.dts()),
         };
-        let time = moment.unwrap_or(0) as f64 * f64::from(base) - begin;
+        let time = match moment {
+            Some(moment) => moment as f64 * f64::from(base) - begin,
+            None if stream == video => last.unwrap_or(-begin),
+            None => -begin,
+        };
+        // matroska gives some files no decode times, a b-frame then does not go back before the picture before it
+        let time = match (stream == video && packet.dts().is_none(), last) {
+            (true, Some(last)) => time.max(last),
+            _ => time,
+        };
+        if stream == video {
+            last = Some(time);
+        }
         if time > end {
             finished[stream] = true;
             continue;
         }
-        if stream == video {
-            if origin.is_none() && packet.is_key() {
-                origin = Some(time);
-                waiting.extend(held.drain(..));
-            }
-            written += 1;
+        if stream == video && origin.is_none() && packet.is_key() {
+            origin = Some(time);
+            waiting.extend(held.drain(..));
         }
         let Some(origin) = origin else {
             if stream != video {
@@ -137,8 +167,12 @@ pub fn copy(job: &Job, output: &Path, sink: Sink, cancel: &Cancel) -> Result<()>
             continue;
         };
         let length = packet.duration() as f64 * f64::from(base);
-        if stream == video && time < origin || stream != video && time + length <= origin {
+        // after the first key frame the pictures stay in decode order, an open group needs them all
+        if stream != video && time + length <= origin {
             continue;
+        }
+        if stream == video {
+            written += 1;
         }
         let shift = ((origin + begin) / f64::from(base)) as i64;
         packet.set_pts(packet.pts().map(|pts| pts - shift));
@@ -159,6 +193,13 @@ pub fn copy(job: &Job, output: &Path, sink: Sink, cancel: &Cancel) -> Result<()>
                 fps,
             });
         }
+    }
+    if written == 0 {
+        return Err(match cancel.stopped() {
+            true => "stopped",
+            false => "the cut has no picture",
+        }
+        .into());
     }
     target.write_trailer()?;
     Ok(())

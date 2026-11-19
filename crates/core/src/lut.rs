@@ -20,6 +20,9 @@ impl Lut {
         for line in text.lines().map(str::trim) {
             if let Some(value) = line.strip_prefix("LUT_3D_SIZE") {
                 size = value.trim().parse().unwrap_or(0);
+                if size > 256 {
+                    return Err(format!("{} is too big for a lut", path.display()).into());
+                }
                 data.reserve(size * size * size);
             } else if line
                 .starts_with(|first: char| first.is_ascii_digit() || first == '-' || first == '.')

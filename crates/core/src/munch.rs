@@ -4,6 +4,7 @@ use ffmpeg_next::{Packet, Rational, codec, color, decoder, encoder, ffi, frame};
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
+use crate::budget;
 use crate::compose::Scaler;
 use crate::decode::Meta;
 
@@ -20,7 +21,7 @@ pub struct Munch {
 
 impl Munch {
     pub fn size(&self, (width, height): (u32, u32)) -> (u32, u32) {
-        let by = 1.0 + 0.6 * f64::from(self.amount - 1);
+        let by = 1.0 + 0.6 * f64::from(self.amount.clamp(1, 10) - 1);
         let side = |length: u32| ((f64::from(length) / by).round() as u32 & !1).max(16);
         (side(width), side(height))
     }
@@ -61,7 +62,8 @@ impl Muncher {
         video.set_flags(codec::Flags::QSCALE);
         video.set_threading(codec::threading::Config {
             kind: codec::threading::Type::Slice,
-            count: 0,
+            // mjpeg fails above 16 threads or one per 16 rows
+            count: budget::own().min(16).min(meta.height.div_ceil(16) as usize),
         });
         let encoder = video.open_as(jpeg)?;
         let reader = decoder::find(codec::Id::MJPEG).ok_or("there is no mjpeg decoder")?;
@@ -72,7 +74,7 @@ impl Muncher {
         Ok(Self {
             meta,
             fry: f32::from(munch.fry) / 10.0,
-            quality: (2 + i32::from(munch.amount - 1) * 29 / 9) * ffi::FF_QP2LAMBDA,
+            quality: (2 + i32::from(munch.amount.clamp(1, 10) - 1) * 29 / 9) * ffi::FF_QP2LAMBDA,
             down: Scaler::new(),
             up: Scaler::new(),
             encoder,
@@ -148,8 +150,9 @@ fn fry(picture: &mut frame::Video, k: f32) {
 
 // held is the last sample of the call before
 pub fn crush(samples: &mut [Vec<f32>; 2], position: i64, munch: &Munch, held: &mut [f32; 2]) {
-    let step = (1.0 + f64::from(munch.amount - 1) * 0.7).round() as i64;
-    let levels = f32::from(1u16 << (16 - munch.amount));
+    let amount = munch.amount.clamp(1, 10);
+    let step = (1.0 + f64::from(amount - 1) * 0.7).round() as i64;
+    let levels = f32::from(1u16 << (16 - amount));
     let gain = 10f32.powf(f32::from(munch.loud) * 1.8 / 20.0);
     for (channel, held) in samples.iter_mut().zip(held) {
         if step > 1 {
@@ -162,7 +165,7 @@ pub fn crush(samples: &mut [Vec<f32>; 2], position: i64, munch: &Munch, held: &m
             *held = channel.last().copied().unwrap_or(*held);
         }
         for sample in channel {
-            if munch.amount > 1 {
+            if amount > 1 {
                 *sample = (*sample * levels).round() / levels;
             }
             if munch.loud > 0 {

@@ -2,6 +2,9 @@ use crate::config::{Blending, Weighting};
 
 fn normalize(mut weights: Vec<f64>) -> Vec<f64> {
     let total: f64 = weights.iter().sum();
+    if total <= 0.0 {
+        return vec![1.0 / weights.len() as f64; weights.len()];
+    }
     for weight in &mut weights {
         *weight /= total;
     }
@@ -48,6 +51,16 @@ pub fn plan(source_fps: f64, blending: &Blending) -> Vec<f64> {
         Weighting::Ascending => (1..=count).map(|x| x as f64).collect(),
         Weighting::Descending => (1..=count).rev().map(|x| x as f64).collect(),
         Weighting::Vegas => vegas(ratio),
+        // saved projects are not checked
+        Weighting::Custom
+            if !blending
+                .custom
+                .iter()
+                .all(|weight| weight.is_finite() && *weight >= 0.0)
+                || !blending.custom.iter().any(|weight| *weight > 0.0) =>
+        {
+            vec![1.0; count]
+        }
         Weighting::Custom => spread(count, 0.0, blending.custom.len() as f64 - 0.1)
             .map(|x| f64::from(blending.custom[x as usize]))
             .collect(),

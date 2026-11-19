@@ -221,7 +221,13 @@ pub fn curve(text: &str) -> Option<Vec<f32>> {
         .strip_prefix('[')?
         .strip_suffix(']')?
         .split(',')
-        .map(|value| value.trim().parse().ok().filter(|value| *value > 0.0))
+        .map(|value| {
+            value
+                .trim()
+                .parse()
+                .ok()
+                .filter(|value: &f32| *value > 0.0 && value.is_finite())
+        })
         .collect();
     values.filter(|values| !values.is_empty())
 }

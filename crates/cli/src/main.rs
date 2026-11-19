@@ -253,7 +253,11 @@ fn render() -> ExitCode {
                 settings.push_str(&format!("[{section}]\n{key}: {value}\n"));
             }
             "--from" | "--to" | "--mute" => {
-                let Ok(number) = value().parse::<f64>() else {
+                let Some(number) = value()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|number| !number.is_nan())
+                else {
                     return fail(format!("{argument} needs a number"));
                 };
                 match argument.as_str() {
@@ -289,6 +293,9 @@ fn render() -> ExitCode {
         return ExitCode::from(2);
     }
 
+    if to <= from {
+        return fail("--to must be after --from");
+    }
     config::create();
     let file = PathBuf::from(&named);
     let mut jobs = Vec::new();

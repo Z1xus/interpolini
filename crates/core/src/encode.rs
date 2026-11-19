@@ -11,7 +11,7 @@ use crate::Result;
 use crate::audio::{Lane, Mixer, RATE, Source, name};
 use crate::budget;
 use crate::config::{self, Codec, Effort, Output};
-use crate::decode::{Meta, title};
+use crate::decode::{Meta, absolute, title};
 use crate::munch::{Munch, crush};
 
 // the frames from one key frame to the next, each encoder has another default
@@ -97,13 +97,16 @@ pub fn find_encoders() {
         });
         ffmpeg_next::log::set_level(Level::Quiet);
         let base = Rational(1, 60);
-        let found = names
+        let found: Vec<&str> = names
             .filter(|name| {
-                context(name, &meta, base, &Output::default(), None, false)
+                context(name, &meta, base, &Output::default(), None, false, false)
                     .is_some_and(|c| c.is_ok())
             })
             .collect();
         ffmpeg_next::log::set_level(Level::Error);
+        if found.iter().any(|name| name.ends_with("_nvenc")) {
+            engines();
+        }
         found
     });
 }
@@ -147,7 +150,7 @@ pub fn effort(output: &Output, effort: Effort) -> String {
     }
 }
 
-fn options(name: &str, output: &Output, sized: bool) -> Dictionary<'static> {
+fn options(name: &str, output: &Output, sized: bool, packed: bool) -> Dictionary<'static> {
     // these av1 encoders count the quantizer to 255, the others to 51 or 63
     let wide = name.starts_with("av1_") && !name.ends_with("_nvenc");
     let quality = (output.quality * if wide { 4 } else { 1 }).to_string();
@@ -174,10 +177,14 @@ fn options(name: &str, output: &Output, sized: bool) -> Dictionary<'static> {
         .then_some(("split_encode_mode", "forced"));
     // after a flush the next picture must be an idr
     let fresh = (family == Some("nvenc")).then_some(("forced-idr", "1"));
+    // b-frames reorder packets across engines
+    let ordered = (family == Some("nvenc") && packed).then_some(("bf", "0"));
     let pairs = preset.into_iter().chain(rate.iter().copied());
-    let pairs = pairs.chain(split).chain(fresh);
+    let pairs = pairs.chain(split);
     let mut options = Dictionary::new();
-    for (key, value) in pairs.chain(self::pairs(&output.options)) {
+    // a part of a reused encoder must start with an idr, and packed parts must stay in order, whatever the options say
+    let forced = ordered.into_iter().chain(fresh);
+    for (key, value) in pairs.chain(self::pairs(&output.options)).chain(forced) {
         if key != "c:v" {
             options.set(key, value);
         }
@@ -239,7 +246,7 @@ impl Audio {
         start: f64,
         muted: &[usize],
     ) -> Result<Option<Self>> {
-        let mut input = format::input(clip)?;
+        let mut input = format::input(&absolute(clip))?;
         let mut streams = Vec::new();
         let mut track = 0;
         for stream in input.streams() {
@@ -291,7 +298,7 @@ impl Audio {
                     Err(error) => return Err(error.into()),
                 }
             }
-            let Some(target) = self.streams[self.packet.stream()] else {
+            let Some(target) = self.streams.get(self.packet.stream()).copied().flatten() else {
                 continue;
             };
             let base = self
@@ -321,6 +328,12 @@ impl Audio {
             self.packet.write_interleaved(output)?;
         }
     }
+}
+
+static ENGINES: OnceLock<usize> = OnceLock::new();
+
+fn two_engines() -> bool {
+    engines() > 1
 }
 
 // call it after the encoder of the file is open, nvenc fails to open at the same time
@@ -368,7 +381,6 @@ fn engines() -> usize {
         0x4ca4,
         [0xaa, 0x85, 0x1e, 0x50, 0xf3, 0x21, 0xf6, 0xbf],
     );
-    static CHIPS_FOUND: OnceLock<usize> = OnceLock::new();
     let ask = || unsafe {
         let names = match cfg!(windows) {
             true => ("nvcuda.dll", "nvEncodeAPI64.dll"),
@@ -411,7 +423,11 @@ fn engines() -> usize {
         };
         let (mut encoder, mut chips) = (std::ptr::null_mut(), 0);
         let mut found = None;
-        if instance(&raw mut list) == 0 && !list.functions[OPEN].is_null() {
+        if instance(&raw mut list) == 0
+            && [OPEN, ASK, CLOSE]
+                .iter()
+                .all(|&place| !list.functions[place].is_null())
+        {
             let open: Open = std::mem::transmute(list.functions[OPEN]);
             let ask: Ask = std::mem::transmute(list.functions[ASK]);
             let close: Close = std::mem::transmute(list.functions[CLOSE]);
@@ -427,7 +443,7 @@ fn engines() -> usize {
         destroy(context);
         found
     };
-    *CHIPS_FOUND.get_or_init(|| ask().unwrap_or(1))
+    *ENGINES.get_or_init(|| ask().unwrap_or(1))
 }
 
 pub type Spare = Arc<dyn Fn() -> Result<encoder::video::Encoder> + Send + Sync>;
@@ -449,6 +465,7 @@ pub(crate) fn context(
     config: &Output,
     rate: Option<usize>,
     header: bool,
+    packed: bool,
 ) -> Option<std::result::Result<encoder::video::Encoder, String>> {
     let codec = encoder::find_by_name(name)?;
     let mut video = codec::Context::new_with_codec(codec)
@@ -493,9 +510,9 @@ pub(crate) fn context(
     if let Some(rate) = rate.filter(|_| name != "libsvtav1") {
         video.set_max_bit_rate(rate);
         // one second of the rate, with more the file can go over its size
-        unsafe { (*video.as_mut_ptr()).rc_buffer_size = rate as i32 };
+        unsafe { (*video.as_mut_ptr()).rc_buffer_size = rate.min(i32::MAX as usize) as i32 };
     }
-    let opened = video.open_with(options(name, config, rate.is_some()));
+    let opened = video.open_with(options(name, config, rate.is_some(), packed));
     Some(opened.map_err(|error| format!("{name}: {error}")))
 }
 
@@ -531,6 +548,19 @@ pub struct Encoder {
     pub munch: Option<Munch>,
     held: Vec<[f32; 2]>,
     pub packets: [(u32, u64); 2],
+    shown: i64,
+}
+
+// true for a packet, false when the encoder has nothing more for now
+pub(crate) fn received(result: std::result::Result<(), ffmpeg_next::Error>) -> Result<bool> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(ffmpeg_next::Error::Eof)
+        | Err(ffmpeg_next::Error::Other {
+            errno: ffmpeg_next::error::EAGAIN,
+        }) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
 }
 
 impl Encoder {
@@ -541,7 +571,10 @@ impl Encoder {
         config: &Output,
         rate: Option<usize>,
         plan: Plan,
+        packed: bool,
     ) -> Result<Self> {
+        // a part of the file can go to the second engine of the card
+        let packed = packed && rate.is_none() && two_engines();
         let header = output
             .format()
             .flags()
@@ -565,15 +598,15 @@ impl Encoder {
                 let mut tries = [meta, &plain]
                     .into_iter()
                     .take(1 + usize::from(meta.yuv444));
-                tries.find_map(
-                    |meta| match context(name, meta, base, config, rate, header)? {
+                tries.find_map(|meta| {
+                    match context(name, meta, base, config, rate, header, packed)? {
                         Ok(encoder) => Some((name, encoder)),
                         Err(error) => {
                             failure = error;
                             None
                         }
-                    },
-                )
+                    }
+                })
             })
         };
         let opened = open(Level::Quiet).or_else(|| open(Level::Error));
@@ -643,11 +676,11 @@ impl Encoder {
         // nvenc starts again after a flush, and a size target needs one encoder for the whole file
         // the lanes give their pictures to it as they are, so it must take them without a change
         let spare: Option<Spare> =
-            (name.ends_with("_nvenc") && rate.is_none() && convert.is_none()).then(|| {
+            (name.ends_with("_nvenc") && packed && convert.is_none()).then(|| {
                 let (name, meta, config, first) =
                     (name.to_owned(), *meta, config.clone(), head(&encoder));
                 Arc::new(move || {
-                    let video = context(&name, &meta, base, &config, None, header);
+                    let video = context(&name, &meta, base, &config, None, header, true);
                     let video = video.ok_or("no encoder")??;
                     match head(&video) == first {
                         true => Ok(video),
@@ -672,6 +705,7 @@ impl Encoder {
             yuv444: target == Pixel::YUV444P,
             munch: None,
             packets: [(0, 0); 2],
+            shown: 0,
         })
     }
 
@@ -684,6 +718,7 @@ impl Encoder {
         if let Some(audio) = &mut self.audio {
             audio.copy(&mut self.output, seconds)?;
         }
+        self.shown = self.shown.max(self.packet.pts().unwrap_or(0) + 1);
         let kind = &mut self.packets[usize::from(self.packet.is_key())];
         *kind = (kind.0 + 1, kind.1 + self.packet.size() as u64);
         self.packet.set_duration(1);
@@ -694,17 +729,17 @@ impl Encoder {
     }
 
     fn drain(&mut self) -> Result<()> {
-        while self.encoder.receive_packet(&mut self.packet).is_ok() {
+        while received(self.encoder.receive_packet(&mut self.packet))? {
             self.mux()?;
         }
         Ok(())
     }
 
     pub fn spare(&self) -> Option<Spare> {
-        self.spare.clone().filter(|_| engines() > 1)
+        self.spare.clone()
     }
 
-    pub fn pass(&mut self, packets: Vec<Packet>, n: i32) -> Result<()> {
+    pub fn pass(&mut self, packets: Vec<Packet>) -> Result<()> {
         if self.busy {
             self.encoder.send_eof()?;
             self.drain()?;
@@ -715,7 +750,8 @@ impl Encoder {
             self.packet = packet;
             self.mux()?;
         }
-        self.pump(f64::from(n + 1) * f64::from(self.base))
+        // a worker can still hold the packets of these frames, so the sound waits for them
+        self.pump(self.shown as f64 * f64::from(self.base))
     }
 
     pub fn begin(&mut self, clip: &Path, start: f64, muted: &[usize]) -> Result<()> {
@@ -788,9 +824,14 @@ impl Encoder {
     }
 
     pub fn finish(&mut self, frames: i32) -> Result<()> {
-        let seconds = f64::from(frames) * f64::from(self.base);
         self.encoder.send_eof()?;
         self.drain()?;
+        // the lanes of a stopped render can still hold every picture that was sent
+        if self.packets.iter().all(|kind| kind.0 == 0) {
+            return Err("stopped".into());
+        }
+        // the sound ends with the last picture in the file
+        let seconds = self.shown.min(i64::from(frames)) as f64 * f64::from(self.base);
         if let Some(audio) = &mut self.audio {
             audio.copy(&mut self.output, seconds)?;
         }

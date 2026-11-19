@@ -9,6 +9,7 @@ use ffmpeg_next::software::resampling;
 use ffmpeg_next::{ChannelLayout, Packet, Rational, codec, encoder, ffi, frame, media};
 
 use crate::Result;
+use crate::decode::absolute;
 use crate::timeline::Fade;
 use crate::work::Cancel;
 
@@ -27,8 +28,11 @@ struct Track {
     decoder: codec::decoder::Audio,
     resampler: Option<resampling::Context>,
     samples: [VecDeque<f32>; 2],
+    lead: usize,
     // the samples before the start of the cut that are still to drop
     skip: Option<usize>,
+    // the samples that this track gave, with silence before its sound
+    played: usize,
     rate: u32,
 }
 
@@ -74,14 +78,12 @@ impl Track {
             let ticks = unsafe { (*decoded.as_ptr()).duration };
             let whole = ticks as f64 * f64::from(base) * f64::from(decoded.rate());
             time += (whole - decoded.samples() as f64).max(0.0) / f64::from(decoded.rate());
-            // sound that starts after the picture gets silence before it
-            let late = ((time - start).max(0.0) * f64::from(self.rate)) as usize;
-            for samples in &mut self.samples {
-                samples.extend(std::iter::repeat_n(0.0, late));
-            }
+            // a sound that starts later than what played gets silence before it, an earlier one loses its start
+            let at =
+                (((time - start) * f64::from(self.rate)) as i64).saturating_sub(self.played as i64);
+            self.lead = at.max(0) as usize;
+            self.skip = Some(at.saturating_neg().max(0) as usize);
         }
-        self.skip
-            .get_or_insert(((start - time).max(0.0) * f64::from(self.rate)) as usize);
         if let Some(resampler) = &mut self.resampler {
             // the default room is the input size, so a higher rate leaves samples behind
             let held = resampler.delay().map_or(0, |delay| delay.output as usize);
@@ -116,7 +118,7 @@ impl Track {
 impl Source {
     // keep says which audio tracks of the clip to decode, by their number
     pub fn open(clip: &Path, start: f64, speed: f64, keep: impl Fn(usize) -> bool) -> Result<Self> {
-        let mut input = format::input(clip)?;
+        let mut input = format::input(&absolute(clip))?;
         let mut tracks = Vec::new();
         let mut number = 0;
         for stream in input.streams() {
@@ -135,7 +137,9 @@ impl Source {
                 decoder,
                 resampler: None,
                 samples: Default::default(),
+                lead: 0,
                 skip: None,
+                played: 0,
                 rate: (f64::from(RATE) / speed).round() as u32,
             });
         }
@@ -161,7 +165,13 @@ impl Source {
     }
 
     fn fill(&mut self, count: usize) -> Result<()> {
-        let short = |tracks: &[Track]| tracks.iter().any(|track| track.samples[0].len() < count);
+        let short = |tracks: &[Track]| {
+            let held = |track: &Track| track.lead + track.samples[0].len();
+            // a track that ends early or starts late must not make the others hold the rest of the file
+            let far = count + 10 * RATE as usize;
+            tracks.iter().any(|track| held(track) < count)
+                && tracks.iter().all(|track| track.samples[0].len() < far)
+        };
         let mut decoded = frame::Audio::empty();
         while !self.ended && short(&self.tracks) {
             let ended = crate::decode::next(&mut self.packet, &mut self.input).is_err();
@@ -198,9 +208,12 @@ impl Source {
             if track.is_some_and(|track| track != index) {
                 continue;
             }
+            let silent = source.lead.min(count);
+            source.lead -= silent;
+            source.played += count;
             for (channel, samples) in source.samples.iter_mut().enumerate() {
-                let taken = samples.drain(..count.min(samples.len()));
-                for (sum, sample) in output[channel].iter_mut().zip(taken) {
+                let taken = samples.drain(..(count - silent).min(samples.len()));
+                for (sum, sample) in output[channel][silent..].iter_mut().zip(taken) {
                     *sum = (*sum + sample).clamp(-1.0, 1.0);
                 }
             }

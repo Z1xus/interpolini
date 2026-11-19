@@ -4,10 +4,10 @@ use ffmpeg_next::format::Pixel;
 use ffmpeg_next::{color, ffi, frame};
 
 use crate::budget;
-use crate::cache::Cache;
+use crate::cache::{Cache, Reader};
 use crate::config::Config;
 use crate::decode::{Decoder, Meta};
-use crate::graph::{Graph, Image, image};
+use crate::graph::{Graph, Image, Info, image};
 use crate::mask::Gray;
 use crate::munch::{Munch, Muncher};
 use crate::segments::Made;
@@ -210,7 +210,7 @@ impl Source {
             return self.at(seconds, cancel);
         };
         let index = cache.index(seconds);
-        let n = index * cache.every;
+        let n = index * cache.form.every;
         if !matches!(&self.held, Some(held) if held.0 == n) {
             if let Some(picture) = cache.read(index) {
                 return Ok(Picture(picture));
@@ -230,7 +230,9 @@ impl Source {
     }
 
     pub fn every(&self) -> usize {
-        self.cache.as_ref().map_or(1, |cache| cache.every as usize)
+        self.cache
+            .as_ref()
+            .map_or(1, |cache| cache.form.every as usize)
     }
 
     pub fn missing(&self, from: f64, to: f64) -> Option<(f64, f64)> {
@@ -239,12 +241,63 @@ impl Source {
 }
 
 #[derive(Default)]
-pub struct Sources(Vec<(PathBuf, Config, Source)>);
+pub struct Sources(
+    Vec<(PathBuf, Config, Source)>,
+    Vec<(PathBuf, Config, Reader)>,
+);
 
 impl Sources {
     fn find(&self, clip: &Path, config: &Config) -> Option<usize> {
         let held = |held: &(PathBuf, Config, Source)| held.0 == clip && held.1 == *config;
         self.0.iter().position(held)
+    }
+
+    // the cache of a clip that is not open needs no graph
+    fn reader(&mut self, clip: &Path, config: &Config) -> Option<&mut Reader> {
+        let held = |held: &(PathBuf, Config, Reader)| held.0 == clip && held.1 == *config;
+        let index = match self.1.iter().position(held) {
+            Some(index) => index,
+            None => {
+                let reader = Reader::stored(clip, config)?;
+                self.1.push((clip.to_owned(), config.clone(), reader));
+                self.1.len() - 1
+            }
+        };
+        Some(&mut self.1[index].2)
+    }
+
+    pub fn cached(&mut self, clip: &Path, config: &Config, seconds: f64) -> bool {
+        match self.find(clip, config) {
+            Some(index) => self.0[index].2.cached(seconds),
+            None => self
+                .reader(clip, config)
+                .is_some_and(|reader| reader.has(reader.index(seconds))),
+        }
+    }
+
+    // a picture from the cache, none when it is not there
+    pub fn play(
+        &mut self,
+        clip: &Path,
+        config: &Config,
+        seconds: f64,
+        cancel: &Cancel,
+    ) -> Option<Result<Picture>> {
+        if let Some(source) = self.get_mut(clip, config) {
+            return Some(source.play(seconds, cancel));
+        }
+        let reader = self.reader(clip, config)?;
+        let picture = reader.read(reader.index(seconds))?;
+        Some(Ok(Picture(picture)))
+    }
+
+    // the size, the frame rate and the source frame rate
+    pub fn info(&mut self, clip: &Path, config: &Config) -> Option<(Info, f64)> {
+        if let Some(graph) = self.get(clip, config).and_then(Source::graph) {
+            return Some((graph.info, graph.source_fps()));
+        }
+        let form = self.reader(clip, config)?.form;
+        Some((form.info, form.source_fps()))
     }
 
     pub fn get(&self, clip: &Path, config: &Config) -> Option<&Source> {
@@ -272,6 +325,7 @@ impl Sources {
     }
 
     pub fn add(&mut self, clip: PathBuf, config: Config, source: Source) {
+        self.1.retain(|held| held.0 != clip || held.1 != config);
         self.0.push((clip, config, source));
     }
 
@@ -285,7 +339,8 @@ impl Sources {
         let held = std::mem::take(&mut self.0).into_iter();
         let (kept, gone) = held.partition(|held| keep(&held.0, &held.1));
         self.0 = kept;
-        Sources(gone)
+        self.1.retain(|held| keep(&held.0, &held.1));
+        Sources(gone, Vec::new())
     }
 
     pub fn remask(&mut self, clip: &Path, to: &Config, gray: &Gray, sink: Sink, cancel: &Cancel) {
@@ -443,6 +498,7 @@ impl Canvas {
         if let Some(size) = setup.size {
             (meta.width, meta.height) = size;
         }
+        (meta.width, meta.height) = (meta.width.max(2), meta.height.max(2));
         let mut canvas = Self::new(meta, setup.background);
         if let Some(munch) = setup.munch {
             canvas.munch = Some(Muncher::new(&canvas.meta, &munch)?);
@@ -532,7 +588,7 @@ impl Canvas {
             }
             let from = |edge: u32, start: f64, end: f64, most: u32, least: u32| {
                 let pixel = (f64::from(edge) - start) / (end - start) * f64::from(most);
-                even(pixel, most).clamp(least, most - 2 + least)
+                even(pixel, most).clamp(least, most.saturating_sub(2) + least)
             };
             let first = (
                 from(left, whole[0], whole[2], width, 0),
@@ -566,8 +622,8 @@ impl Canvas {
         munched: bool,
     ) -> Result<Image> {
         let (wide, high) = self.size();
-        let width = width.min(wide) & !1;
-        let height = (u64::from(width) * u64::from(high) / u64::from(wide)) as u32 & !1;
+        let width = (width.min(wide) & !1).max(2);
+        let height = ((u64::from(width) * u64::from(high) / u64::from(wide)) as u32 & !1).max(2);
         // full-size pictures need no scaler, the rest is drawn at the width that shows
         let fits = |layer: &(Picture, Place, f32)| {
             layer.1 == Place::default() && (layer.0.0.width(), layer.0.0.height()) == (wide, high)
