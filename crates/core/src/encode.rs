@@ -206,6 +206,9 @@ fn surfaces(video: &mut encoder::video::Video, meta: &Meta, format: Pixel) -> Re
         }
         let mut frames = ffi::av_hwframe_ctx_alloc(device);
         ffi::av_buffer_unref(&mut device);
+        if frames.is_null() {
+            return Err("not enough memory".into());
+        }
         let context = (*frames).data.cast::<ffi::AVHWFramesContext>();
         (*context).format = format.into();
         (*context).sw_format = ffi::AVPixelFormat::AV_PIX_FMT_NV12;

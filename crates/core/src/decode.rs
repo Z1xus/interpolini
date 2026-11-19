@@ -183,6 +183,8 @@ pub struct Probe {
 
 // a file with sound only has a frame rate of 0
 pub fn probe(path: &Path) -> Result<Probe> {
+    path.to_str()
+        .ok_or("the clip name has unsupported characters")?;
     ffmpeg_next::init()?;
     let audio = |stream: &format::stream::Stream| {
         (stream.parameters().medium() == media::Type::Audio).then(|| title(stream))
