@@ -93,17 +93,24 @@ pub fn set(window: &slint::Window) -> Option<()> {
     }
     let pool = shm.create_pool(file.as_fd(), total as i32, &handle, ());
     let mut offset = 0;
+    let mut buffers = Vec::new();
     for size in SIZES.map(|size| size as i32) {
         let format = wl_shm::Format::Argb8888;
-        icon.add_buffer(
-            &pool.create_buffer(offset, size, size, size * 4, format, &handle, ()),
-            1,
-        );
+        let buffer = pool.create_buffer(offset, size, size, size * 4, format, &handle, ());
+        icon.add_buffer(&buffer, 1);
+        buffers.push(buffer);
         offset += size * size * 4;
     }
     let id =
         unsafe { ObjectId::from_ptr(XdgToplevel::interface(), toplevel.as_ptr().cast()) }.ok()?;
     manager.set_icon(&XdgToplevel::from_id(&connection, id).ok()?, Some(&icon));
+    // the toplevel keeps the icon, the buffers must outlive the icon object
+    icon.destroy();
+    buffers.iter().for_each(|buffer| buffer.destroy());
+    pool.destroy();
+    manager.destroy();
     queue.roundtrip(&mut State).ok()?;
+    // the icon applies with the next commit, which the renderer makes with a frame
+    window.request_redraw();
     Some(())
 }

@@ -48,7 +48,7 @@ pub fn start(ui: Weak<App>) {
         differences: Pool::new(Class::Background),
         tasks: Pool::new(Class::Background),
         worker: Arc::new(Mutex::new(Worker::new(ui))),
-        closer: Pool::new(Class::Interactive),
+        closer: Pool::new(Class::Background),
         audio: Audio::new(),
     });
 }
@@ -56,6 +56,11 @@ pub fn start(ui: Weak<App>) {
 pub fn stop() -> usize {
     let services = held().take();
     drop(services);
+    // a clip that opens on its own thread stops soon after its cancel
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while work::live() > 0 && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     work::live()
 }
 

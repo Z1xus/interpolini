@@ -16,6 +16,7 @@ struct Moment {
     tracks: Tracks,
     size: Option<(u32, u32)>,
     time: f64,
+    at: Instant,
 }
 
 struct History {
@@ -23,6 +24,8 @@ struct History {
     redo: Vec<Moment>,
     cleared: Vec<Moment>,
     recorded: Instant,
+    gesture: String,
+    evicted: Option<Moment>,
 }
 
 thread_local! {
@@ -32,6 +35,8 @@ thread_local! {
         redo: Vec::new(),
         cleared: Vec::new(),
         recorded: Instant::now(),
+        gesture: String::new(),
+        evicted: None,
     });
 }
 
@@ -43,28 +48,37 @@ fn moment(ui: &App, state: &State) -> Moment {
         tracks: state.tracks.clone(),
         size: state.project.look.size,
         time: state.time(ui.get_position()),
+        at: Instant::now(),
     }
 }
 
-// call before a change, a gesture counts as one
-pub fn record(ui: &App, state: &mut State, gesture: bool) {
+// call before a change, the steps of one gesture count as one
+pub fn record(ui: &App, state: &mut State, gesture: &str) {
     touch(ui, state);
     HISTORY.with_borrow_mut(|history| {
+        // only steps of the same gesture join, any other step between them starts a new one
         let recent = history.recorded.elapsed() < Duration::from_millis(600);
+        let joins = recent && !gesture.is_empty() && history.gesture == gesture;
         history.recorded = Instant::now();
-        if gesture && recent {
+        history.gesture = gesture.into();
+        if joins {
             return;
         }
-        history.undo.push(moment(ui, state));
+        // a forgotten step brings the oldest one back
+        history.evicted = (history.undo.len() >= 200).then(|| history.undo.remove(0));
+        let at = history.recorded;
+        history.undo.push(Moment {
+            at,
+            ..moment(ui, state)
+        });
         history.cleared = std::mem::take(&mut history.redo);
-        if history.undo.len() > 200 {
-            history.undo.remove(0);
-        }
     });
 }
 
 pub fn clear() {
     HISTORY.with_borrow_mut(|history| {
+        history.gesture.clear();
+        history.evicted = None;
         history.undo.clear();
         history.redo.clear();
         history.cleared.clear();
@@ -75,10 +89,20 @@ pub fn recorded() -> Instant {
     HISTORY.with_borrow(|history| history.recorded)
 }
 
-pub fn forget() {
+// the step recorded at that time goes, the steps after it stay
+pub fn forget(at: Instant) {
     HISTORY.with_borrow_mut(|history| {
-        history.undo.pop();
-        history.redo = std::mem::take(&mut history.cleared);
+        history.gesture.clear();
+        let Some(index) = history.undo.iter().rposition(|moment| moment.at == at) else {
+            return;
+        };
+        let last = index + 1 == history.undo.len();
+        history.undo.remove(index);
+        // the room brings back the step that the last one pushed out
+        history.undo.splice(0..0, history.evicted.take());
+        if last {
+            history.redo = std::mem::take(&mut history.cleared);
+        }
     });
 }
 
@@ -88,7 +112,8 @@ pub fn amend(change: impl Fn(&mut Entry)) {
             .undo
             .iter_mut()
             .chain(&mut history.redo)
-            .chain(&mut history.cleared);
+            .chain(&mut history.cleared)
+            .chain(&mut history.evicted);
         moments
             .flat_map(|moment| moment.entries.iter_mut().chain([&mut moment.draft]))
             .for_each(change);
@@ -98,6 +123,7 @@ pub fn amend(change: impl Fn(&mut Entry)) {
 pub fn travel(ui: &App, shared: &Shared, back: bool) {
     let now = moment(ui, &lock(shared));
     let target = HISTORY.with_borrow_mut(|history| {
+        history.gesture.clear();
         let History { undo, redo, .. } = history;
         let (from, to) = if back { (undo, redo) } else { (redo, undo) };
         let target = from.pop()?;
@@ -110,7 +136,14 @@ pub fn travel(ui: &App, shared: &Shared, back: bool) {
 }
 
 pub fn revert(ui: &App, shared: &Shared) {
-    if let Some(target) = HISTORY.with_borrow_mut(|history| history.undo.pop()) {
+    let target = HISTORY.with_borrow_mut(|history| {
+        history.gesture.clear();
+        history.redo = std::mem::take(&mut history.cleared);
+        let target = history.undo.pop();
+        history.undo.splice(0..0, history.evicted.take());
+        target
+    });
+    if let Some(target) = target {
         restore(ui, shared, target);
     }
 }
@@ -128,6 +161,7 @@ fn restore(ui: &App, shared: &Shared, target: Moment) {
         entry.measured = None;
     }
     state.tracks = target.tracks;
+    state.spare = None;
     if !state.project.look.chosen {
         state.project.look.size = target.size;
     }

@@ -121,11 +121,13 @@ impl Project {
     }
 }
 
-const SIDES: std::ops::RangeInclusive<u32> = 16..=16384;
+// ffmpeg takes no picture of 16384 by 16384
+const SIDES: std::ops::RangeInclusive<u32> = 16..=16000;
 const RATES: std::ops::RangeInclusive<f64> = 1.0..=1000.0;
 
 pub fn even(size: (u32, u32)) -> (u32, u32) {
-    ((size.0 & !1).max(2), (size.1 & !1).max(2))
+    let side = |side: u32| (side & !1).clamp(*SIDES.start(), *SIDES.end());
+    (side(size.0), side(size.1))
 }
 
 pub fn placement(canvas: (u32, u32), size: (u32, u32), fit: Fit) -> Place {
@@ -194,9 +196,15 @@ thread_local! {
     static THEN: RefCell<Option<Then>> = const { RefCell::new(None) };
     static SAVER: slint::Timer = slint::Timer::default();
     static WINDOW: RefCell<Option<ProjectSettings>> = const { RefCell::new(None) };
+    static TOUCHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+pub fn touches() -> u64 {
+    TOUCHES.get()
 }
 
 pub fn touch(ui: &App, state: &mut State) {
+    TOUCHES.set(TOUCHES.get() + 1);
     if !state.project.dirty {
         state.project.dirty = true;
         title(ui, state);
@@ -273,6 +281,7 @@ pub fn clear(ui: &App, shared: &Shared) {
     let mut state = lock(shared);
     clear_recovery(ui, &state.project);
     state.project.dirty = false;
+    TOUCHES.set(TOUCHES.get() + 1);
     title(ui, &state);
 }
 
@@ -353,12 +362,12 @@ fn snapshot(ui: &App, state: &mut State, target: Option<&Path>) -> Document {
         });
         clips.push(file::Clip {
             media: at,
-            config: known(&crate::editor::settled(&entry.config)),
+            config: known(&crate::editor::settled(entry)),
             saved: entry.saved.clone(),
         });
     }
     state.entries = entries;
-    let draft_config = known(&crate::editor::settled(&state.draft.config));
+    let draft_config = known(&crate::editor::settled(&state.draft));
     Document {
         app: env!("CARGO_PKG_VERSION").into(),
         path: target.map_or(String::new(), |path| path.to_string_lossy().into_owned()),
@@ -429,6 +438,7 @@ fn store(ui: &App, shared: &Shared, path: PathBuf, then: Option<Then>) {
     clear_recovery(ui, &state.project);
     state.project.path = Some(path.clone());
     state.project.dirty = false;
+    TOUCHES.set(TOUCHES.get() + 1);
     title(ui, &state);
     drop(state);
     ui.set_failed(false);
@@ -607,16 +617,28 @@ fn restore(ui: &App, shared: &Shared, document: Document, path: Option<PathBuf>,
         look,
         mut draft,
         draft_config,
-        configs,
+        mut configs,
         media,
         clips,
         tracks,
         view,
     } = document;
+    for config in &mut configs {
+        config.blending.fps = config.blending.fps.clamp(1, 1000);
+        let gamma = config.blending.gamma;
+        config.blending.gamma = if gamma >= 1.0 { gamma.min(10.0) } else { 1.0 };
+        let intensity = config.blending.intensity;
+        config.blending.intensity = if intensity >= 0.0 {
+            intensity.min(10.0)
+        } else {
+            1.0
+        };
+    }
     let look = Look {
         size: look
             .size
-            .filter(|size| SIDES.contains(&size.0) && SIDES.contains(&size.1)),
+            .filter(|size| SIDES.contains(&size.0) && SIDES.contains(&size.1))
+            .map(even),
         fps: look.fps.filter(|fps| RATES.contains(fps)),
         ..look
     };
@@ -733,9 +755,18 @@ fn restore(ui: &App, shared: &Shared, document: Document, path: Option<PathBuf>,
     refit(ui, &mut state);
     let at = f64::from(view.position.clamp(0.0, 1.0)) * state.seconds();
     ui.set_position((at / state.span.max(0.001)) as f32);
+    let count = state.entries.len() as i32;
     drop(state);
     fill(ui, shared);
-    select(ui, shared, view.selected);
+    select(
+        ui,
+        shared,
+        if view.selected < count {
+            view.selected
+        } else {
+            -1
+        },
+    );
     refresh(ui, shared);
     let text = match (gone, changes.len()) {
         (0, 0) => String::new(),
@@ -1113,7 +1144,7 @@ fn swap(ui: &App, shared: &Shared, id: u64, file: &Path) {
         return status(ui, "Couldn't use that file".into());
     }
     let old: Vec<Entry> = parts().cloned().collect();
-    record(ui, &mut state, false);
+    record(ui, &mut state, "");
     let fresh = Media::read(file, state.project.path.as_deref()).ok();
     let canvas = state.project.look.size;
     let kind = state.project.look.fit;
@@ -1168,20 +1199,32 @@ fn relink(ui: &App, shared: &Shared, missing: &Path, file: &Path) {
         let Ok(probed) = probe(&new) else {
             continue;
         };
+        let gone = |entry: &&Entry| entry.clip == old && entry.missing;
+        let parts = || state.entries.iter().filter(gone);
+        let sounds = parts().filter_map(|entry| entry.audio).max();
+        let picture = parts().any(|entry| entry.audio.is_none());
+        let still = parts().any(|entry| entry.still);
+        let shown = (probed.fps > 0.0 || probed.still) && probed.still == still;
+        let short = !still
+            && parts().any(|entry| f64::from(entry.cut.0) * entry.seconds >= probed.seconds - 0.1);
+        if picture && !shown || short || sounds.is_some_and(|last| probed.tracks.len() <= last) {
+            continue;
+        }
         if done == 0 {
-            record(ui, &mut state, false);
+            record(ui, &mut state, "");
         }
         let target = state.project.path.clone();
         let fresh = Media::read(&new, target.as_deref()).ok();
-        state.project.refs.remove(&old);
         if let Some(fresh) = fresh {
             state.project.refs.insert(new.clone(), fresh);
         }
-        for entry in state.entries.iter_mut().filter(|entry| entry.clip == old) {
+        for entry in (state.entries.iter_mut()).filter(|entry| entry.clip == old && entry.missing) {
             entry.clip = new.clone();
             entry.missing = false;
             entry.bytes = std::fs::metadata(&new).map_or(0, |meta| meta.len());
             entry.keys = Arc::default();
+            entry.differences = Arc::default();
+            entry.measured = None;
             let was = entry.size;
             adopt(entry, &probed);
             rescale(entry, was, canvas, kind);

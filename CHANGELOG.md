@@ -10,6 +10,8 @@
 - Fixed: Stutter at playback start
 - Fixed: Full played below full size
 - Fixed: Wrong playback fps
+- Fixed: Mask editor undo
+- Fixed: Ctrl drag of a selection
 
 ## 0.1.32
 - Fixed: Image masks did not render

@@ -127,6 +127,11 @@ pub fn free(stem: &str) -> String {
         .unwrap_or_default()
 }
 
+// a disk that ignores case also finds a file with another case, the list has the exact name
+pub fn named(name: &str) -> bool {
+    listing().iter().any(|stamp| stamp.0 == name)
+}
+
 pub fn rename(old: &str, new: &str) -> std::io::Result<()> {
     if new.contains(['/', '\\']) {
         return Err(std::io::ErrorKind::InvalidInput.into());

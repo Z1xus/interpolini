@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use interpolini_core::config::{self, Config};
+use interpolini_core::config::{self, Config, Masking};
 use interpolini_core::mask::{self, Gray};
 use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
@@ -26,9 +26,11 @@ struct Step {
 
 struct Editor {
     gray: Gray,
-    before: (String, bool),
+    // the mask of each file before, by link, the draft has link 0
+    before: Vec<(u64, Old)>,
     recorded: Instant,
-    dirty: bool,
+    // the dirty flag before, and the touch count that tells if anything changed or saved the project since
+    dirty: (bool, u64),
     shown: Instant,
     lost: bool,
     start: Vec<u8>,
@@ -281,12 +283,34 @@ pub fn left(ui: &App, shared: &Shared, again: impl FnOnce(&App) + 'static) -> bo
     true
 }
 
-pub fn settled(config: &Config) -> Config {
-    let mut config = config.clone();
+// a clip that came in later took its settings from the draft
+// the image, the switch and the method of a mask
+type Old = (String, bool, Masking);
+
+fn old(before: &[(u64, Old)], entry: &Entry) -> Old {
+    let mask = before.iter().find(|mask| mask.0 == entry.link);
+    let mask = mask.or_else(|| before.iter().find(|mask| mask.0 == 0));
+    let mask = mask.or(before.first());
+    mask.map(|mask| mask.1.clone()).unwrap_or_default()
+}
+
+// a piece that a cut or alt makes into a file of its own keeps the old mask of its file
+pub fn inherit(from: u64, to: u64) {
+    EDITOR.with_borrow_mut(|editor| {
+        let Some(editor) = editor.as_mut() else {
+            return;
+        };
+        if let Some(mask) = editor.before.iter().find(|mask| mask.0 == from).cloned() {
+            editor.before.push((to, mask.1));
+        }
+    });
+}
+
+pub fn settled(entry: &Entry) -> Config {
+    let mut config = entry.config.clone();
     if config.mask.image == DRAFT {
-        let before =
-            EDITOR.with_borrow(|editor| editor.as_ref().map(|editor| editor.before.clone()));
-        (config.mask.image, config.mask.enabled) = before.unwrap_or_default();
+        (config.mask.image, config.mask.enabled, config.mask.method) = EDITOR
+            .with_borrow(|editor| old(editor.as_ref().map_or(&[], |editor| &editor.before), entry));
     }
     config
 }
@@ -295,7 +319,14 @@ fn open(ui: &App, shared: &Shared, opened: Option<String>) {
     if EDITOR.with_borrow(Option::is_some) {
         return;
     }
-    let state = lock(shared);
+    let mut state = lock(shared);
+    // a mask needs a video to go to
+    if crate::settings::aimed(ui, &mut state)
+        .iter()
+        .all(|entry| entry.still)
+    {
+        return;
+    }
     let shown = target(ui, &state);
     let own = state.video(ui).filter(|_| ui.get_scope() == "this clip");
     let Some(clip) = shown.or(own).or_else(|| state.base()) else {
@@ -323,8 +354,6 @@ fn open(ui: &App, shared: &Shared, opened: Option<String>) {
         None => return,
     };
     let name = opened.clone().unwrap_or_else(|| masks::free("mask"));
-    let mut settings = ui.get_settings();
-    let before = (settings.mask_image.to_string(), settings.mask);
     let tiles: Vec<Tile> = (0..gray.height.div_ceil(TILE))
         .flat_map(|row| (0..gray.width.div_ceil(TILE)).map(move |column| (column, row)))
         .map(|(column, row)| tile(&gray, column * TILE, row * TILE))
@@ -345,16 +374,23 @@ fn open(ui: &App, shared: &Shared, opened: Option<String>) {
     sections.masking = true;
     ui.set_sections(sections);
     mask::hold(Some((DRAFT.into(), gray.clone())));
-    (settings.mask_image, settings.mask) = (DRAFT.into(), true);
-    ui.set_settings(settings);
     let mut state = lock(shared);
     let dirty = state.project.dirty;
-    history::record(ui, &mut state, false);
+    history::record(ui, &mut state, "");
+    // only the mask changes, the other settings of each clip stay
+    let mut before = Vec::new();
+    for entry in crate::settings::aimed(ui, &mut state) {
+        let link = entry.link;
+        let mask = &mut entry.config.mask;
+        before.push((link, (mask.image.clone(), mask.enabled, mask.method)));
+        (mask.image, mask.enabled, mask.method) = (DRAFT.into(), true, Masking::Image);
+    }
+    load(ui, &mut state);
     drop(state);
-    ui.invoke_changed();
+    refresh(ui, shared);
     EDITOR.set(Some(Editor {
         recorded: history::recorded(),
-        dirty,
+        dirty: (dirty, crate::project::touches()),
         shown: Instant::now(),
         lost: false,
         start: Vec::new(),
@@ -407,22 +443,36 @@ pub fn close(ui: &App, shared: &Shared, save: bool) {
     };
     if save {
         let old = masks.get_opened().to_string();
-        if !old.is_empty() && old != name {
-            if mask::path(&old).exists() && masks::rename(&old, &name).is_err() {
-                return say(ui, format!("Couldn't save {name}"), Note::Warning, -1.0);
-            }
-            masks.set_opened(name.as_str().into());
-            masks::retarget(&mut lock(shared), &old, &name);
-            EDITOR.with_borrow_mut(|editor| {
-                if let Some(editor) = editor.as_mut().filter(|editor| editor.before.0 == old) {
-                    editor.before.0.clone_from(&name);
-                }
-            });
+        // a name that changes only its case is the same file on windows and macos
+        let case = old != name && old.to_lowercase() == name.to_lowercase() && !masks::named(&name);
+        let gone = |error: std::io::Error| match error.kind() {
+            std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(error),
+        };
+        if case && masks::rename(&old, &name).or_else(gone).is_err() {
+            return say(ui, format!("Couldn't save {name}"), Note::Warning, -1.0);
         }
         let written =
             EDITOR.with_borrow(|editor| editor.as_ref().map(|editor| write(&name, &editor.gray)));
         if let Some(Err(_)) = written {
+            if case {
+                let _ = masks::rename(&name, &old);
+            }
             return say(ui, format!("Couldn't save {name}"), Note::Warning, -1.0);
+        }
+        // the old file goes only after the new one is written
+        if !old.is_empty() && old != name {
+            if !case {
+                let _ = std::fs::remove_file(mask::path(&old));
+            }
+            masks.set_opened(name.as_str().into());
+            masks::retarget(&mut lock(shared), &old, &name);
+            EDITOR.with_borrow_mut(|editor| {
+                let masks = editor.iter_mut().flat_map(|editor| &mut editor.before);
+                masks
+                    .filter(|mask| mask.1.0 == old)
+                    .for_each(|mask| mask.1.0.clone_from(&name));
+            });
         }
     }
     let Some(editor) = EDITOR.take() else {
@@ -431,14 +481,14 @@ pub fn close(ui: &App, shared: &Shared, save: bool) {
     masks.set_editing(false);
     masks.set_tiles(ModelRc::default());
     masks.set_hover(slint::Image::default());
-    let (image, enabled) = match save {
-        true => (name, true),
-        false => editor.before,
-    };
     let settle = |entry: &mut Entry| {
-        let mask = &mut entry.config.mask;
-        if mask.image == DRAFT {
-            (mask.image, mask.enabled) = (image.clone(), enabled);
+        if entry.config.mask.image == DRAFT {
+            let mask = match save {
+                true => (name.clone(), true, Masking::Image),
+                false => old(&editor.before, entry),
+            };
+            let config = &mut entry.config.mask;
+            (config.image, config.enabled, config.method) = mask;
         }
     };
     let mut state = lock(shared);
@@ -447,11 +497,13 @@ pub fn close(ui: &App, shared: &Shared, save: bool) {
     history::amend(settle);
     if save {
         touch(ui, &mut state);
-    } else if history::recorded() == editor.recorded {
-        // later changes keep the step
-        history::forget();
-        state.project.dirty = editor.dirty;
-        title(ui, &state);
+    } else {
+        // the mask is as before, so the step of the editor goes and later changes keep theirs
+        history::forget(editor.recorded);
+        if crate::project::touches() == editor.dirty.1 {
+            state.project.dirty = editor.dirty.0;
+            title(ui, &state);
+        }
     }
     load(ui, &mut state);
     drop(state);

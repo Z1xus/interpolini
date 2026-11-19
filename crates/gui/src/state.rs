@@ -373,8 +373,8 @@ impl State {
             self.spare = Some(sound);
         }
         let last = match sound {
-            true => self.tracks.audio.len() - 1,
-            false => self.tracks.video.len() - 1,
+            true => self.tracks.audio.len().saturating_sub(1),
+            false => self.tracks.video.len().saturating_sub(1),
         };
         let track = match past {
             true => last,

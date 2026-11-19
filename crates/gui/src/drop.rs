@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use interpolini_core::work;
-use rustix::event::{PollFd, PollFlags, poll};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use slint::winit_030::WinitWindowAccessor;
 use slint::winit_030::winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
@@ -147,11 +147,12 @@ impl Dispatch<WlDataDevice, ()> for State {
                     offer.receive(MIME.to_owned(), writer.as_fd());
                     let _ = state.connection.flush();
                     let hovered = Arc::clone(&state.hovered);
-                    crate::services::task("hover", move |_| {
-                        let mut list = String::new();
-                        let _ = reader.read_to_string(&mut list);
-                        hovered(Hover::Files(paths(&list)));
-                        hovered(Hover::At(x, y));
+                    crate::services::task("hover", move |cancel| {
+                        // a stop after the pointer left must not show the files again
+                        if let Some(list) = read(&mut reader, cancel) {
+                            hovered(Hover::Files(paths(&list)));
+                            hovered(Hover::At(x, y));
+                        }
                     });
                 }
                 state.offer = Some(offer);
@@ -178,16 +179,17 @@ impl Dispatch<WlDataDevice, ()> for State {
                 let (connection, dropped) = (state.connection.clone(), Arc::clone(&state.dropped));
                 let finish = state.copies && offer.version() >= 3;
                 let point = state.point;
-                crate::services::task("drop", move |_| {
-                    let mut list = String::new();
-                    let _ = reader.read_to_string(&mut list);
+                crate::services::task("drop", move |cancel| {
+                    let list = read(&mut reader, cancel);
                     // finish is valid only after an accepted action
-                    if finish {
+                    if finish && list.is_some() {
                         offer.finish();
                     }
                     offer.destroy();
                     let _ = connection.flush();
-                    dropped(paths(&list), point);
+                    if let Some(list) = list {
+                        dropped(paths(&list), point);
+                    }
                 });
             }
             // the clipboard comes through the same device
@@ -260,9 +262,10 @@ fn wait(queue: &mut EventQueue<State>, state: &mut State, stopped: &PipeReader) 
             PollFd::new(stopped, PollFlags::IN),
         ];
         let _ = poll(&mut fds, None);
+        let gone = PollFlags::HUP | PollFlags::ERR | PollFlags::NVAL;
         let (events, over) = (
             fds[0].revents().contains(PollFlags::IN),
-            !fds[1].revents().is_empty(),
+            !fds[1].revents().is_empty() || fds[0].revents().intersects(gone),
         );
         if over {
             return;
@@ -271,6 +274,29 @@ fn wait(queue: &mut EventQueue<State>, state: &mut State, stopped: &PipeReader) 
             return;
         }
     }
+}
+
+// a drag source that never closes its end must not hold the task until the app closes
+// a list that does not end in time is not complete, so it counts as nothing
+fn read(reader: &mut PipeReader, cancel: &work::Cancel) -> Option<String> {
+    let (mut list, mut chunk) = (Vec::new(), [0; 4096]);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let tick = Timespec {
+        tv_sec: 0,
+        tv_nsec: 100_000_000,
+    };
+    while !cancel.stopped() && std::time::Instant::now() < until {
+        let mut fds = [PollFd::new(&*reader, PollFlags::IN)];
+        if !poll(&mut fds, Some(&tick)).is_ok_and(|ready| ready > 0) {
+            continue;
+        }
+        match reader.read(&mut chunk) {
+            Ok(0) => return Some(String::from_utf8_lossy(&list).into_owned()),
+            Ok(read) => list.extend_from_slice(&chunk[..read]),
+            Err(_) => break,
+        }
+    }
+    None
 }
 
 fn would_block(error: &WaylandError) -> bool {

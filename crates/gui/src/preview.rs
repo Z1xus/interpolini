@@ -294,9 +294,12 @@ fn fill(
     Ok(())
 }
 
-fn hit(open: &Sources, layer: &Layer, moved: f64) -> bool {
-    let source = open.get(&layer.clip, &layer.config);
-    source.is_some_and(|source| source.cached(layer.start + moved * layer.speed))
+fn hit(open: &mut Sources, layer: &Layer, moved: f64) -> bool {
+    open.cached(
+        &layer.clip,
+        &layer.config,
+        layer.start + moved * layer.speed,
+    )
 }
 
 fn compose(
@@ -314,15 +317,18 @@ fn compose(
         .rposition(|layer| layer.fills && level(layer) >= 1.0);
     let mut pictures = Vec::new();
     for layer in &layers[top.unwrap_or(0)..] {
-        let config = match play && !original && hit(open, layer, moved) {
-            true => layer.config.clone(),
-            false => used(layer, original),
-        };
         let seconds = layer.start + moved * layer.speed;
-        let source = open.get_mut(&layer.clip, &config);
-        let picture = source.map(|source| match play {
-            true => source.play(seconds, cancel),
-            false => source.at(seconds, cancel),
+        // a full size picture from the cache, also when only a smaller graph is open
+        let cached = match play && !original && hit(open, layer, moved) {
+            true => open.play(&layer.clip, &layer.config, seconds, cancel),
+            false => None,
+        };
+        let picture = cached.or_else(|| {
+            let source = open.get_mut(&layer.clip, &used(layer, original))?;
+            Some(match play {
+                true => source.play(seconds, cancel),
+                false => source.at(seconds, cancel),
+            })
         });
         if let Some(picture) = picture {
             pictures.push((picture?, layer.place, level(layer)));
@@ -367,15 +373,14 @@ fn pair(
 }
 
 // the video on top gives the details and the speed
-fn details(open: &Sources, layers: &[Layer], original: bool, setup: &Setup) -> (String, f64) {
-    let mut graphs = layers.iter().rev().filter_map(|layer| {
-        let source = open.get(&layer.clip, &used(layer, original))?;
-        source.graph().map(|graph| (graph, layer.speed))
-    });
-    let Some((graph, speed)) = graphs.next() else {
+fn details(open: &mut Sources, layers: &[Layer], original: bool, setup: &Setup) -> (String, f64) {
+    let mut infos = layers.iter().rev().filter(|layer| !layer.still);
+    let Some(((info, source), speed)) = infos.find_map(|layer| {
+        let info = open.info(&layer.clip, &used(layer, original))?;
+        Some((info, layer.speed))
+    }) else {
         return (String::new(), 30.0);
     };
-    let info = graph.info;
     let munch = setup.munch.filter(|_| !original);
     let mut fps = setup
         .fps
@@ -385,7 +390,7 @@ fn details(open: &Sources, layers: &[Layer], original: bool, setup: &Setup) -> (
         fps = munch.fps.map_or(fps, f64::from);
         size = munch.size(size);
     }
-    let source = graph.source_fps() * speed;
+    let source = source * speed;
     let rate = match source.round() == fps.round() {
         true => format!("{fps:.0} fps"),
         false => format!("{source:.0} to {fps:.0} fps"),
@@ -416,18 +421,29 @@ fn note(ui: &Weak<App>, text: String, kind: Note, progress: f32) {
     let _ = ui.upgrade_in_event_loop(move |ui| say(&ui, text, kind, progress));
 }
 
-fn warn(ui: &Weak<App>) -> impl Fn(Event) + Sync + '_ {
-    move |event| match event {
-        Event::Warning(text) => note(ui, text, Note::Warning, -1.0),
-        Event::Preparing(done) => {
-            let text = "Preparing TensorRT for first use".into();
-            note(ui, text, Note::Sticky, done);
-        }
-        _ => {}
+// a note of a stopped picture must not come back after the next picture cleared it
+fn warn<'a>(ui: &'a Weak<App>, cancel: &'a Cancel) -> impl Fn(Event) + Sync + 'a {
+    move |event| {
+        let (text, kind, progress) = match event {
+            Event::Warning(text) => (text, Note::Warning, -1.0),
+            Event::Preparing(done) => (
+                "Preparing TensorRT for first use".into(),
+                Note::Sticky,
+                done,
+            ),
+            _ => return,
+        };
+        let cancel = cancel.clone();
+        let _ = ui.upgrade_in_event_loop(move |ui| {
+            if !cancel.stopped() {
+                say(&ui, text, kind, progress);
+            }
+        });
     }
 }
 
 fn fail(ui: &Weak<App>, cancel: &Cancel, error: interpolini_core::Error) {
+    FAILED.set(true);
     let cancel = cancel.clone();
     let _ = ui.upgrade_in_event_loop(move |ui| {
         if cancel.stopped() {
@@ -583,8 +599,9 @@ impl Worker {
             return None;
         };
         if !quiet {
-            let _ = ui.upgrade_in_event_loop(|ui| {
-                if ui.get_note_kind() != Note::Notice {
+            let cancel = cancel.clone();
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                if !cancel.stopped() && ui.get_note_kind() != Note::Notice {
                     say(&ui, "Rendering…".into(), Note::Sticky, -1.0);
                 }
             });
@@ -612,7 +629,7 @@ impl Worker {
             false => &first.layers,
         };
         let shown = wanted(layers, view);
-        let warn = warn(ui);
+        let warn = warn(ui, cancel);
         // a remask must not stop halfway
         let whole = Cancel::default();
         let changed = std::mem::take(&mut *locked(&CHANGED));
@@ -761,10 +778,11 @@ fn run(worker: &Arc<Mutex<Worker>>, show: Show, cancel: &Cancel) {
     let idle = !show.play && !show.quiet && show.save.is_none() && show.view != View::Original;
     let first = show.parts.first().filter(|_| idle).cloned();
     let auto = show.auto;
+    FAILED.set(false);
     let play = work::showing(|| locked(worker).show(show, cancel));
     match (play, first) {
         (Some(play), _) => work::showing(|| playback(worker, play, cancel)),
-        (None, Some(first)) => fill_cache(worker, first, auto, cancel),
+        (None, Some(first)) if !FAILED.get() => fill_cache(worker, first, auto, cancel),
         _ => {}
     }
 }
@@ -773,14 +791,20 @@ fn ready(stretch: &Stretch, layer: &Layer) -> Vec<(f64, f64)> {
     if layer.still || layer.plain {
         return vec![(stretch.time, stretch.end)];
     }
-    let time = |seconds: f64| match stretch.time + (seconds - layer.start) / layer.speed {
-        time if time < stretch.time + EDGE => stretch.time,
-        time if time > stretch.end - EDGE => stretch.end,
-        time => time,
-    };
+    let time = |seconds: f64| stretch.time + (seconds - layer.start) / layer.speed;
     let spans = cache::spans(&layer.clip, &layer.config).into_iter();
-    let spans = spans.map(|(from, to)| (time(from), time(to)));
-    spans.filter(|(from, to)| from < to).collect()
+    let near = |time: f64, edge: f64| {
+        if (time - edge).abs() < EDGE {
+            edge
+        } else {
+            time
+        }
+    };
+    let spans = spans.map(|(from, to)| (time(from).max(stretch.time), time(to).min(stretch.end)));
+    let spans = spans.filter(|(from, to)| from < to);
+    spans
+        .map(|(from, to)| (near(from, stretch.time), near(to, stretch.end)))
+        .collect()
 }
 
 // a new request must not wait for the clip to open or for its first picture
@@ -914,7 +938,7 @@ fn fill_cache(worker: &Mutex<Worker>, first: Stretch, auto: bool, cancel: &Cance
                     };
                     // an older measure can have the clip open at another small size
                     let other = |held: &Path, key: &Config| {
-                        let sizes = [2, 4, 8].into_iter().filter(|factor| *factor != by);
+                        let sizes = [2, 4, 8, 16, 32].into_iter().filter(|factor| *factor != by);
                         held == clip
                             && sizes
                                 .map(|factor| result(&small(factor)))
@@ -947,6 +971,11 @@ thread_local! {
 }
 
 static CHANGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+thread_local! {
+    // a picture that failed keeps the cache from filling
+    static FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 static TIMELINE: Mutex<Vec<Stretch>> = Mutex::new(Vec::new());
 
 pub fn timeline(stretches: Vec<Stretch>) {
@@ -964,6 +993,7 @@ fn masked(config: &Config) -> bool {
 }
 
 pub fn remask(names: Vec<String>) {
+    names.iter().for_each(|name| cache::forget(name));
     locked(&CHANGED).extend(names);
     LAST.take();
 }
@@ -1011,11 +1041,31 @@ pub fn show(show: Show) {
     if kept {
         return;
     }
+    CLOSING.store(false, Ordering::Relaxed);
     services::with(|services| {
         let worker = Arc::clone(&services.worker);
         services
             .preview
             .submit(move |cancel| run(&worker, show, cancel));
+    });
+}
+
+// a newer job replaces a halt in the slot, so a close waits here until a halt runs, and a show drops it
+static CLOSING: AtomicBool = AtomicBool::new(false);
+
+// a picture that is no longer wanted stops, and with close its clips close too
+pub fn halt(close: bool) {
+    CLOSING.fetch_or(close, Ordering::Relaxed);
+    LAST.with_borrow_mut(|last| *last = None);
+    services::with(|services| {
+        let worker = Arc::clone(&services.worker);
+        services.preview.submit(move |_| {
+            let mut worker = locked(&worker);
+            if CLOSING.swap(false, Ordering::Relaxed) {
+                services::close(std::mem::take(&mut worker.open));
+                worker.recent.clear();
+            }
+        });
     });
 }
 
@@ -1071,7 +1121,7 @@ fn open_next(
     stop: &Cancel,
     opened: &Sender<Opened>,
 ) {
-    let warn = warn(ui);
+    let warn = warn(ui, stop);
     let mut there = held.to_vec();
     for (index, stretch) in parts.iter().enumerate().skip(1) {
         let from = parts[index - 1].end - EARLY;
@@ -1148,7 +1198,7 @@ fn compose_all(
     let Some((_, _, canvas)) = canvas else {
         return Ok(false);
     };
-    let warn = warn(ui);
+    let warn = warn(ui, stop);
     let failed = |error| match stop.stopped() {
         true => Ok(false),
         false => Err(error),
@@ -1175,11 +1225,9 @@ fn compose_all(
             }
             let needs = wanted(&layers, view);
             let needed = |clip: &Path, config: &Config| {
-                let base = |layer: &Layer| layer.clip == clip && layer.config == *config;
-                stretch.layers.iter().any(base)
-                    || needs
-                        .iter()
-                        .any(|(layer, wanted)| layer.clip == clip && wanted == config)
+                let held =
+                    |(layer, wanted): &(&Layer, Config)| layer.clip == clip && wanted == config;
+                needs.iter().any(held)
             };
             services::close(open.split(needed));
             reach.current.store(index, Ordering::Relaxed);
@@ -1187,7 +1235,6 @@ fn compose_all(
         }
         let original = view == View::Original;
         let (mut text, fps) = details(open, &layers, original, &setup);
-        let full = details(open, &stretch.layers, original, &setup).0;
         let step = 1.0 / fps.min(SHOWN_FPS);
         let last = (((stretch.end - stretch.time) / step).ceil() as u32).saturating_sub(1);
         let (mut count, mut warm, mut spent, mut done, mut debt) = (0, WARM, 0.0, 0, 0.0);
@@ -1219,6 +1266,10 @@ fn compose_all(
                     }
                 }
             }
+            let said = match cached {
+                true => details(open, &stretch.layers, original, &setup).0,
+                false => text.clone(),
+            };
             let made = stretch.time + moved;
             reach.made.store(made.to_bits(), Ordering::Relaxed);
             reach.notify();
@@ -1226,14 +1277,16 @@ fn compose_all(
                 moved: made - parts[0].time,
                 image,
                 before,
-                details: if cached { full.clone() } else { text.clone() },
+                details: said,
                 fps,
                 step,
             });
             if sent.is_err() {
                 return Ok(false);
             }
-            if made + step >= stretch.end {
+            if count >= last || made + step >= stretch.end {
+                reach.made.store(stretch.end.to_bits(), Ordering::Relaxed);
+                reach.notify();
                 break;
             }
             count += 1;
@@ -1249,7 +1302,6 @@ fn compose_all(
                 .filter(|(layer, next)| layer.factor != next.factor);
             let gone: Vec<Key> = replaced
                 .clone()
-                .filter(|(layer, _)| layer.factor > 1)
                 .map(|(layer, _)| (layer.clip.clone(), result(layer)))
                 .collect();
             if replaced.count() == 0 {
@@ -1258,13 +1310,14 @@ fn compose_all(
             factor = next.iter().map(|layer| layer.factor).max().unwrap_or(1);
             reach.factor.store(factor, Ordering::Relaxed);
             layers = next;
-            if let Err(error) = fill(open, &layers, view, &warn, stop) {
-                return failed(error);
-            }
+            // the larger graphs free the gpu before the smaller ones open
             let kept = |clip: &Path, config: &Config| {
                 !gone.iter().any(|key| key.0 == clip && key.1 == *config)
             };
-            services::close(open.split(kept));
+            drop(open.split(kept));
+            if let Err(error) = fill(open, &layers, view, &warn, stop) {
+                return failed(error);
+            }
             for layer in layers.iter().filter(|layer| !layer.still) {
                 let base = (layer.clip.clone(), layer.config.clone());
                 smaller.retain(|(key, _)| *key != base);
@@ -1340,7 +1393,7 @@ fn show_frames(
         {
             shown.pop_front();
         }
-        let position = ((time + frame.moved) / span) as f32;
+        let position = ((time + frame.moved) / span.max(0.001)) as f32;
         let rate = 1.0 / frame.step;
         let since = now
             .saturating_duration_since(at)
@@ -1369,7 +1422,7 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
         auto,
         factor,
     } = play;
-    let time = parts[0].time;
+    let (time, end) = (parts[0].time, parts.last().map_or(0.0, |part| part.end));
     let parts = Arc::new(parts);
     let (pictures, queue) = work::channel(ahead.0);
     let (opened, ready) = channel();
@@ -1423,6 +1476,8 @@ fn playback(worker: &Arc<Mutex<Worker>>, play: Play, cancel: &Cancel) {
                 LAST.take();
                 ui.set_speed("".into());
                 say(&ui, String::new(), Note::Sticky, -1.0);
+                // the last picture can show before the end of a short part
+                ui.set_position((end / span.max(0.001)) as f32);
                 ui.invoke_ended();
             });
         }

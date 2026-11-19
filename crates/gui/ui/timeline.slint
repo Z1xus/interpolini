@@ -1005,6 +1005,8 @@ export component Timeline inherits Rectangle {
                             }
                             body := TouchArea {
                                 property <bool> dragged;
+                                // ctrl takes a picked clip out on release, so that a ctrl drag moves the whole selection
+                                property <bool> unpick;
                                 property <length> from-x;
                                 property <length> from-y;
                                 mouse-cursor: move;
@@ -1028,8 +1030,11 @@ export component Timeline inherits Rectangle {
                                             }
                                         }
                                     } else if event.kind == PointerEventKind.down {
+                                        self.unpick = event.modifiers.control && (clip.picked || current || linked);
                                         if event.modifiers.control {
-                                            root.extend(index);
+                                            if !self.unpick {
+                                                root.extend(index);
+                                            }
                                         } else if event.modifiers.shift {
                                             root.range(index);
                                         } else if !clip.picked {
@@ -1041,7 +1046,9 @@ export component Timeline inherits Rectangle {
                                         root.grab(index, time(self.absolute-position.x + self.mouse-x), event.modifiers.alt);
                                     } else if event.kind == PointerEventKind.up {
                                         root.release();
-                                        if !self.dragged && !event.modifiers.control && !event.modifiers.shift && clip.picked {
+                                        if !self.dragged && self.unpick {
+                                            root.extend(index);
+                                        } else if !self.dragged && !event.modifiers.control && !event.modifiers.shift && clip.picked {
                                             root.select(index);
                                         }
                                     } else if event.kind == PointerEventKind.move && self.pressed {

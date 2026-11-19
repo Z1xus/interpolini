@@ -432,6 +432,7 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
     let Some(base) = base.map(|index| &state.entries[index]) else {
         // only sound is here, so playback walks on by the clock
         empty();
+        preview::halt(true);
         preview::timeline(Vec::new());
         let walk = ui.get_playing() && !state.entries.is_empty();
         drop(state);
@@ -550,6 +551,8 @@ fn show(ui: &App, shared: &Shared, edited: bool) {
                 0,
                 None,
             );
+        } else {
+            preview::halt(false);
         }
         drop(state);
         if walk {

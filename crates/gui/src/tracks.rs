@@ -51,7 +51,7 @@ pub fn wire(ui: &App, state: &Shared) {
             return;
         };
         let mut state = lock(&shared);
-        record(&ui, &mut state, false);
+        record(&ui, &mut state, "");
         match audio {
             true => state.tracks.audio.push(Track(36.0, false, None)),
             false => state.tracks.video.push(64.0),
@@ -65,7 +65,11 @@ pub fn wire(ui: &App, state: &Shared) {
             return;
         };
         let rows = ui.get_clips();
-        if !audio && lock(&shared).tracks.video.len() < 2 {
+        let count = match audio {
+            true => lock(&shared).tracks.audio.len(),
+            false => lock(&shared).tracks.video.len(),
+        };
+        if count < 2 {
             return;
         }
         let again = move |ui: &App| ui.invoke_remove_lane(audio, index);
@@ -74,7 +78,7 @@ pub fn wire(ui: &App, state: &Shared) {
         }
         let mut state = lock(&shared);
         let index = index as usize;
-        record(&ui, &mut state, false);
+        record(&ui, &mut state, "");
         // the clips on the track go with it, and the tracks above it move down
         discard(&ui, &mut state, |entry| {
             entry.audio.is_some() == audio && entry.track == index
@@ -105,10 +109,15 @@ pub fn wire(ui: &App, state: &Shared) {
             return;
         };
         let mut state = lock(&shared);
-        if let Some(track) = state.tracks.audio.get_mut(index as usize) {
-            track.1 = !track.1;
+        if state.tracks.audio.len() <= index as usize {
+            return;
         }
+        record(&ui, &mut state, "");
+        let track = &mut state.tracks.audio[index as usize];
+        track.1 = !track.1;
         lanes(&ui, &state);
+        drop(state);
+        ui.invoke_sounding();
     });
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
@@ -126,7 +135,7 @@ pub fn wire(ui: &App, state: &Shared) {
         if old.is_none_or(|old| old.unwrap_or_default() == name) {
             return;
         }
-        record(&ui, &mut state, false);
+        record(&ui, &mut state, "");
         state.tracks.audio[index].2 = Some(name.into());
         lanes(&ui, &state);
     });

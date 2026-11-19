@@ -152,7 +152,7 @@ pub fn add(
             }
         };
         let mut guard = lock(state);
-        record(ui, &mut guard, true);
+        record(ui, &mut guard, "import");
         let (config, origin) = match local {
             Some(local) => {
                 local
@@ -161,7 +161,10 @@ pub fn add(
                     .for_each(|entry| crate::view::stale(&entry.path));
                 local
             }
-            None => (guard.draft.config.clone(), guard.draft.origin.clone()),
+            None => (
+                guard.draft.config.clone(),
+                crate::settings::kept(&clip, guard.draft.origin.as_ref()),
+            ),
         };
         let at = place.map_or(guard.seconds(), |place| place.0);
         // an image starts as 5 seconds from the middle of its source
@@ -248,7 +251,7 @@ pub fn add(
             guard.entries.push(entry);
         }
         if place.is_some() {
-            overwrite(ui, &mut guard, link, 0.0);
+            overwrite(ui, &mut guard, link, &[link], 0.0);
         }
         drop(guard);
     }
@@ -308,6 +311,7 @@ pub fn fill(ui: &App, state: &Shared) {
     let rows = ui.get_clips();
     let guard = lock(state);
     let mut links: Vec<u64> = guard.entries.iter().map(|entry| entry.link).collect();
+    links.sort_unstable();
     links.dedup();
     for link in links {
         let own = |entry: &&Entry| entry.link == link;

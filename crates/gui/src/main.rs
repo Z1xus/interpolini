@@ -42,7 +42,7 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("COMMIT"), "
 
 // the system is asked on another thread, the answers take a moment
 fn details(ui: &App, state: &Shared) -> impl FnOnce() -> String + Send + use<> {
-    let config = editor::settled(&lock(state).current(ui).config).to_ini();
+    let config = editor::settled(lock(state).current(ui)).to_ini();
     let (status, clip, log) = (ui.get_status(), ui.get_details(), ui.get_log());
     move || {
         let about = interpolini_core::about();
@@ -427,7 +427,10 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             "project" if save => {
                 ui.set_closing("".into());
-                let quit = |_: &App, _: &Shared| drop(slint::quit_event_loop());
+                let quit = |ui: &App, _: &Shared| {
+                    settings::save_preferences(ui);
+                    drop(slint::quit_event_loop())
+                };
                 return project::save(&ui, &shared, Some(Box::new(quit)));
             }
             "project" => project::clear(&ui, &shared),
@@ -436,6 +439,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let next = question(&ui, at + 1);
         project::question(&ui, next);
         if next.is_empty() {
+            settings::save_preferences(&ui);
             let _ = slint::quit_event_loop();
         }
     });
@@ -476,7 +480,11 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
 
-    let arguments: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
+    // a relative clip would have no folder for its presets
+    let arguments = std::env::args().skip(1).map(PathBuf::from);
+    let arguments: Vec<PathBuf> = arguments
+        .map(|path| std::path::absolute(&path).unwrap_or(path))
+        .collect();
     let (projects, clips): (Vec<_>, Vec<_>) = arguments
         .into_iter()
         .partition(|path| project::is_project(path));
@@ -499,6 +507,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let left = services::stop();
     debug_assert_eq!(left, 0);
     interpolini_core::shutdown();
+    components::relaunch();
     Ok(())
 }
 

@@ -9,11 +9,11 @@ use interpolini_core::{budget, cache, effort, words};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::clips::pick;
-use crate::editor::{left, settled};
+use crate::editor::{DRAFT, left, settled};
 use crate::history::record;
 use crate::preview::say;
 use crate::project::SESSION;
-use crate::state::{Shared, State, lock};
+use crate::state::{Entry, Shared, State, lock};
 use crate::view::{label, load, models, refresh, select, selected, stale, unsaved};
 use crate::{App, Code, Mode, Munch, Note, Preferences, Prefs, Settings, System, themes};
 
@@ -184,10 +184,20 @@ pub fn save(ui: &App, state: &Shared, name: Option<&str>) {
             }
         }
     };
-    let result = std::fs::write(&target.path, settled(&entry.config).to_ini());
+    let result = std::fs::write(&target.path, settled(entry).to_ini());
     stale(&target.path);
-    if result.is_ok() {
-        entry.origin = Some(target);
+    // the preset of a clip is part of the project
+    let moved = entry.origin.as_ref().map(|origin| &origin.path) != Some(&target.path);
+    // the clips with the same settings take the new preset, the others keep theirs
+    if result.is_ok() && moved {
+        record(ui, &mut guard, "");
+        let config = guard.current(ui).config.clone();
+        guard.current(ui).origin = Some(target.clone());
+        for other in aimed(ui, &mut guard) {
+            if other.config == config {
+                other.origin = kept(&other.clip, Some(&target));
+            }
+        }
     }
     drop(guard);
     select(ui, state, ui.get_selected());
@@ -479,31 +489,34 @@ pub fn wire(ui: &App, state: &Shared) {
             return;
         };
         let mut state = lock(&shared);
-        record(&ui, &mut state, true);
+        // a drag of one control is one step, a change of another control starts a new one
+        let mut next = state.current(&ui).config.clone();
+        apply(&ui.get_settings(), &mut next);
+        models(&ui, &mut next.rife);
+        let (old, new) = (state.current(&ui).config.to_ini(), next.to_ini());
+        let changed = old.lines().zip(new.lines()).enumerate();
+        let changed: Vec<usize> = changed
+            .filter(|(_, (a, b))| a != b)
+            .map(|line| line.0)
+            .collect();
+        // a field that commits twice changes nothing the second time, unless the other clips take it
+        let current = state.current(&ui);
+        let (link, origin) = (current.link, current.origin.clone());
+        let spreads = aimed(&ui, &mut state).iter().any(|entry| {
+            taken(&next, &entry.config) != entry.config
+                || kept(&entry.clip, origin.as_ref()).map(|origin| origin.path)
+                    != entry.origin.as_ref().map(|origin| origin.path.clone())
+        });
+        if !changed.is_empty() || spreads {
+            record(&ui, &mut state, &format!("settings {link} {changed:?}"));
+        }
         let entry = state.current(&ui);
         apply(&ui.get_settings(), &mut entry.config);
         models(&ui, &mut entry.config.rife);
         // a value that is not valid goes back to the last good one
         ui.set_settings(settings(&entry.config));
         ui.set_unsaved(unsaved(entry));
-        let chosen = crate::edit::chosen(&ui, &state);
-        let config = state.current(&ui).config.clone();
-        let videos = state
-            .entries
-            .iter_mut()
-            .filter(|entry| entry.audio.is_none());
-        for other in videos.filter(|entry| chosen.contains(&entry.link)) {
-            other.config = config.clone();
-        }
-        let entry = state.current(&ui);
-        if selected(&ui).is_none() || ui.get_scope() == "all clips" {
-            let config = entry.config.clone();
-            let State { entries, draft, .. } = &mut *state;
-            let videos = entries.iter_mut().filter(|entry| entry.audio.is_none());
-            for other in videos.chain([draft]) {
-                other.config = config.clone();
-            }
-        }
+        spread(&ui, &mut state);
         drop(state);
         refresh(&ui, &shared);
     });
@@ -540,19 +553,24 @@ pub fn wire(ui: &App, state: &Shared) {
             return load(&ui, &mut lock(&shared));
         }
         let mut state = lock(&shared);
-        let entry = state.current(&ui);
-        let found = config::entries(&entry.clip);
+        let found = config::entries(&state.current(&ui).clip);
         if let Some(found) = found
             .into_iter()
             .find(|entry| label(entry) == name.as_str())
         {
+            record(&ui, &mut state, "");
             stale(&found.path);
             let loaded = config::read(found);
+            let entry = state.current(&ui);
             entry.config = loaded.config;
             entry.origin = loaded.entry;
+            // load fits the config to this computer, the other clips take the fitted one
+            load(&ui, &mut state);
+            spread(&ui, &mut state);
         }
+        load(&ui, &mut state);
         drop(state);
-        select(&ui, &shared, ui.get_selected());
+        refresh(&ui, &shared);
     });
 
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
@@ -578,17 +596,28 @@ pub fn wire(ui: &App, state: &Shared) {
             return;
         }
         let mut state = lock(&shared);
-        let entry = state.current(&ui);
-        let Some(origin) = entry.origin.take() else {
+        let Some(origin) = state.current(&ui).origin.clone() else {
             return;
         };
-        let result = std::fs::remove_file(&origin.path);
+        // a file that undo brought back as the preset is already gone
+        let result = std::fs::remove_file(&origin.path).or_else(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(error),
+        });
         stale(&origin.path);
+        if result.is_err() {
+            drop(state);
+            return report(&ui, result, "Deleted");
+        }
+        record(&ui, &mut state, "");
+        let entry = state.current(&ui);
         let loaded = config::load(&entry.clip, false, "default");
         entry.config = loaded.config;
         entry.origin = loaded.entry;
+        load(&ui, &mut state);
+        spread(&ui, &mut state);
         drop(state);
-        select(&ui, &shared, ui.get_selected());
+        refresh(&ui, &shared);
         report(&ui, result, "Deleted");
     });
 
@@ -611,8 +640,12 @@ pub fn wire(ui: &App, state: &Shared) {
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_prefs_changed(move || {
         if let Some(ui) = weak.upgrade() {
+            // only the cache switch changes what the preview shows
+            let cached = cache::enabled();
             limit(&ui);
-            crate::view::seek(&ui, &shared);
+            if cache::enabled() != cached {
+                crate::view::seek(&ui, &shared);
+            }
             if !ui.get_prefs().secret && ui.get_mode() == Mode::Munch {
                 ui.set_mode(Mode::Render);
             }
@@ -637,7 +670,7 @@ pub fn wire(ui: &App, state: &Shared) {
         let Some(ui) = weak.upgrade() else {
             return;
         };
-        let mut config = settled(&lock(&shared).current(&ui).config);
+        let mut config = settled(lock(&shared).current(&ui));
         let words = words::encode(&config).into_iter().map(Into::into);
         let code = ui.global::<Code>();
         code.set_words(ModelRc::new(VecModel::from_iter(words)));
@@ -729,7 +762,6 @@ pub fn wire(ui: &App, state: &Shared) {
             return;
         }
         if let Ok((_, config)) = decoded(&ui, &shared, &text) {
-            record(&ui, &mut lock(&shared), false);
             ui.set_settings(settings(&config));
             ui.invoke_changed();
         }
@@ -771,4 +803,45 @@ fn change(section: &str, key: &str, value: &str) -> String {
         ("output", "options") if value.is_empty() => "no options".to_owned(),
         (_, key) => format!("{key} {value}"),
     }
+}
+
+// the config of the current clip goes to the chosen clips, or to all clips
+// the clips that a change of the settings is for, with the draft when it is for all
+pub fn aimed<'a>(ui: &App, state: &'a mut State) -> Vec<&'a mut Entry> {
+    let chosen = crate::edit::chosen(ui, state);
+    let all = selected(ui).is_none() || ui.get_scope() == "all clips";
+    let State { entries, draft, .. } = state;
+    let videos = entries
+        .iter_mut()
+        .filter(|entry| entry.audio.is_none() && (all || chosen.contains(&entry.link)));
+    videos.chain(all.then_some(draft)).collect()
+}
+
+fn spread(ui: &App, state: &mut State) {
+    let entry = state.current(ui);
+    let (config, origin) = (entry.config.clone(), entry.origin.clone());
+    for other in aimed(ui, state) {
+        other.origin = kept(&other.clip, origin.as_ref());
+        other.config = taken(&config, &other.config);
+    }
+}
+
+// a folder preset stays with the clips of that folder, the draft takes any preset
+pub fn kept(clip: &Path, origin: Option<&config::Entry>) -> Option<config::Entry> {
+    let folder = clip
+        .parent()
+        .filter(|folder| !folder.as_os_str().is_empty());
+    let near = |origin: &&config::Entry| {
+        !origin.local || folder.is_none() || folder == origin.path.parent()
+    };
+    origin.filter(near).cloned()
+}
+
+// the settings a clip takes from another, the mask editor's draft goes only to the clips in it, and they keep it
+fn taken(config: &Config, other: &Config) -> Config {
+    let mut config = config.clone();
+    if (other.mask.image == DRAFT) != (config.mask.image == DRAFT) {
+        config.mask.clone_from(&other.mask);
+    }
+    config
 }

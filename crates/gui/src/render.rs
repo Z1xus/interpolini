@@ -7,7 +7,7 @@ use interpolini_core::config::Encoder;
 use interpolini_core::{Event, Fade, Job, Place, Sound, budget, run};
 use slint::{ComponentHandle, Model};
 
-use crate::state::{Shared, State, lock, sounds};
+use crate::state::{Entry, Shared, State, lock, sounds};
 use crate::view::{layout, megabytes, refresh, setup, update};
 use crate::{App, Mode, preview, services};
 
@@ -109,10 +109,29 @@ pub fn jobs(
         let (start, end) = (span.start, span.start + span.length * speed);
         let faded = !separate && span.length != entry.kept();
         // a clip on its own takes the audio tracks of its file that are still on the timeline
+        // a part of the same file elsewhere on the timeline does not count, nor its fade
+        let cut = |entry: &Entry| {
+            let seconds = entry.seconds;
+            (
+                f64::from(entry.cut.0) * seconds,
+                f64::from(entry.cut.1) * seconds,
+            )
+        };
+        let own = cut(entry);
         let kept = |stream: &usize| {
-            heard
-                .iter()
-                .any(|sound| sound.clip == entry.clip && sound.stream == *stream)
+            state.entries.iter().any(|other| {
+                let audible = !state
+                    .tracks
+                    .audio
+                    .get(other.track)
+                    .is_some_and(|track| track.1);
+                other.clip == entry.clip
+                    && other.audio == Some(*stream)
+                    && !other.missing
+                    && audible
+                    && cut(other).0 < own.1
+                    && cut(other).1 > own.0
+            })
         };
         Job {
             clip: entry.clip.clone(),

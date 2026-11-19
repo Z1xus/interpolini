@@ -61,8 +61,16 @@ fn newest() -> Option<String> {
 }
 
 fn changelog(version: &str) -> Option<String> {
-    let response = ureq::get(format!("{RELEASES}/download/v{version}/CHANGELOG.md")).call();
-    response.ok()?.into_body().read_to_string().ok()
+    let response = small().get(format!("{RELEASES}/download/v{version}/CHANGELOG.md"));
+    response.call().ok()?.into_body().read_to_string().ok()
+}
+
+// a stalled connection fails, so a closing app does not wait for it
+fn small() -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(20)))
+        .build();
+    ureq::Agent::new_with_config(config)
 }
 
 // the sections after this version, up to the new one
@@ -243,7 +251,8 @@ fn elevate(zip: &Path, sha: &str) -> Outcome {
 fn install(version: &str, report: Report, stop: &Cancel) -> Outcome {
     let package = package().ok_or("This system can't update itself.")?;
     let base = format!("{RELEASES}/download/v{version}");
-    let sums = ureq::get(format!("{base}/SHA256SUMS"))
+    let sums = small()
+        .get(format!("{base}/SHA256SUMS"))
         .call()
         .map_err(text)?;
     let sums = sums.into_body().read_to_string().map_err(text)?;

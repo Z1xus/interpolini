@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use interpolini_core::config;
@@ -443,12 +443,22 @@ pub fn present(window: &(impl ComponentHandle + 'static)) {
     }
 }
 
-// with settings that are not saved the app only asks about them, and does not start again
+static RESTART: AtomicBool = AtomicBool::new(false);
+
+// with a render or a change that is not saved the app only asks about it, and does not start again
 pub fn restart(ui: &App) {
-    if !ui.get_unsaved() {
+    RESTART.store(true, Ordering::Relaxed);
+    ui.invoke_quit();
+    if !ui.get_closing().is_empty() {
+        RESTART.store(false, Ordering::Relaxed);
+    }
+}
+
+// the new app starts after this one has saved its state and let go of the gpu
+pub fn relaunch() {
+    if RESTART.load(Ordering::Relaxed) {
         let _ = std::process::Command::new(config::exe()).spawn();
     }
-    ui.invoke_quit();
 }
 
 // the things that the window can do

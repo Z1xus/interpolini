@@ -10,7 +10,8 @@ use crate::view::{fit, lanes, layout, load, refit, refresh, select, selected};
 use crate::{App, Clip};
 
 // moved is how far the clip came, a clip that is not moved gives 0
-pub fn overwrite(ui: &App, state: &mut State, link: u64, moved: f64) {
+// the clips of the group that moves together do not cut each other
+pub fn overwrite(ui: &App, state: &mut State, link: u64, group: &[u64], moved: f64) {
     let rows = ui.get_clips();
     let Some(model) = rows.as_any().downcast_ref::<VecModel<Clip>>() else {
         return;
@@ -32,7 +33,7 @@ pub fn overwrite(ui: &App, state: &mut State, link: u64, moved: f64) {
                 && from < end - 0.001
                 && start < to - 0.001
         };
-        video.link != link && video.audio.is_none() && movers.iter().any(covers)
+        !group.contains(&video.link) && video.audio.is_none() && movers.iter().any(covers)
     };
     let cut: Vec<u64> = state
         .entries
@@ -49,7 +50,7 @@ pub fn overwrite(ui: &App, state: &mut State, link: u64, moved: f64) {
             let follows =
                 mover.audio.is_none() && other.audio.is_some() && cut.contains(&other.link);
             let (start, end) = (other.at, other.at + other.kept());
-            if other.link == link
+            if group.contains(&other.link)
                 || !(same || follows)
                 || to <= start + 0.001
                 || end <= from + 0.001
@@ -87,6 +88,7 @@ pub fn overwrite(ui: &App, state: &mut State, link: u64, moved: f64) {
                         state.ids += 1;
                         state.ids
                     });
+                    crate::editor::inherit(other.link, fresh);
                     rest.link = fresh as i32;
                     let mut copy = other.clone();
                     copy.saved.id = id;
@@ -226,8 +228,13 @@ pub fn chosen(ui: &App, state: &State) -> Vec<u64> {
     let picked = |index: &usize| rows.row_data(*index).is_some_and(|row| row.picked);
     let places =
         (0..state.entries.len()).filter(|index| picked(index) || selected(ui) == Some(*index));
-    let mut links: Vec<u64> = places.map(|index| state.entries[index].link).collect();
-    links.dedup();
+    // the order of the rows stays, a drag works on the first one first
+    let mut links = Vec::new();
+    for link in places.map(|index| state.entries[index].link) {
+        if !links.contains(&link) {
+            links.push(link);
+        }
+    }
     links
 }
 
@@ -324,7 +331,7 @@ fn close_gap(ui: &App, shared: &Shared, time: f64, depth: f32) {
     let Some((before, after)) = hole(&state, time, depth) else {
         return;
     };
-    record(ui, &mut state, false);
+    record(ui, &mut state, "");
     ripple(ui, &mut state, after, before - after);
     drop(state);
     fit(ui, shared);
@@ -355,7 +362,8 @@ pub fn wire(ui: &App, state: &Shared) {
         // the clip that was selected alone joins the others
         let first = selected(&ui).and_then(|index| state.entries.get(index));
         let first = first.map(|entry| entry.link);
-        let add = !rows.row_data(index as usize).is_some_and(|row| row.picked);
+        let add =
+            first != Some(link) && !rows.row_data(index as usize).is_some_and(|row| row.picked);
         for (place, entry) in state.entries.iter().enumerate() {
             let Some(mut row) = rows.row_data(place) else {
                 continue;
@@ -370,8 +378,18 @@ pub fn wire(ui: &App, state: &Shared) {
             rows.set_row_data(place, row);
         }
         drop(state);
-        if add {
-            ui.set_selected(index);
+        // a clip that ctrl took out of the selection does not stay the current one
+        let current = if add {
+            Some(index)
+        } else if first == Some(link) {
+            let picked = (0..rows.row_count())
+                .find(|place| rows.row_data(*place).is_some_and(|row| row.picked));
+            Some(picked.map_or(-1, |place| place as i32))
+        } else {
+            None
+        };
+        if let Some(current) = current {
+            ui.set_selected(current);
             load(&ui, &mut lock(&shared));
         }
     });
@@ -399,7 +417,7 @@ pub fn wire(ui: &App, state: &Shared) {
             let count = links.len();
             let now = move |ui: &App, shared: &Shared| {
                 let mut state = lock(shared);
-                record(ui, &mut state, false);
+                record(ui, &mut state, "");
                 let gone = state
                     .entries
                     .iter()
@@ -565,7 +583,7 @@ pub fn wire(ui: &App, state: &Shared) {
         if moved.abs() < 0.0005 {
             return;
         }
-        record(&ui, &mut state, true);
+        record(&ui, &mut state, &format!("move {group:?}"));
         for (place, other) in state.entries.iter().enumerate() {
             if let Some(mut row) = rows.row_data(place).filter(|_| group.contains(&other.link)) {
                 row.at = (other.at + moved) as f32;
@@ -697,8 +715,10 @@ pub fn wire(ui: &App, state: &Shared) {
         let time = state.time(ui.get_position());
         // a part shorter than this is not worth a clip
         let least = 0.05;
-        let under =
-            |entry: &Entry| entry.at + least < time && time < entry.at + entry.kept() - least;
+        let fits = |entry: &Entry, time: f64| {
+            entry.at + least < time && time < entry.at + entry.kept() - least
+        };
+        let under = |entry: &Entry| fits(entry, time);
         // a split cuts every clip under the playhead, the other marks are for the selected clip
         // a start or an end is for the clip under the playhead when the selected clip is not there
         let held = |index: &usize| kind == "clear" || state.entries.get(*index).is_some_and(under);
@@ -711,9 +731,38 @@ pub fn wire(ui: &App, state: &Shared) {
         let link = chosen
             .and_then(|index| state.entries.get(index))
             .map(|entry| entry.link);
+        let at = |entry: &Entry| match ui.get_copying() {
+            true => snap(&state, entry, time),
+            false => Some(time),
+        };
         let targets: Vec<usize> = match kind.as_str() {
             "split" => (0..state.entries.len())
-                .filter(|index| under(&state.entries[*index]))
+                .filter(|index| {
+                    let entry = &state.entries[*index];
+                    let inside = |gap: f64, other: &Entry, time: f64| {
+                        other.at + gap < time && time < other.at + other.kept() - gap
+                    };
+                    let mut group = state
+                        .entries
+                        .iter()
+                        .filter(|other| other.link == entry.link);
+                    if !group.clone().any(|other| inside(0.0, other, time)) {
+                        return false;
+                    }
+                    let Some(time) = at(entry) else {
+                        return false;
+                    };
+                    inside(0.0, entry, time)
+                        && group
+                            .all(|other| !inside(0.0, other, time) || inside(least, other, time))
+                })
+                .collect(),
+            "start" => (0..state.entries.len())
+                .filter(|index| Some(state.entries[*index].link) == link)
+                .filter(|index| {
+                    let entry = &state.entries[*index];
+                    at(entry).is_some_and(|time| fits(entry, time))
+                })
                 .collect(),
             _ => (0..state.entries.len())
                 .filter(|index| Some(state.entries[*index].link) == link)
@@ -744,8 +793,8 @@ pub fn wire(ui: &App, state: &Shared) {
         }
         let room = (room.0.max(0.0) as f32, room.1.max(0.0) as f32);
         let chosen = selected(&ui).and_then(|index| state.entries.get(index).map(|entry| entry.id));
-        record(&ui, &mut state, false);
-        let first = state.ids + 1;
+        record(&ui, &mut state, "");
+        let mut links = HashMap::new();
         for index in targets.into_iter().rev() {
             let Some(mut row) = model.row_data(index) else {
                 continue;
@@ -762,7 +811,7 @@ pub fn wire(ui: &App, state: &Shared) {
             let local =
                 (row.cut_in + (time as f32 - row.at) / length).clamp(row.cut_in, row.cut_out);
             match kind.as_str() {
-                "start" if under(&entry) => {
+                "start" if fits(&entry, time) => {
                     // the end of the clip stays where it is
                     row.at += (local - row.cut_in) * length;
                     row.cut_in = local;
@@ -773,14 +822,20 @@ pub fn wire(ui: &App, state: &Shared) {
                     let mut second = row.clone();
                     second.at = time as f32;
                     second.cut_in = local;
-                    second.link = (first + entry.link) as i32;
+                    state.ids += 1;
+                    let id = state.ids;
+                    let link = *links.entry(entry.link).or_insert_with(|| {
+                        state.ids += 1;
+                        state.ids
+                    });
+                    crate::editor::inherit(entry.link, link);
+                    second.link = link as i32;
                     row.cut_out = local;
                     (row.fade_out, second.fade_in, second.cross) = (0.0, 0.0, 0.0);
                     model.insert(index + 1, second);
-                    state.ids += 1;
                     let mut copy = entry;
-                    copy.saved.id = first + state.ids + copy.link;
-                    copy.saved.link = first + copy.link;
+                    copy.saved.id = id;
+                    copy.saved.link = link;
                     state.entries.insert(index + 1, copy);
                 }
                 "clear" if !entry.still => {
@@ -792,13 +847,9 @@ pub fn wire(ui: &App, state: &Shared) {
             }
             model.set_row_data(index, row);
         }
-        // the new ids and links must stay below the next ones
-        state.ids = state
-            .entries
-            .iter()
-            .map(|entry| entry.id.max(entry.link))
-            .max()
-            .unwrap_or(0);
+        // the new ids and links must stay below the next ones, and an old link is never given again
+        let top = state.entries.iter().map(|entry| entry.id.max(entry.link));
+        state.ids = top.fold(state.ids, u64::max);
         if let Some(place) =
             chosen.and_then(|id| state.entries.iter().position(|entry| entry.id == id))
         {
@@ -821,10 +872,13 @@ pub fn wire(ui: &App, state: &Shared) {
         };
         // with alt the clip leaves the other clips of its file, and moves and cuts on its own
         if let Some(mut row) = ui.get_clips().row_data(index as usize).filter(|_| alone) {
-            record(&ui, &mut state, false);
+            record(&ui, &mut state, "");
             state.ids += 1;
             row.link = state.ids as i32;
-            state.entries[index as usize].link = state.ids;
+            let link = state.ids;
+            let entry = &mut state.entries[index as usize];
+            crate::editor::inherit(entry.link, link);
+            entry.link = link;
             state.touched = Some(state.ids);
             ui.get_clips().set_row_data(index as usize, row);
             ui.set_link(state.ids as i32);
@@ -853,7 +907,7 @@ pub fn wire(ui: &App, state: &Shared) {
         state.cutting = cutting && !ui.get_copying();
         let entry = state.entries[index].clone();
         if state.touched.is_none() {
-            record(&ui, &mut state, false);
+            record(&ui, &mut state, "");
             state.touched = Some(entry.link);
         }
         let mut at = (f64::from(time) - offset).max(0.0);
@@ -939,8 +993,8 @@ pub fn wire(ui: &App, state: &Shared) {
                     revert(&ui, &shared);
                     return resume(&ui, &shared);
                 }
-                for link in group.into_iter().filter(|_| cutting) {
-                    overwrite(&ui, &mut state, link, moved.unwrap_or(0.0));
+                for link in group.iter().filter(|_| cutting) {
+                    overwrite(&ui, &mut state, *link, &group, moved.unwrap_or(0.0));
                 }
             }
             drop(state);
@@ -957,7 +1011,7 @@ pub fn wire(ui: &App, state: &Shared) {
         };
         let rows = ui.get_clips();
         let mut state = lock(&shared);
-        record(&ui, &mut state, false);
+        record(&ui, &mut state, "");
         // on each track the clips keep their order and move up to each other
         let mut order: Vec<usize> = (0..state.entries.len()).collect();
         order.sort_by(|a, b| state.entries[*a].at.total_cmp(&state.entries[*b].at));
@@ -1033,7 +1087,7 @@ pub fn wire(ui: &App, state: &Shared) {
             .entries
             .iter()
             .find(joined)
-            .filter(|_| !alone && !ui.get_copying())
+            .filter(|next| next.kept() + 0.001 >= 0.1 && !alone && !ui.get_copying())
             .cloned();
         let playhead = state.time(ui.get_position());
         let others = state.entries.iter().filter(|other| other.link != link);
@@ -1116,10 +1170,10 @@ pub fn wire(ui: &App, state: &Shared) {
             let (from, to) = match head {
                 true => (
                     next.cut.0,
-                    (next.cut.1 + moved).clamp(next.cut.0 + least, 1.0),
+                    (next.cut.1 + moved).max(next.cut.0 + least).min(1.0),
                 ),
                 false => (
-                    (next.cut.0 + moved).clamp(0.0, next.cut.1 - least),
+                    (next.cut.0 + moved).min(next.cut.1 - least).max(0.0),
                     next.cut.1,
                 ),
             };
@@ -1147,7 +1201,7 @@ pub fn wire(ui: &App, state: &Shared) {
         let Some(clicked) = state.entries.get(index).cloned() else {
             return;
         };
-        record(&ui, &mut state, true);
+        record(&ui, &mut state, &format!("{name} {index}"));
         for place in aimed(&ui, &state, index, alone) {
             let Some(mut row) = rows.row_data(place) else {
                 continue;
@@ -1178,7 +1232,7 @@ pub fn wire(ui: &App, state: &Shared) {
         };
         let rows = ui.get_clips();
         let mut state = lock(&shared);
-        record(&ui, &mut state, true);
+        record(&ui, &mut state, &format!("speed {index}"));
         layout(&ui, &mut state);
         let places = aimed(&ui, &state, index as usize, false).into_iter();
         let mut links: Vec<u64> = places
@@ -1225,7 +1279,7 @@ pub fn wire(ui: &App, state: &Shared) {
         };
         let rows = ui.get_clips();
         let mut state = lock(&shared);
-        record(&ui, &mut state, false);
+        record(&ui, &mut state, "");
         for place in aimed(&ui, &state, index as usize, alone) {
             if let Some(mut row) = rows.row_data(place) {
                 match fade.as_str() {
@@ -1270,7 +1324,7 @@ pub fn wire(ui: &App, state: &Shared) {
         let (weak, shared) = (ui.as_weak(), Arc::clone(state));
         let record = move || {
             if let Some(ui) = weak.upgrade() {
-                record(&ui, &mut lock(&shared), false);
+                record(&ui, &mut lock(&shared), "");
             }
         };
         match start {
@@ -1282,7 +1336,9 @@ pub fn wire(ui: &App, state: &Shared) {
     let (weak, shared) = (ui.as_weak(), Arc::clone(state));
     ui.on_place_key(move || {
         if let Some(ui) = weak.upgrade() {
-            record(&ui, &mut lock(&shared), true);
+            let mut state = lock(&shared);
+            let link = state.current(&ui).link;
+            record(&ui, &mut state, &format!("place {link}"));
         }
     });
 
@@ -1306,7 +1362,7 @@ pub fn wire(ui: &App, state: &Shared) {
                     return resume(&ui, &shared);
                 }
                 if cutting {
-                    overwrite(&ui, &mut state, link, 0.0);
+                    overwrite(&ui, &mut state, link, &[link], 0.0);
                 }
             }
             drop(state);
