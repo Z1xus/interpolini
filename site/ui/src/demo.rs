@@ -8,11 +8,11 @@ use slint::{
 
 use crate::{
     App, Clip, Code, Dialog, Download, Ghost, Lane, MaskTile, Masks, Mode, Prefs, Recent, Reveal,
-    Sections, Settings, Tile,
+    Sections, Settings, Span, Tile,
 };
 
 pub const WINDOW: (u32, u32) = (1280, 760);
-pub const DIALOG: (u32, u32) = (520, 443);
+pub const DIALOG: (u32, u32) = (520, 537);
 const THUMB: (u32, u32) = (160, 90);
 const FRAME: (u32, u32) = (1280, 720);
 const WAVE_ROWS: u32 = 64;
@@ -140,6 +140,7 @@ fn prefs(projects: bool) -> Prefs {
         snapping: true,
         scrolling: "system".into(),
         preset: "default".into(),
+        cache: true,
         ..Default::default()
     }
 }
@@ -698,6 +699,11 @@ pub fn app(thumbs: &[u8], peaks: &[u8], frames: &[u8]) -> Result<App, PlatformEr
     masks.set_list(ModelRc::new(VecModel::from(tiles.to_vec())));
     masks.on_found(|list, name| list.iter().any(|mask| mask.name == name));
     set_weights(&app, &[1.0; 17]);
+    let ready = Span {
+        from: 0.0,
+        to: SOURCE_SECONDS * 0.6,
+    };
+    app.set_cached(ModelRc::new(VecModel::from(vec![ready])));
     scene(&app, "plain").map_err(PlatformError::Other)?;
     Ok(app)
 }
@@ -712,6 +718,10 @@ pub fn set_weights(app: &App, weights: &[f32]) {
 pub fn dialog() -> Result<Dialog, PlatformError> {
     let window = Dialog::new()?;
     window.set_prefs(prefs(true));
+    window.set_updates(true);
+    window.set_presets(ModelRc::new(VecModel::from(vec![
+        window.get_prefs().preset,
+    ])));
     window.set_ffmpeg("bundled".into());
     window.set_ffmpeg_system(true);
     window.set_tensorrt_shipped(true);

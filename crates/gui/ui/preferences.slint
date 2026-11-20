@@ -2,7 +2,7 @@ import { Action, Button, Cell, Dropdown, FormRow, Segment, Slider, Switch, Tabs,
 import { Download, Group, Parts } from "components.slint";
 import { Prefs } from "types.slint";
 
-export component Preferences inherits Window {
+export component PreferencesPanel inherits VerticalLayout {
     in-out property <Prefs> prefs;
     in property <[string]> presets;
     in-out property <bool> updates;
@@ -28,6 +28,296 @@ export component Preferences inherits Window {
     callback remove <=> parts.remove;
     callback cancel <=> parts.cancel;
     property <string> zoom-text: root.prefs.zoom == 1 ? "Fit" : "\{root.prefs.zoom}×";
+    alignment: start;
+    Rectangle {
+        height: 40px;
+        Tabs {
+            x: 16px;
+            width: self.preferred-width;
+            label: "Section";
+            grab: true;
+            options: ["General", "Projects", "Components"];
+            value <=> root.section;
+        }
+    }
+    Rectangle {
+        height: 1px;
+        background: Theme.seam;
+    }
+    if root.section == "General": VerticalLayout {
+        Group {
+            title: "App";
+            FormRow {
+                label: "Check for updates";
+                Cell {
+                    Switch {
+                        label: "Check for updates";
+                        checked: root.updates;
+                        toggled(on) => {
+                            root.updates = on;
+                            root.changed();
+                        }
+                    }
+                }
+            }
+            FormRow {
+                label: "Smooth scrolling";
+                Segment {
+                    fill: true;
+                    label: "Smooth scrolling";
+                    tips: ["Follow the system setting", "Always smooth", "Never smooth"];
+                    options: ["System", "On", "Off"];
+                    value: root.prefs.scrolling == "on" ? "On" : root.prefs.scrolling == "off" ? "Off" : "System";
+                    changed(choice) => {
+                        root.prefs.scrolling = choice == "On" ? "on" : choice == "Off" ? "off" : "system";
+                        root.changed();
+                    }
+                }
+            }
+        }
+        Group {
+            title: "Render";
+            FormRow {
+                label: "Default preset";
+                Cell {
+                    horizontal-stretch: 1;
+                    Dropdown {
+                        label: "Default preset";
+                        height: 22px;
+                        options: root.presets;
+                        value: root.prefs.preset;
+                        changed(choice) => {
+                            root.prefs.preset = choice;
+                            root.changed();
+                        }
+                    }
+                }
+            }
+            FormRow {
+                label: "Render folder";
+                Cell {
+                    Button {
+                        height: 22px;
+                        text: "Choose…";
+                        clicked => {
+                            root.choose-folder();
+                        }
+                    }
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.prefs.folder == "" ? "Next to the clip" : root.prefs.folder;
+                    color: Theme.muted;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if root.prefs.folder != "": Action {
+                    text: "Reset";
+                    accessible: "Reset render folder";
+                    clicked => {
+                        root.prefs.folder = "";
+                        root.changed();
+                    }
+                }
+            }
+            if root.prefs.secret: FormRow {
+                label: "Secret quality options";
+                Cell {
+                    Switch {
+                        label: "Secret quality options";
+                        checked: root.prefs.secret;
+                        toggled(on) => {
+                            root.prefs.secret = on;
+                            root.changed();
+                        }
+                    }
+                }
+            }
+        }
+        Group {
+            title: "Preview";
+            FormRow {
+                label: "Preview memory";
+                Segment {
+                    fill: true;
+                    label: "Preview memory";
+                    options: ["Auto", "512 MB", "1 GB", "2 GB", "4 GB"];
+                    value: root.prefs.memory == 0 ? "Auto" : root.prefs.memory == 512 ? "512 MB" : "\{root.prefs.memory / 1024} GB";
+                    changed(choice) => {
+                        root.prefs.memory = choice == "Auto" ? 0 : choice == "512 MB" ? 512 : choice.to-float() * 1024;
+                        root.changed();
+                    }
+                }
+            }
+            FormRow {
+                label: "Preview cache";
+                Cell {
+                    Switch {
+                        label: "Preview cache";
+                        checked: root.prefs.cache;
+                        toggled(on) => {
+                            root.prefs.cache = on;
+                            root.changed();
+                        }
+                    }
+                }
+            }
+            FormRow {
+                label: "Default preview zoom";
+                Slider {
+                    label: "Default preview zoom";
+                    minimum: 0.1;
+                    maximum: 4;
+                    readout: root.zoom-text;
+                    value: root.prefs.zoom;
+                    changed(zoom) => {
+                        root.prefs.zoom = round(zoom * 10) / 10;
+                        root.changed();
+                    }
+                }
+                Text {
+                    width: 38px;
+                    text: root.zoom-text;
+                    color: Theme.ink;
+                    font-size: 12px;
+                    font-family: "monospace";
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+            }
+        }
+        Group {
+            title: "Timeline";
+            FormRow {
+                label: "Confirm removal";
+                Cell {
+                    Switch {
+                        label: "Confirm removal";
+                        checked: root.prefs.confirm-delete;
+                        toggled(on) => {
+                            root.prefs.confirm-delete = on;
+                            root.changed();
+                        }
+                    }
+                }
+            }
+            FormRow {
+                label: "Auto fit timeline to clips";
+                Cell {
+                    Switch {
+                        label: "Auto fit timeline to clips";
+                        checked: root.prefs.autofit;
+                        toggled(on) => {
+                            root.prefs.autofit = on;
+                            root.changed();
+                        }
+                    }
+                }
+            }
+            FormRow {
+                label: "Ripple delete by default";
+                Cell {
+                    Switch {
+                        label: "Ripple delete by default";
+                        checked: root.prefs.ripple;
+                        toggled(on) => {
+                            root.prefs.ripple = on;
+                            root.changed();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if root.section == "Projects": VerticalLayout {
+        padding-top: 8px;
+        padding-bottom: 8px;
+        FormRow {
+            label: "Project files";
+            Cell {
+                Switch {
+                    label: "Project files";
+                    checked: root.prefs.projects;
+                    toggled(on) => {
+                        root.prefs.projects = on;
+                        root.changed();
+                    }
+                }
+            }
+        }
+        FormRow {
+            label: "Autosave";
+            Segment {
+                fill: true;
+                label: "Autosave";
+                options: ["Off", "1 min", "5 min", "10 min"];
+                value: root.prefs.autosave == 0 ? "Off" : "\{root.prefs.autosave} min";
+                changed(choice) => {
+                    root.prefs.autosave = choice == "Off" ? 0 : choice.to-float();
+                    root.changed();
+                }
+            }
+        }
+        FormRow {
+            label: "Ask to save";
+            Cell {
+                Switch {
+                    label: "Ask to save";
+                    checked: root.prefs.ask-save;
+                    toggled(on) => {
+                        root.prefs.ask-save = on;
+                        root.changed();
+                    }
+                }
+            }
+        }
+        FormRow {
+            label: "Reopen last project";
+            Cell {
+                Switch {
+                    label: "Reopen last project";
+                    checked: root.prefs.reopen;
+                    toggled(on) => {
+                        root.prefs.reopen = on;
+                        root.changed();
+                    }
+                }
+            }
+        }
+    }
+    parts := Parts {
+        visible: root.section == "Components";
+        height: root.section == "Components" ? self.preferred-height : 0px;
+    }
+}
+
+export component Preferences inherits Window {
+    in-out property <Prefs> prefs <=> panel.prefs;
+    in property <[string]> presets <=> panel.presets;
+    in-out property <bool> updates <=> panel.updates;
+    in-out property <string> section <=> panel.section;
+    callback changed <=> panel.changed;
+    callback choose-folder <=> panel.choose-folder;
+    in-out property <string> ffmpeg <=> panel.ffmpeg;
+    in property <bool> ffmpeg-system <=> panel.ffmpeg-system;
+    in property <bool> ffmpeg-fixed <=> panel.ffmpeg-fixed;
+    in property <bool> restart <=> panel.restart;
+    in property <bool> tensorrt <=> panel.tensorrt;
+    in property <bool> tensorrt-shipped <=> panel.tensorrt-shipped;
+    in property <string> tensorrt-need <=> panel.tensorrt-need;
+    in property <[Download]> models <=> panel.models;
+    in property <string> busy <=> panel.busy;
+    in property <string> progress <=> panel.progress;
+    in property <float> fraction <=> panel.fraction;
+    in property <string> note <=> panel.note;
+    callback use-ffmpeg <=> panel.use-ffmpeg;
+    callback choose-ffmpeg <=> panel.choose-ffmpeg;
+    callback restart-app <=> panel.restart-app;
+    callback install <=> panel.install;
+    callback remove <=> panel.remove;
+    callback cancel <=> panel.cancel;
     title: "Settings";
     icon: @image-url("../../../assets/interpolini.svg");
     background: Theme.rack;
@@ -35,7 +325,7 @@ export component Preferences inherits Window {
     width: 520px;
     // the General tab with every row it can show
     height: 41px + 496px;
-    keys := FocusScope {
+    FocusScope {
         focus-on-click: false;
         key-pressed(event) => {
             if event.text == Key.Escape {
@@ -44,270 +334,6 @@ export component Preferences inherits Window {
             }
             reject
         }
-        VerticalLayout {
-            alignment: start;
-            Rectangle {
-                height: 40px;
-                Tabs {
-                    x: 16px;
-                    width: self.preferred-width;
-                    label: "Section";
-                    grab: true;
-                    options: ["General", "Projects", "Components"];
-                    value <=> root.section;
-                }
-            }
-            Rectangle {
-                height: 1px;
-                background: Theme.seam;
-            }
-            if root.section == "General": VerticalLayout {
-                Group {
-                    title: "App";
-                    FormRow {
-                        label: "Check for updates";
-                        Cell {
-                            Switch {
-                                label: "Check for updates";
-                                checked: root.updates;
-                                toggled(on) => {
-                                    root.updates = on;
-                                    root.changed();
-                                }
-                            }
-                        }
-                    }
-                    FormRow {
-                        label: "Smooth scrolling";
-                        Segment {
-                            fill: true;
-                            label: "Smooth scrolling";
-                            tips: ["Follow the system setting", "Always smooth", "Never smooth"];
-                            options: ["System", "On", "Off"];
-                            value: root.prefs.scrolling == "on" ? "On" : root.prefs.scrolling == "off" ? "Off" : "System";
-                            changed(choice) => {
-                                root.prefs.scrolling = choice == "On" ? "on" : choice == "Off" ? "off" : "system";
-                                root.changed();
-                            }
-                        }
-                    }
-                }
-                Group {
-                    title: "Render";
-                    FormRow {
-                        label: "Default preset";
-                        Cell {
-                            horizontal-stretch: 1;
-                            Dropdown {
-                                label: "Default preset";
-                                height: 22px;
-                                options: root.presets;
-                                value: root.prefs.preset;
-                                changed(choice) => {
-                                    root.prefs.preset = choice;
-                                    root.changed();
-                                }
-                            }
-                        }
-                    }
-                    FormRow {
-                        label: "Render folder";
-                        Cell {
-                            Button {
-                                height: 22px;
-                                text: "Choose…";
-                                clicked => {
-                                    root.choose-folder();
-                                }
-                            }
-                        }
-                        Text {
-                            horizontal-stretch: 1;
-                            text: root.prefs.folder == "" ? "Next to the clip" : root.prefs.folder;
-                            color: Theme.muted;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                            overflow: elide;
-                        }
-                        if root.prefs.folder != "": Action {
-                            text: "Reset";
-                            accessible: "Reset render folder";
-                            clicked => {
-                                root.prefs.folder = "";
-                                root.changed();
-                            }
-                        }
-                    }
-                    if root.prefs.secret: FormRow {
-                        label: "Secret quality options";
-                        Cell {
-                            Switch {
-                                label: "Secret quality options";
-                                checked: root.prefs.secret;
-                                toggled(on) => {
-                                    root.prefs.secret = on;
-                                    root.changed();
-                                }
-                            }
-                        }
-                    }
-                }
-                Group {
-                    title: "Preview";
-                    FormRow {
-                        label: "Preview memory";
-                        Segment {
-                            fill: true;
-                            label: "Preview memory";
-                            options: ["Auto", "512 MB", "1 GB", "2 GB", "4 GB"];
-                            value: root.prefs.memory == 0 ? "Auto" : root.prefs.memory == 512 ? "512 MB" : "\{root.prefs.memory / 1024} GB";
-                            changed(choice) => {
-                                root.prefs.memory = choice == "Auto" ? 0 : choice == "512 MB" ? 512 : choice.to-float() * 1024;
-                                root.changed();
-                            }
-                        }
-                    }
-                    FormRow {
-                        label: "Preview cache";
-                        Cell {
-                            Switch {
-                                label: "Preview cache";
-                                checked: root.prefs.cache;
-                                toggled(on) => {
-                                    root.prefs.cache = on;
-                                    root.changed();
-                                }
-                            }
-                        }
-                    }
-                    FormRow {
-                        label: "Default preview zoom";
-                        Slider {
-                            label: "Default preview zoom";
-                            minimum: 0.1;
-                            maximum: 4;
-                            readout: root.zoom-text;
-                            value: root.prefs.zoom;
-                            changed(zoom) => {
-                                root.prefs.zoom = round(zoom * 10) / 10;
-                                root.changed();
-                            }
-                        }
-                        Text {
-                            width: 38px;
-                            text: root.zoom-text;
-                            color: Theme.ink;
-                            font-size: 12px;
-                            font-family: "monospace";
-                            horizontal-alignment: right;
-                            vertical-alignment: center;
-                            accessible-role: none;
-                        }
-                    }
-                }
-                Group {
-                    title: "Timeline";
-                    FormRow {
-                        label: "Confirm removal";
-                        Cell {
-                            Switch {
-                                label: "Confirm removal";
-                                checked: root.prefs.confirm-delete;
-                                toggled(on) => {
-                                    root.prefs.confirm-delete = on;
-                                    root.changed();
-                                }
-                            }
-                        }
-                    }
-                    FormRow {
-                        label: "Auto fit timeline to clips";
-                        Cell {
-                            Switch {
-                                label: "Auto fit timeline to clips";
-                                checked: root.prefs.autofit;
-                                toggled(on) => {
-                                    root.prefs.autofit = on;
-                                    root.changed();
-                                }
-                            }
-                        }
-                    }
-                    FormRow {
-                        label: "Ripple delete by default";
-                        Cell {
-                            Switch {
-                                label: "Ripple delete by default";
-                                checked: root.prefs.ripple;
-                                toggled(on) => {
-                                    root.prefs.ripple = on;
-                                    root.changed();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if root.section == "Projects": VerticalLayout {
-                padding-top: 8px;
-                padding-bottom: 8px;
-                FormRow {
-                    label: "Project files";
-                    Cell {
-                        Switch {
-                            label: "Project files";
-                            checked: root.prefs.projects;
-                            toggled(on) => {
-                                root.prefs.projects = on;
-                                root.changed();
-                            }
-                        }
-                    }
-                }
-                FormRow {
-                    label: "Autosave";
-                    Segment {
-                        fill: true;
-                        label: "Autosave";
-                        options: ["Off", "1 min", "5 min", "10 min"];
-                        value: root.prefs.autosave == 0 ? "Off" : "\{root.prefs.autosave} min";
-                        changed(choice) => {
-                            root.prefs.autosave = choice == "Off" ? 0 : choice.to-float();
-                            root.changed();
-                        }
-                    }
-                }
-                FormRow {
-                    label: "Ask to save";
-                    Cell {
-                        Switch {
-                            label: "Ask to save";
-                            checked: root.prefs.ask-save;
-                            toggled(on) => {
-                                root.prefs.ask-save = on;
-                                root.changed();
-                            }
-                        }
-                    }
-                }
-                FormRow {
-                    label: "Reopen last project";
-                    Cell {
-                        Switch {
-                            label: "Reopen last project";
-                            checked: root.prefs.reopen;
-                            toggled(on) => {
-                                root.prefs.reopen = on;
-                                root.changed();
-                            }
-                        }
-                    }
-                }
-            }
-            parts := Parts {
-                visible: root.section == "Components";
-                height: root.section == "Components" ? self.preferred-height : 0px;
-            }
-        }
+        panel := PreferencesPanel { }
     }
 }
