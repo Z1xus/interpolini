@@ -119,8 +119,11 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_light(value("light: ") == Some("yes"));
     ui.set_separate(value("separate: ") == Some("yes"));
     ui.set_preview_off(value("preview: ") == Some("no"));
-    ui.window()
-        .set_maximized(value("maximized: ") == Some("yes"));
+    if value("maximized: ") == Some("yes") {
+        ui.window().set_maximized(true);
+        // without a set size, slint shrinks the maximized window to its preferred size on show
+        ui.window().set_size(slint::LogicalSize::new(1280.0, 760.0));
+    }
     let weak = ui.as_weak();
     std::thread::spawn(move || {
         interpolini_core::find_encoders();
