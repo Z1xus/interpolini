@@ -989,6 +989,20 @@ export component Panel inherits Rectangle {
                         }
                     }
                 }
+                if root.settings.engine == "svp": Row {
+                    label: "Fast mode";
+                    Rectangle { }
+                    VerticalLayout {
+                        alignment: center;
+                        Switch {
+                            label: "Fast mode";
+                            checked <=> root.settings.fast;
+                            toggled => {
+                                root.changed();
+                            }
+                        }
+                    }
+                }
             }
 
             masking := Section {

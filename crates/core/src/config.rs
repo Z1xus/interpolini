@@ -281,6 +281,7 @@ pub struct Interpolation {
     pub tuning: Tuning,
     pub algorithm: Algorithm,
     pub half: bool,
+    pub fast: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
@@ -397,6 +398,7 @@ impl Default for Interpolation {
             tuning: Tuning::Film,
             algorithm: Algorithm::Standard,
             half: true,
+            fast: true,
         }
     }
 }
@@ -592,6 +594,7 @@ impl Config {
             field("output", "options", &mut output.options),
             field("mask", "image", &mut mask.image),
             field("mask", "soft edge", Within(&mut mask.soft, 0.0, 100.0)),
+            field("interpolation", "fast mode", &mut interpolation.fast),
         ]
     }
 

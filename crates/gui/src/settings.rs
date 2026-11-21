@@ -49,6 +49,7 @@ pub fn settings(config: &Config) -> Settings {
         tuning: interpolation.tuning.name().into(),
         algorithm: look.map_or("", |look| look.1).into(),
         half: interpolation.half,
+        fast: interpolation.fast,
         backend: rife.backend.name().into(),
         model: rife.model.as_str().into(),
         mask: mask.enabled,
@@ -111,6 +112,7 @@ pub fn apply(settings: &Settings, config: &mut Config) {
     interpolation.tuning = Tuning::parse(&settings.tuning).unwrap_or(interpolation.tuning);
     interpolation.algorithm = look.map_or(interpolation.algorithm, |look| look.0);
     interpolation.half = settings.half;
+    interpolation.fast = settings.fast;
     rife.backend = Backend::parse(&settings.backend).unwrap_or(rife.backend);
     rife.model = settings.model.to_string();
     mask.enabled = settings.mask;
@@ -789,6 +791,7 @@ fn change(section: &str, key: &str, value: &str) -> String {
             format!("look {}", look.map_or(value, |look| look.1))
         }
         ("interpolation", "half size") => format!("half-size analysis {on}"),
+        ("interpolation", "fast mode") => format!("fast mode {on}"),
         ("mask", "enabled") => format!("masking {on}"),
         ("mask", "method") => format!("masking {value}"),
         ("mask", "peel limit") => format!("peel limit {value}"),

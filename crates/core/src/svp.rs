@@ -576,15 +576,23 @@ impl Options {
         gpu: bool,
         half: bool,
     ) -> Self {
-        let Interpolation { speed, tuning, .. } = *interpolation;
+        let Interpolation {
+            speed,
+            tuning,
+            fast: fast_mode,
+            ..
+        } = *interpolation;
         let animation = tuning == Tuning::Animation;
         let coarse = animation || speed == Speed::Fastest;
         let quick = coarse || speed == Speed::Faster;
-        let fast = match speed {
-            Speed::Medium => "",
-            Speed::Fast => "fast:1,",
-            Speed::Faster => "fast:2,",
-            Speed::Fastest => "fast:3,",
+        let fast = if fast_mode {
+            match speed {
+                Speed::Medium | Speed::Fast => "fast:1,",
+                Speed::Faster => "fast:2,",
+                Speed::Fastest => "fast:3,",
+            }
+        } else {
+            ""
         };
 
         let pel = if speed == Speed::Medium { "" } else { "pel:1," };
@@ -619,7 +627,7 @@ impl Options {
             Tuning::Weak => ",refine:[{thsad:250,search:{distance:-1,satd:true}}]",
             _ => ",refine:[{thsad:250}]",
         };
-        let exact = if gpu && !animation {
+        let exact = if (fast_mode && gpu && !animation) || speed == Speed::Medium {
             "exact:false,"
         } else {
             ""
@@ -655,11 +663,7 @@ impl Options {
             "blend:false,mode:0"
         };
         let dedup = dedup.map_or(String::new(), |limit| format!(",dedup:{limit}"));
-        let adaptive = if speed == Speed::Medium {
-            ""
-        } else {
-            "adaptive:true,"
-        };
+        let adaptive = if fast_mode { "adaptive:true," } else { "" };
         let smooth = format!(
             "{{{fast}{adaptive}rate:{{{rate}}},algo:{algorithm},mask:{{cover:80,area:0,area_sharp:1.2{masking}}},scene:{{{scene}}}{dedup}}}"
         );
