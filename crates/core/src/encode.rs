@@ -755,8 +755,6 @@ impl Encoder {
         plan: Plan,
         packed: bool,
     ) -> Result<Self> {
-        // a part of the file can go to the second engine of the card
-        let packed = packed && rate.is_none() && two_engines();
         let header = output
             .format()
             .flags()
@@ -766,7 +764,15 @@ impl Encoder {
         let chosen = pairs(&config.options).find(|pair| pair.0 == "c:v");
         let names: Vec<&str> = match chosen {
             Some(pair) => vec![pair.1],
-            None => candidates(config).collect(),
+            None => match OPENS.get() {
+                Some(opens) => candidates(config)
+                    .filter(|name| name.starts_with("lib") || opens.contains(name))
+                    .collect(),
+                None => candidates(config).collect(),
+            },
+        };
+        let pack = |name: &str| {
+            packed && rate.is_none() && name.ends_with("_nvenc") && two_engines()
         };
         // the encoders that do not fit this computer fail without a word
         // nvenc lists 4:4:4 for av1 as well, but the gpu has none, so each encoder tries 4:2:0 after it
@@ -777,6 +783,7 @@ impl Encoder {
         let mut open = |level| {
             ffmpeg_next::log::set_level(level);
             names.iter().find_map(|&name| {
+                let packed = pack(name);
                 let mut tries = [meta, &plain]
                     .into_iter()
                     .take(1 + usize::from(meta.yuv444));
@@ -858,7 +865,7 @@ impl Encoder {
         // nvenc starts again after a flush, and a size target needs one encoder for the whole file
         // the lanes give their pictures to it as they are, so it must take them without a change
         let spare: Option<Spare> =
-            (name.ends_with("_nvenc") && packed && convert.is_none()).then(|| {
+            (pack(name) && convert.is_none()).then(|| {
                 let (name, meta, config, first) =
                     (name.to_owned(), *meta, config.clone(), head(&encoder));
                 Arc::new(move || {

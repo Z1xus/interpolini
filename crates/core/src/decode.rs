@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::mpsc::{self, TryRecvError};
+use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
+use std::time::SystemTime;
 
 use ffmpeg_next::codec::{self, threading};
 use ffmpeg_next::format::{self, Pixel};
@@ -267,6 +268,7 @@ pub fn title(stream: &format::stream::Stream) -> String {
     found.unwrap_or_default().to_owned()
 }
 
+#[derive(Clone)]
 pub struct Probe {
     pub seconds: f64,
     pub fps: f64,
@@ -278,47 +280,169 @@ pub struct Probe {
     pub yuv444: bool,
 }
 
+type ProbeKey = (PathBuf, Option<SystemTime>, u64);
+
+fn probe_cache() -> &'static Mutex<BTreeMap<ProbeKey, Probe>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<ProbeKey, Probe>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn stream_probe(path: &Path, input: &format::context::Input) -> Result<Option<Probe>> {
+    let tracks: Vec<String> = input
+        .streams()
+        .filter_map(|stream| {
+            (stream.parameters().medium() == media::Type::Audio).then(|| title(&stream))
+        })
+        .collect();
+    let total = input.duration().max(0) as f64 / f64::from(ffi::AV_TIME_BASE);
+    let Some(stream) = video(input) else {
+        if tracks.is_empty() {
+            return Err("the clip has no video".into());
+        }
+        if total <= 0.0 {
+            return Err("the clip has no length".into());
+        }
+        return Ok(Some(Probe {
+            seconds: total,
+            fps: 0.0,
+            tracks,
+            width: 0,
+            height: 0,
+            still: false,
+            yuv444: false,
+        }));
+    };
+    let params = unsafe { &*stream.parameters().as_ptr() };
+    let width = u32::try_from(params.width).unwrap_or(0) & !1;
+    let height = u32::try_from(params.height).unwrap_or(0) & !1;
+    let pix = params.format;
+    if width == 0
+        || height == 0
+        || pix < 0
+        || pix >= ffi::AVPixelFormat::AV_PIX_FMT_NB as i32
+        || codec::decoder::find(stream.parameters().id()).is_none()
+    {
+        return Ok(None);
+    }
+    let format = unsafe { ffi::av_pix_fmt_desc_get(std::mem::transmute::<i32, ffi::AVPixelFormat>(pix)).as_ref() };
+    let Some(desc) = format else {
+        return Ok(None);
+    };
+    let mut rate = stream.avg_frame_rate();
+    if rate.numerator() <= 0 {
+        rate = stream.rate();
+    }
+    if rate.numerator() <= 0 || rate.denominator() <= 0 {
+        return Ok(None);
+    }
+    let real = stream.rate();
+    let lossy = real.denominator() > 0
+        && f64::from(real) > f64::from(rate) * 1.001
+        && f64::from(real) < f64::from(rate) * 1.5;
+    if lossy {
+        rate = real;
+    }
+    let rate = rate.reduce();
+    let fps = f64::from(rate);
+    let time_base = f64::from(stream.time_base());
+    let seconds = if stream.duration() > 0 {
+        stream.duration() as f64 * time_base
+    } else {
+        total
+    };
+    let known = Some(stream.start_time()).filter(|start| *start != ffi::AV_NOPTS_VALUE);
+    let container = input.format();
+    let still = container.name() == "image2" || container.name().ends_with("_pipe");
+    let frames = match stream.frames() {
+        frames if frames > 0 && !lossy => frames,
+        _ if seconds > 0.0 => (seconds * fps).round() as i64,
+        _ if still => 1,
+        _ => match length(path, stream.index(), known, time_base * fps) {
+            Some((count, _)) => count,
+            None => return Ok(None),
+        },
+    };
+    let frames = i32::try_from(frames).unwrap_or(i32::MAX).max(1);
+    let yuv444 = desc.log2_chroma_w == 0 && desc.log2_chroma_h == 0;
+    Ok(Some(Probe {
+        seconds: if still { 0.0 } else { f64::from(frames) / fps },
+        fps: if still { 0.0 } else { fps },
+        tracks,
+        width,
+        height,
+        still,
+        yuv444,
+    }))
+}
+
 // a file with sound only has a frame rate of 0
 pub fn probe(path: &Path) -> Result<Probe> {
     path.to_str()
         .ok_or("the clip name has unsupported characters")?;
+    let key = std::fs::metadata(path)
+        .ok()
+        .map(|meta| (path.to_path_buf(), meta.modified().ok(), meta.len()));
+    if let Some(key) = &key
+        && let Some(cached) = probe_cache()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(key)
+    {
+        return Ok(cached.clone());
+    }
     ffmpeg_next::init()?;
-    let audio = |stream: &format::stream::Stream| {
-        (stream.parameters().medium() == media::Type::Audio).then(|| title(stream))
+    let input = format::input(&absolute(path))?;
+    let probed = match stream_probe(path, &input)? {
+        Some(probed) => probed,
+        None => {
+            let audio = |stream: &format::stream::Stream| {
+                (stream.parameters().medium() == media::Type::Audio).then(|| title(stream))
+            };
+            let read = |input: &format::context::Input| {
+                let tracks: Vec<String> = input
+                    .streams()
+                    .filter_map(|stream| audio(&stream))
+                    .collect();
+                (
+                    tracks,
+                    input.duration().max(0) as f64 / f64::from(ffi::AV_TIME_BASE),
+                )
+            };
+            let (meta, (tracks, length)) = match Decoder::open(path) {
+                Ok(decoder) => (Some(decoder.meta), read(&decoder.input)),
+                Err(error) => match read(&input) {
+                    (tracks, _) if tracks.is_empty() => return Err(error),
+                    sound => (None, sound),
+                },
+            };
+            let video = meta.filter(|meta| !meta.still);
+            let fps = video.map_or(0.0, |meta| meta.fps.0 as f64 / meta.fps.1 as f64);
+            Probe {
+                seconds: match (meta, video) {
+                    (_, Some(meta)) => f64::from(meta.frames) / fps,
+                    (Some(_), None) => 0.0,
+                    (None, _) if length > 0.0 => length,
+                    (None, _) => return Err("the clip has no length".into()),
+                },
+                fps,
+                tracks,
+                width: meta.map_or(0, |meta| meta.width),
+                height: meta.map_or(0, |meta| meta.height),
+                still: meta.is_some_and(|meta| meta.still),
+                yuv444: meta.is_some_and(|meta| meta.yuv444),
+            }
+        }
     };
-    let read = |input: &format::context::Input| {
-        let tracks: Vec<String> = input
-            .streams()
-            .filter_map(|stream| audio(&stream))
-            .collect();
-        (
-            tracks,
-            input.duration().max(0) as f64 / f64::from(ffi::AV_TIME_BASE),
-        )
-    };
-    let (meta, (tracks, length)) = match Decoder::open(path) {
-        Ok(decoder) => (Some(decoder.meta), read(&decoder.input)),
-        Err(error) => match read(&format::input(&absolute(path))?) {
-            (tracks, _) if tracks.is_empty() => return Err(error),
-            sound => (None, sound),
-        },
-    };
-    let video = meta.filter(|meta| !meta.still);
-    let fps = video.map_or(0.0, |meta| meta.fps.0 as f64 / meta.fps.1 as f64);
-    Ok(Probe {
-        seconds: match (meta, video) {
-            (_, Some(meta)) => f64::from(meta.frames) / fps,
-            (Some(_), None) => 0.0,
-            (None, _) if length > 0.0 => length,
-            (None, _) => return Err("the clip has no length".into()),
-        },
-        fps,
-        tracks,
-        width: meta.map_or(0, |meta| meta.width),
-        height: meta.map_or(0, |meta| meta.height),
-        still: meta.is_some_and(|meta| meta.still),
-        yuv444: meta.is_some_and(|meta| meta.yuv444),
-    })
+    if let Some(key) = key {
+        let mut cache = probe_cache()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        cache.insert(key, probed.clone());
+    }
+    Ok(probed)
 }
 
 // reads the next packet of a file, av_read_frame does not free what the packet held before
@@ -441,6 +565,32 @@ fn gpus() -> [Gpu; 2] {
         Gpu::AV_HWDEVICE_TYPE_VAAPI
     };
     [Gpu::AV_HWDEVICE_TYPE_CUDA, own]
+}
+
+fn available_gpus() -> &'static [Gpu] {
+    static GPUS: OnceLock<Vec<Gpu>> = OnceLock::new();
+    GPUS.get_or_init(|| {
+        ffmpeg_next::log::set_level(Level::Quiet);
+        let found = gpus()
+            .into_iter()
+            .filter(|&kind| unsafe {
+                let mut device = std::ptr::null_mut();
+                let ok = ffi::av_hwdevice_ctx_create(
+                    &mut device,
+                    kind,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    0,
+                ) >= 0;
+                if !device.is_null() {
+                    ffi::av_buffer_unref(&mut device);
+                }
+                ok
+            })
+            .collect();
+        ffmpeg_next::log::set_level(Level::Error);
+        found
+    })
 }
 
 fn row(picture: &frame::Video, plane: usize, y: usize) -> &[u8] {
@@ -817,11 +967,16 @@ impl Decoder {
         if !exact || cpu.meta.cropped || !(native(format, false) || yuv444(format)) {
             return None;
         }
+        let available = available_gpus();
+        if available.is_empty() {
+            return None;
+        }
         let reference = cpu.picture(0).ok()?;
         let by = cpu.by;
         ffmpeg_next::log::set_level(Level::Quiet);
-        let mut rungs = gpus()
-            .into_iter()
+        let mut rungs = available
+            .iter()
+            .copied()
             .flat_map(|kind| [(kind, FLIGHT), (kind, 1)]);
         let found = rungs.find_map(|(kind, threads)| {
             let mut decoder = Self::start(path, |_, _| threads, Some(kind))
@@ -1358,8 +1513,76 @@ impl Decoder {
         result
     }
 
-    pub fn read(&mut self, n: i32, planes: [*mut u8; 3], strides: [isize; 3]) -> Result<()> {
-        self.with(n, |decoder| decoder.store(planes, strides))
+    pub(crate) fn luma_sampled(&mut self, n: i32, step: usize, out: &mut [u8]) -> Result<()> {
+        let (width, height) = (self.meta.width as usize, self.meta.height as usize);
+        self.with(n, |decoder| {
+            let format = decoder.frame.format();
+            if matches!(
+                format,
+                Pixel::YUV420P
+                    | Pixel::YUVJ420P
+                    | Pixel::NV12
+                    | Pixel::YUV444P
+                    | Pixel::YUVJ444P
+                    | Pixel::P010LE
+                    | Pixel::YUV420P10LE
+            ) && (decoder.frame.width(), decoder.frame.height()) == decoder.full
+            {
+                #[cfg(target_arch = "x86_64")]
+                let avx2 = std::arch::is_x86_feature_detected!("avx2");
+                for (dst_row, y) in out.chunks_exact_mut(width).zip((0..height).step_by(step)) {
+                    match format {
+                        Pixel::P010LE => {
+                            let src = &row(&decoder.frame, 0, y)[..width * 2];
+                            #[cfg(target_arch = "x86_64")]
+                            if avx2 {
+                                unsafe { unpack_p010_y_row_avx2(src, dst_row) };
+                                continue;
+                            }
+                            #[cfg(target_arch = "aarch64")]
+                            {
+                                unpack_p010_y_row_neon(src, dst_row);
+                                continue;
+                            }
+                            #[allow(unreachable_code)]
+                            for (i, dst) in dst_row.iter_mut().enumerate() {
+                                *dst = src[i * 2 + 1];
+                            }
+                        }
+                        Pixel::YUV420P10LE => {
+                            let src = &row(&decoder.frame, 0, y)[..width * 2];
+                            #[cfg(target_arch = "x86_64")]
+                            if avx2 {
+                                unsafe { unpack_p10_plane_row_avx2(src, dst_row) };
+                                continue;
+                            }
+                            #[cfg(target_arch = "aarch64")]
+                            {
+                                unpack_p10_plane_row_neon(src, dst_row);
+                                continue;
+                            }
+                            #[allow(unreachable_code)]
+                            for (i, dst) in dst_row.iter_mut().enumerate() {
+                                let pos = i * 2;
+                                *dst = (u16::from_le_bytes([src[pos], src[pos + 1]]) >> 2)
+                                    .min(255) as u8;
+                            }
+                        }
+                        _ => dst_row.copy_from_slice(&row(&decoder.frame, 0, y)[..width]),
+                    }
+                }
+                return Ok(());
+            }
+            let picture =
+                frame::Video::new(decoder.meta.pixel(), decoder.meta.width, decoder.meta.height);
+            let raw = unsafe { &*picture.as_ptr() };
+            let strides = [0, 1, 2].map(|plane| raw.linesize[plane] as isize);
+            decoder.store([raw.data[0], raw.data[1], raw.data[2]], strides)?;
+            for (dst_row, y) in out.chunks_exact_mut(width).zip((0..height).step_by(step)) {
+                dst_row.copy_from_slice(&row(&picture, 0, y)[..width]);
+            }
+            Ok(())
+        })
     }
 
     pub fn picture(&mut self, n: i32) -> Result<frame::Video> {

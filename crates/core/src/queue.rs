@@ -174,6 +174,7 @@ fn encode(
     let mut silenced = Vec::new();
     let mut placed = Vec::new();
     let mut probes = Vec::new();
+    let mut pending_keep = None;
     for (_, job) in jobs {
         let probe = probe(&job.clip)?;
         let heard: Vec<usize> = (0..probe.tracks.len())
@@ -181,18 +182,28 @@ fn encode(
             .collect();
         // a track that repeats the others does not play when mixing
         let mixed = timeline.is_none() && job.config.output.audio == Audio::Mix;
-        let heard = if mixed {
-            keep(&job.clip, &heard)
+        if mixed && jobs.len() == 1 && heard.len() > 1 {
+            let (clip, heard_copy) = (job.clip.clone(), heard.clone());
+            pending_keep = Some((
+                probe.tracks.len(),
+                work::spawn("audio-keep", move || keep(&clip, &heard_copy)),
+            ));
+            most = heard.len();
+            silenced.push(job.muted.clone());
         } else {
-            heard
-        };
-        most = most.max(heard.len());
-        silenced.push(match mixed {
-            true => (0..probe.tracks.len())
-                .filter(|track| !heard.contains(track))
-                .collect(),
-            false => job.muted.clone(),
-        });
+            let heard = if mixed {
+                keep(&job.clip, &heard)
+            } else {
+                heard
+            };
+            most = most.max(heard.len());
+            silenced.push(match mixed {
+                true => (0..probe.tracks.len())
+                    .filter(|track| !heard.contains(track))
+                    .collect(),
+                false => job.muted.clone(),
+            });
+        }
         placed.push(Placed {
             at: job.at,
             length: kept(job, &probe),
@@ -227,6 +238,14 @@ fn encode(
     };
     let base = base(jobs)?;
     let first = open(base)?;
+    if let Some((track_count, handle)) = pending_keep
+        && let Ok(heard) = handle.join()
+    {
+        most = heard.len();
+        silenced[0] = (0..track_count)
+            .filter(|track| !heard.contains(track))
+            .collect();
+    }
     let graph = first.graph().ok_or("the timeline has no video")?;
     let (mut fps, mut meta) = (graph.info.fps, graph.meta);
     let (job, fps_in) = (jobs[base].1, probes[base].fps);

@@ -16,8 +16,9 @@ use crate::work::Cancel;
 pub const RATE: u32 = 48_000;
 pub const BITRATE: usize = 192_000;
 const FORMAT: Sample = Sample::F32(Type::Planar);
-// seconds of each track to compare
-const WINDOW: usize = 60;
+const COMPARE_RATE: u32 = 8_000;
+const WINDOW: usize = 10;
+const MAX_WINDOW: usize = 30;
 // the share of energy that may differ between a track and what it repeats, lossy encoding leaves under 0.005
 const SAME: f64 = 0.05;
 // the energy per sample under which a track is silent
@@ -118,8 +119,13 @@ impl Track {
 impl Source {
     // keep says which audio tracks of the clip to decode, by their number
     pub fn open(clip: &Path, start: f64, speed: f64, keep: impl Fn(usize) -> bool) -> Result<Self> {
+        Self::open_rate(clip, start, (f64::from(RATE) / speed).round() as u32, keep)
+    }
+
+    fn open_rate(clip: &Path, start: f64, rate: u32, keep: impl Fn(usize) -> bool) -> Result<Self> {
         let mut input = format::input(&absolute(clip))?;
         let mut tracks = Vec::new();
+        let mut kept_streams = Vec::new();
         let mut number = 0;
         for stream in input.streams() {
             if stream.parameters().medium() != media::Type::Audio {
@@ -132,6 +138,7 @@ impl Source {
             let decoder = codec::Context::from_parameters(stream.parameters())?
                 .decoder()
                 .audio()?;
+            kept_streams.push(stream.index());
             tracks.push(Track {
                 stream: stream.index(),
                 decoder,
@@ -140,11 +147,17 @@ impl Source {
                 lead: 0,
                 skip: None,
                 played: 0,
-                rate: (f64::from(RATE) / speed).round() as u32,
+                rate: rate.max(1),
             });
         }
+        let stream_count = input.streams().len();
         let start = unsafe {
             let context = input.as_mut_ptr();
+            for index in 0..stream_count {
+                if !kept_streams.contains(&index) {
+                    (**(*context).streams.add(index)).discard = ffi::AVDiscard::AVDISCARD_ALL;
+                }
+            }
             let offset =
                 crate::decode::origin(&input) + (start * f64::from(ffi::AV_TIME_BASE)) as i64;
             if start > 0.0 {
@@ -239,12 +252,35 @@ pub fn peaks(clip: &Path, seconds: f64, count: usize, cancel: &Cancel) -> Result
 }
 
 fn signals(clip: &Path, streams: &[usize]) -> Result<Vec<Vec<f32>>> {
-    let mut source = Source::open(clip, 0.0, 1.0, |track| streams.contains(&track))?;
-    let mut signals = vec![Vec::new(); source.tracks.len()];
-    for _ in 0..WINDOW {
+    let mut source = Source::open_rate(clip, 0.0, COMPARE_RATE, |track| streams.contains(&track))?;
+    let mut signals = vec![Vec::with_capacity(WINDOW * COMPARE_RATE as usize); source.tracks.len()];
+    let mut active = 0usize;
+    for sec in 0..MAX_WINDOW {
+        if source.ended
+            && source
+                .tracks
+                .iter()
+                .all(|track| track.lead == 0 && track.samples[0].is_empty())
+        {
+            break;
+        }
+        let mut sec_energy = 0.0f64;
         for (track, signal) in signals.iter_mut().enumerate() {
-            let [left, right] = source.take(Some(track), RATE as usize)?;
-            signal.extend(left.iter().zip(&right).map(|(l, r)| (l + r) / 2.0));
+            let [left, right] = source.take(Some(track), COMPARE_RATE as usize)?;
+            let start = signal.len();
+            signal.extend(left.iter().zip(&right).map(|(l, r)| (l + r) * 0.5));
+            let energy = signal[start..]
+                .iter()
+                .map(|x| f64::from(x * x))
+                .sum::<f64>()
+                / f64::from(COMPARE_RATE);
+            sec_energy = sec_energy.max(energy);
+        }
+        if sec_energy > SILENT {
+            active += 1;
+        }
+        if sec + 1 >= WINDOW && active >= 2 {
+            break;
         }
     }
     Ok(signals)

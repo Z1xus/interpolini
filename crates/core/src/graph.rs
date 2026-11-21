@@ -139,6 +139,8 @@ unsafe extern "C" fn release(holder: *mut c_void, _: *mut u8) {
     drop(unsafe { Box::from_raw(holder.cast::<Frame>()) });
 }
 
+unsafe extern "C" fn noop(_: *mut c_void, _: *mut u8) {}
+
 fn wrap(source: Frame, width: u32, height: u32, format: Pixel) -> frame::Video {
     let mut picture = frame::Video::empty();
     unsafe {
@@ -664,29 +666,77 @@ pub fn thumbs(
     Ok(())
 }
 
-pub fn image(scaler: &Scaler, picture: &frame::Video, width: u32) -> Result<Image> {
+pub fn image_size(picture: &frame::Video, width: u32) -> (u32, u32) {
     let width = (width.min(picture.width()) & !1).max(2);
     let height = ((u64::from(width) * u64::from(picture.height()) / u64::from(picture.width()))
         as u32)
         .max(1);
-    // the scaler writes past the end of a row, and a frame has the space for that
-    let mut scaled = frame::Video::new(Pixel::RGBA, width, height);
-    scaler.run(&mut scaled, picture)?;
+    (width, height)
+}
+
+pub fn image_into(
+    scaler: &Scaler,
+    picture: &frame::Video,
+    width: u32,
+    height: u32,
+    dst: &mut [u8],
+    scratch: Option<&mut Option<frame::Video>>,
+) -> Result<()> {
     let row_bytes = width as usize * 4;
     let total = row_bytes * height as usize;
-    let rgba = if scaled.stride(0) == row_bytes {
-        scaled.data(0)[..total].to_vec()
-    } else {
-        let mut rgba = Vec::with_capacity(total);
-        for row in scaled
-            .data(0)
-            .chunks(scaled.stride(0))
-            .take(height as usize)
-        {
-            rgba.extend_from_slice(&row[..row_bytes]);
+    if dst.len() < total {
+        return Err("image buffer too small".into());
+    }
+    if width.is_multiple_of(16) && (dst.as_ptr() as usize).is_multiple_of(16) {
+        let mut target = frame::Video::empty();
+        unsafe {
+            let raw = &mut *target.as_mut_ptr();
+            raw.format = ffi::AVPixelFormat::from(Pixel::RGBA) as i32;
+            raw.width = width as i32;
+            raw.height = height as i32;
+            raw.data[0] = dst.as_mut_ptr();
+            raw.linesize[0] = row_bytes as i32;
+            raw.buf[0] = ffi::av_buffer_create(
+                dst.as_mut_ptr(),
+                total,
+                Some(noop),
+                std::ptr::null_mut(),
+                0,
+            );
+            if raw.buf[0].is_null() {
+                return Err("not enough memory".into());
+            }
         }
-        rgba
-    };
+        scaler.run(&mut target, picture)?;
+        return Ok(());
+    }
+    let mut owned = None;
+    let slot = scratch.unwrap_or(&mut owned);
+    let reuse = slot.as_ref().is_some_and(|frame| {
+        frame.format() == Pixel::RGBA && frame.width() == width && frame.height() == height
+    });
+    if !reuse {
+        *slot = Some(frame::Video::new(Pixel::RGBA, width, height));
+    }
+    let scaled = slot.as_mut().ok_or("no frame")?;
+    scaler.run(scaled, picture)?;
+    if scaled.stride(0) == row_bytes {
+        dst[..total].copy_from_slice(&scaled.data(0)[..total]);
+    } else {
+        for (out, row) in dst[..total]
+            .chunks_exact_mut(row_bytes)
+            .zip(scaled.data(0).chunks(scaled.stride(0)))
+        {
+            out.copy_from_slice(&row[..row_bytes]);
+        }
+    }
+    Ok(())
+}
+
+pub fn image(scaler: &Scaler, picture: &frame::Video, width: u32) -> Result<Image> {
+    let (width, height) = image_size(picture, width);
+    let mut rgba = vec![0u8; width as usize * height as usize * 4];
+    image_into(scaler, picture, width, height, &mut rgba, None)?;
     Ok(Image {
         width,
         height,

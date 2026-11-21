@@ -300,15 +300,13 @@ fn hit(open: &mut Sources, layer: &Layer, moved: f64) -> bool {
     )
 }
 
-fn compose(
+fn gather(
     open: &mut Sources,
-    canvas: &mut Canvas,
     layers: &[Layer],
     (original, play): (bool, bool),
     moved: f64,
-    width: u32,
     cancel: &Cancel,
-) -> interpolini_core::Result<Image> {
+) -> interpolini_core::Result<Vec<(interpolini_core::Picture, Place, f32)>> {
     let level = |layer: &Layer| layer.fade.level(layer.inside + moved, layer.length) as f32;
     let top = layers
         .iter()
@@ -316,7 +314,6 @@ fn compose(
     let mut pictures = Vec::new();
     for layer in &layers[top.unwrap_or(0)..] {
         let seconds = layer.start + moved * layer.speed;
-        // a full size picture from the cache, also when only a smaller graph is open
         let cached = match play && !original && hit(open, layer, moved) {
             true => open.play(&layer.clip, &layer.config, seconds, cancel),
             false => None,
@@ -332,7 +329,37 @@ fn compose(
             pictures.push((picture?, layer.place, level(layer)));
         }
     }
+    Ok(pictures)
+}
+
+fn compose(
+    open: &mut Sources,
+    canvas: &mut Canvas,
+    layers: &[Layer],
+    (original, play): (bool, bool),
+    moved: f64,
+    width: u32,
+    cancel: &Cancel,
+) -> interpolini_core::Result<Image> {
+    let pictures = gather(open, layers, (original, play), moved, cancel)?;
     canvas.preview(pictures, width, !original)
+}
+
+fn compose_pixels(
+    open: &mut Sources,
+    canvas: &mut Canvas,
+    layers: &[Layer],
+    (original, play): (bool, bool),
+    moved: f64,
+    width: u32,
+    cancel: &Cancel,
+) -> interpolini_core::Result<Pixels> {
+    let pictures = gather(open, layers, (original, play), moved, cancel)?;
+    canvas.preview_into(pictures, width, !original, |width, height, fill| {
+        let mut pixels = Pixels::new(width, height);
+        fill(pixels.make_mut_bytes())?;
+        Ok(pixels)
+    })
 }
 
 fn pair(
@@ -345,7 +372,7 @@ fn pair(
     cancel: &Cancel,
 ) -> interpolini_core::Result<(Pixels, Option<Pixels>)> {
     let original = view == View::Original;
-    let image = pixels(&compose(
+    let image = compose_pixels(
         open,
         canvas,
         layers,
@@ -353,10 +380,10 @@ fn pair(
         moved,
         width,
         cancel,
-    )?);
+    )?;
     let before = match view {
         View::Result => None,
-        View::Both => Some(pixels(&compose(
+        View::Both => Some(compose_pixels(
             open,
             canvas,
             layers,
@@ -364,7 +391,7 @@ fn pair(
             moved,
             width,
             cancel,
-        )?)),
+        )?),
         View::Original => Some(image.clone()),
     };
     Ok((image, before))
@@ -693,7 +720,7 @@ impl Worker {
             return None;
         }
         let (_, _, canvas) = canvas.as_mut()?;
-        let width = width.min(widest(size));
+        let width = (width.min(widest(size)) & !15).max(16);
         let layers = &first.layers;
         if let Some(original) = save {
             let image = compose(
