@@ -4,12 +4,13 @@ use std::sync::{Arc, OnceLock};
 
 use ffmpeg_next::format::{self, Pixel};
 use ffmpeg_next::log::Level;
-use ffmpeg_next::software::scaling;
 use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, ffi, frame, media, picture};
+use rayon::prelude::*;
 
 use crate::Result;
 use crate::audio::{Lane, Mixer, RATE, Source, name};
 use crate::budget;
+use crate::compose::Scaler;
 use crate::config::{self, Codec, Effort, Output};
 use crate::decode::{Meta, absolute, title};
 use crate::munch::{Munch, crush};
@@ -545,6 +546,169 @@ pub enum Plan<'a> {
     Mix(Mixer),
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn pack_nv12_row_avx2(u: &[u8], v: &[u8], uv: &mut [u8]) {
+    use std::arch::x86_64::{
+        _mm256_loadu_si256, _mm256_permute2x128_si256, _mm256_storeu_si256, _mm256_unpackhi_epi8,
+        _mm256_unpacklo_epi8,
+    };
+    let width = u.len();
+    let mut x = 0;
+    while x + 32 <= width {
+        unsafe {
+            let vu = _mm256_loadu_si256(u.as_ptr().add(x).cast());
+            let vv = _mm256_loadu_si256(v.as_ptr().add(x).cast());
+            let lo = _mm256_unpacklo_epi8(vu, vv);
+            let hi = _mm256_unpackhi_epi8(vu, vv);
+            let out0 = _mm256_permute2x128_si256::<0x20>(lo, hi);
+            let out1 = _mm256_permute2x128_si256::<0x31>(lo, hi);
+            _mm256_storeu_si256(uv.as_mut_ptr().add(x * 2).cast(), out0);
+            _mm256_storeu_si256(uv.as_mut_ptr().add(x * 2 + 32).cast(), out1);
+        }
+        x += 32;
+    }
+    for i in x..width {
+        uv[i * 2] = u[i];
+        uv[i * 2 + 1] = v[i];
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn pack_nv12_row_neon(u: &[u8], v: &[u8], uv: &mut [u8]) {
+    use std::arch::aarch64::{uint8x16x2_t, vld1q_u8, vst2q_u8};
+    let width = u.len();
+    let mut x = 0;
+    while x + 16 <= width {
+        unsafe {
+            let vu = vld1q_u8(u.as_ptr().add(x));
+            let vv = vld1q_u8(v.as_ptr().add(x));
+            vst2q_u8(uv.as_mut_ptr().add(x * 2), uint8x16x2_t(vu, vv));
+        }
+        x += 16;
+    }
+    for i in x..width {
+        uv[i * 2] = u[i];
+        uv[i * 2 + 1] = v[i];
+    }
+}
+
+fn pack_nv12_row(u: &[u8], v: &[u8], uv: &mut [u8], #[cfg(target_arch = "x86_64")] avx2: bool) {
+    #[cfg(target_arch = "x86_64")]
+    if avx2 {
+        unsafe { pack_nv12_row_avx2(u, v, uv) };
+        return;
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        pack_nv12_row_neon(u, v, uv);
+        return;
+    }
+    #[allow(unreachable_code)]
+    for ((&u, &v), dst) in u.iter().zip(v).zip(uv.as_chunks_mut::<2>().0) {
+        *dst = [u, v];
+    }
+}
+
+fn pack_nv12(src: &frame::Video, dst: &mut frame::Video) {
+    let (width, height) = ((src.width() as usize) & !1, (src.height() as usize) & !1);
+    let (cw, ch) = (width / 2, height / 2);
+    let (sy, su, sv) = (src.stride(0), src.stride(1), src.stride(2));
+    let (dy, duv) = (dst.stride(0), dst.stride(1));
+    let (src_y, src_u, src_v) = (src.data(0), src.data(1), src.data(2));
+    let raw = unsafe { &*dst.as_ptr() };
+    let (dst_y, dst_uv) = unsafe {
+        (
+            std::slice::from_raw_parts_mut(raw.data[0], dy * height),
+            std::slice::from_raw_parts_mut(raw.data[1], duv * ch),
+        )
+    };
+    #[cfg(target_arch = "x86_64")]
+    let avx2 = std::arch::is_x86_feature_detected!("avx2");
+    if width * height >= 1920 * 1080 {
+        let piece = budget::piece(ch);
+        budget::install(|| {
+            dst_y
+                .par_chunks_mut(dy * 2)
+                .take(ch)
+                .zip(dst_uv.par_chunks_mut(duv).take(ch))
+                .enumerate()
+                .with_min_len(piece)
+                .for_each(|(cy, (y_pair, uv_row))| {
+                    let (y0, y1) = y_pair.split_at_mut(dy);
+                    let row = cy * 2;
+                    y0[..width].copy_from_slice(&src_y[row * sy..][..width]);
+                    y1[..width].copy_from_slice(&src_y[(row + 1) * sy..][..width]);
+                    pack_nv12_row(
+                        &src_u[cy * su..][..cw],
+                        &src_v[cy * sv..][..cw],
+                        &mut uv_row[..cw * 2],
+                        #[cfg(target_arch = "x86_64")]
+                        avx2,
+                    );
+                });
+        });
+    } else {
+        if sy == width && dy == width {
+            dst_y[..width * height].copy_from_slice(&src_y[..width * height]);
+        } else {
+            for row in 0..height {
+                dst_y[row * dy..][..width].copy_from_slice(&src_y[row * sy..][..width]);
+            }
+        }
+        for cy in 0..ch {
+            pack_nv12_row(
+                &src_u[cy * su..][..cw],
+                &src_v[cy * sv..][..cw],
+                &mut dst_uv[cy * duv..][..cw * 2],
+                #[cfg(target_arch = "x86_64")]
+                avx2,
+            );
+        }
+    }
+}
+
+struct FramePool {
+    format: Pixel,
+    width: u32,
+    height: u32,
+    frames: Vec<frame::Video>,
+}
+
+impl FramePool {
+    fn new(format: Pixel, width: u32, height: u32) -> Self {
+        Self {
+            format,
+            width,
+            height,
+            frames: vec![frame::Video::new(format, width, height)],
+        }
+    }
+
+    fn acquire(&mut self) -> frame::Video {
+        if let Some(pos) = self
+            .frames
+            .iter()
+            .position(|f| unsafe { ffi::av_frame_is_writable(f.as_ptr().cast_mut()) != 0 })
+        {
+            self.frames.swap_remove(pos)
+        } else {
+            frame::Video::new(self.format, self.width, self.height)
+        }
+    }
+
+    fn release(&mut self, frame: frame::Video) {
+        if self.frames.len() < 8 {
+            self.frames.push(frame);
+        }
+    }
+}
+
+enum Convert {
+    Nv12(FramePool),
+    Scale(Scaler, FramePool),
+}
+
 pub struct Encoder {
     output: format::context::Output,
     encoder: encoder::video::Encoder,
@@ -552,7 +716,8 @@ pub struct Encoder {
     lanes: Vec<Lane>,
     source: Option<Source>,
     mixer: Option<Mixer>,
-    convert: Option<scaling::Context>,
+    convert: Option<Convert>,
+    meta: Meta,
     packet: Packet,
     base: Rational,
     spare: Option<Spare>,
@@ -565,6 +730,8 @@ pub struct Encoder {
     shown: i64,
     _software: Option<budget::SoftwareEncode>,
 }
+
+unsafe impl Send for Encoder {}
 
 // true for a packet, false when the encoder has nothing more for now
 pub(crate) fn received(result: std::result::Result<(), ffmpeg_next::Error>) -> Result<bool> {
@@ -674,21 +841,19 @@ impl Encoder {
             Pixel::NV12 | Pixel::VAAPI | Pixel::VULKAN => Pixel::NV12,
             format => format,
         };
-        let convert = match target == meta.pixel() {
-            true => None,
-            false => {
-                let (width, height) = (meta.width, meta.height);
-                let flags = scaling::Flags::BILINEAR;
-                Some(scaling::Context::get(
-                    meta.pixel(),
-                    width,
-                    height,
-                    target,
-                    width,
-                    height,
-                    flags,
-                )?)
-            }
+        let convert = if target == meta.pixel() {
+            None
+        } else if target == Pixel::NV12 && meta.pixel() == Pixel::YUV420P {
+            Some(Convert::Nv12(FramePool::new(
+                Pixel::NV12,
+                meta.width,
+                meta.height,
+            )))
+        } else {
+            Some(Convert::Scale(
+                Scaler::new(),
+                FramePool::new(target, meta.width, meta.height),
+            ))
         };
         // nvenc starts again after a flush, and a size target needs one encoder for the whole file
         // the lanes give their pictures to it as they are, so it must take them without a change
@@ -714,6 +879,7 @@ impl Encoder {
             source: None,
             mixer,
             convert,
+            meta: *meta,
             packet: Packet::empty(),
             base,
             spare,
@@ -811,11 +977,31 @@ impl Encoder {
         Ok(())
     }
 
+    fn release(&mut self, frame: frame::Video) {
+        match &mut self.convert {
+            Some(Convert::Nv12(pool) | Convert::Scale(_, pool)) => pool.release(frame),
+            None => {}
+        }
+    }
+
     pub fn write(&mut self, mut picture: frame::Video, n: i32) -> Result<()> {
-        if let Some(scaler) = &mut self.convert {
-            let mut converted = frame::Video::empty();
-            scaler.run(&picture, &mut converted)?;
-            picture = converted;
+        let mut pooled = false;
+        match &mut self.convert {
+            Some(Convert::Nv12(pool)) if picture.format() != Pixel::NV12 => {
+                let mut dst = pool.acquire();
+                pack_nv12(&picture, &mut dst);
+                self.meta.tag(&mut dst);
+                picture = dst;
+                pooled = true;
+            }
+            Some(Convert::Scale(scaler, pool)) => {
+                let mut dst = pool.acquire();
+                self.meta.tag(&mut dst);
+                scaler.run(&mut dst, &picture)?;
+                picture = dst;
+                pooled = true;
+            }
+            _ => {}
         }
         let frames = unsafe { (*self.encoder.as_ptr()).hw_frames_ctx };
         if !frames.is_null() {
@@ -826,17 +1012,27 @@ impl Encoder {
                     code => code,
                 }
             };
+            if pooled {
+                self.release(picture);
+                pooled = false;
+            }
             if code < 0 {
                 return Err(ffmpeg_next::Error::from(code).into());
             }
             picture = surface;
         }
         picture.set_pts(Some(i64::from(n)));
-        if !self.busy && self.spare.is_some() {
-            picture.set_kind(picture::Type::I);
-        }
+        picture.set_kind(if !self.busy && self.spare.is_some() {
+            picture::Type::I
+        } else {
+            picture::Type::None
+        });
         self.busy = true;
-        self.encoder.send_frame(&picture)?;
+        let sent = self.encoder.send_frame(&picture);
+        if pooled {
+            self.release(picture);
+        }
+        sent?;
         self.drain()?;
         self.pump(f64::from(n + 1) * f64::from(self.base))
     }

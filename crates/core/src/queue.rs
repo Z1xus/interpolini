@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
-use ffmpeg_next::format;
+use ffmpeg_next::{Packet, format, frame};
 
 use crate::audio::{BITRATE, Mixer, Sound, keep};
+use crate::budget as resources;
 use crate::compose::{Canvas, Place, Setup, Source};
 use crate::config::{self, Audio, Config, Target};
 use crate::copy::copy;
@@ -334,90 +337,151 @@ fn encode(
     let size = canvas.size();
     let mut sources = BTreeMap::from([(base, first)]);
 
+    enum Encoded {
+        Picture(frame::Video, i32),
+        Packets(Vec<Packet>),
+    }
+
+    let luma = encoded.width as usize * encoded.height as usize;
+    let frame_bytes = luma + 2 * (luma >> (encoded.shift() * 2));
+    let room = (resources::bytes(resources::current()) / 16 / frame_bytes.max(1)).clamp(4, 8);
+    let (tx, rx) = work::channel::<Encoded>(room);
+    let abort = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicI32::new(0));
+    let enc_abort = Arc::clone(&abort);
+    let enc_done = Arc::clone(&done);
+    let enc_cancel = cancel.clone();
+    let writer = work::spawn("encoder", move || -> Result<()> {
+        let mut count = 0;
+        let hold = Cancel::default();
+        while let Some(item) = rx.recv(&hold)? {
+            if enc_abort.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            if enc_cancel.stopped() {
+                break;
+            }
+            match item {
+                Encoded::Packets(packets) => encoder.pass(packets)?,
+                Encoded::Picture(picture, n) => encoder.write(picture, n)?,
+            }
+            count += 1;
+            enc_done.store(count, Ordering::Release);
+        }
+        if enc_abort.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        match count {
+            0 => Err("stopped".into()),
+            _ => encoder.finish(count),
+        }
+    });
+
     let started = Instant::now();
     let mut reported = started;
     let mut written = 0;
-    'parts: for (index, part) in parts.iter().enumerate() {
-        if cancel.stopped() {
-            break;
-        }
-        // a clip stays open until its end, and the gpu is free before the next one opens
-        sources.retain(|clip, _| placed[*clip].at + placed[*clip].length > part.start + 0.001);
-        // a video that fills the canvas hides the clips under it
-        let fills = |clip: &usize| {
-            let size = (size, (probes[*clip].width, probes[*clip].height));
-            !probes[*clip].still && jobs[*clip].1.place.covers(size.0, size.1)
-        };
-        let solid = |clip: &usize| fills(clip) && jobs[*clip].1.fade.none();
-        let shown = &part.clips[part.clips.iter().rposition(solid).unwrap_or(0)..];
-        for clip in shown {
-            if !sources.contains_key(clip) {
-                let source = match open(*clip) {
-                    Err(_) if cancel.stopped() => break 'parts,
-                    source => source?,
-                };
-                sources.insert(*clip, source);
+    let produced: Result<()> = (|| {
+        'parts: for (index, part) in parts.iter().enumerate() {
+            if cancel.stopped() {
+                break;
             }
-        }
-        let last = match index + 1 == parts.len() {
-            true => frames,
-            false => ((part.end * rate).round() as i32).min(frames),
-        };
-        'frames: while written < last && !cancel.stopped() {
-            let made = match sources.get_mut(&base).filter(|_| fused) {
-                // a stopped render still closes its file
-                Some(source) => match source.made(from + written, cancel) {
-                    Err(_) if cancel.stopped() => break 'frames,
-                    made => Some(made?),
-                },
-                None => None,
+            sources.retain(|clip, _| placed[*clip].at + placed[*clip].length > part.start + 0.001);
+            let fills = |clip: &usize| {
+                let size = (size, (probes[*clip].width, probes[*clip].height));
+                !probes[*clip].still && jobs[*clip].1.place.covers(size.0, size.1)
             };
-            match made {
-                Some(Made::Packets(packets)) => encoder.pass(packets)?,
-                Some(Made::Picture(picture)) => encoder.write(picture, written)?,
-                None => {
-                    let time = f64::from(written) / rate;
-                    let mut layers = Vec::new();
-                    let level = |clip: &usize| {
-                        let Placed { at, length, .. } = placed[*clip];
-                        jobs[*clip].1.fade.level(time - at, length)
+            let solid = |clip: &usize| fills(clip) && jobs[*clip].1.fade.none();
+            let shown = &part.clips[part.clips.iter().rposition(solid).unwrap_or(0)..];
+            for clip in shown {
+                if !sources.contains_key(clip) {
+                    let source = match open(*clip) {
+                        Err(_) if cancel.stopped() => break 'parts,
+                        source => source?,
                     };
-                    let top = shown
-                        .iter()
-                        .rposition(|clip| fills(clip) && level(clip) >= 1.0);
-                    for clip in &shown[top.unwrap_or(0)..] {
-                        let job = jobs[*clip].1;
-                        let inside = job.cut.map_or(0.0, |cut| cut.0) + (time - job.at) * job.speed;
-                        if let Some(source) = sources.get_mut(clip) {
-                            let picture = match source.at(inside, cancel) {
-                                Err(_) if cancel.stopped() => break 'frames,
-                                picture => picture?,
-                            };
-                            layers.push((picture, job.place, level(clip) as f32));
-                        }
-                    }
-                    let picture = canvas.compose(layers)?;
-                    let picture = match &upscaler {
-                        Some(upscaler) => upscaler.run(&picture)?,
-                        None => picture,
-                    };
-                    let picture = match &mut muncher {
-                        Some(muncher) => muncher.run(&picture)?,
-                        None => picture,
-                    };
-                    encoder.write(picture, written)?;
+                    sources.insert(*clip, source);
                 }
             }
-            written += 1;
-            if reported.elapsed() >= Duration::from_millis(100) || written == frames {
-                reported = Instant::now();
-                sink(Event::Progress {
-                    frame: written as u32,
-                    frames: frames as u32,
-                    fps: written as f32 / started.elapsed().as_secs_f32(),
-                });
+            let last = match index + 1 == parts.len() {
+                true => frames,
+                false => ((part.end * rate).round() as i32).min(frames),
+            };
+            'frames: while written < last && !cancel.stopped() {
+                let made = match sources.get_mut(&base).filter(|_| fused) {
+                    Some(source) => match source.made(from + written, cancel) {
+                        Err(_) if cancel.stopped() => break 'frames,
+                        made => Some(made?),
+                    },
+                    None => None,
+                };
+                let item = match made {
+                    Some(Made::Packets(packets)) => Encoded::Packets(packets),
+                    Some(Made::Picture(picture)) => Encoded::Picture(picture, written),
+                    None => {
+                        let time = f64::from(written) / rate;
+                        let mut layers = Vec::new();
+                        let level = |clip: &usize| {
+                            let Placed { at, length, .. } = placed[*clip];
+                            jobs[*clip].1.fade.level(time - at, length)
+                        };
+                        let top = shown
+                            .iter()
+                            .rposition(|clip| fills(clip) && level(clip) >= 1.0);
+                        for clip in &shown[top.unwrap_or(0)..] {
+                            let job = jobs[*clip].1;
+                            let inside =
+                                job.cut.map_or(0.0, |cut| cut.0) + (time - job.at) * job.speed;
+                            if let Some(source) = sources.get_mut(clip) {
+                                let picture = match source.at(inside, cancel) {
+                                    Err(_) if cancel.stopped() => break 'frames,
+                                    picture => picture?,
+                                };
+                                layers.push((picture, job.place, level(clip) as f32));
+                            }
+                        }
+                        let picture = canvas.compose(layers)?;
+                        let picture = match &upscaler {
+                            Some(upscaler) => upscaler.run(&picture)?,
+                            None => picture,
+                        };
+                        let picture = match &mut muncher {
+                            Some(muncher) => muncher.run(&picture)?,
+                            None => picture,
+                        };
+                        Encoded::Picture(picture, written)
+                    }
+                };
+                if tx.send_cancel(item, cancel).is_err() {
+                    break 'parts;
+                }
+                written += 1;
+                if reported.elapsed() >= Duration::from_millis(100) {
+                    reported = Instant::now();
+                    let shown = done.load(Ordering::Relaxed).max(1);
+                    sink(Event::Progress {
+                        frame: shown as u32,
+                        frames: frames as u32,
+                        fps: shown as f32 / started.elapsed().as_secs_f32(),
+                    });
+                }
             }
         }
+        Ok(())
+    })();
+    if produced.is_err() {
+        abort.store(true, Ordering::Release);
+    }
+    drop(tx);
+    let finished = writer
+        .join()
+        .unwrap_or_else(|_| Err("the encoder stopped".into()));
+    produced?;
+    let written = done.load(Ordering::Acquire);
+    if written == frames {
+        sink(Event::Progress {
+            frame: written as u32,
+            frames: frames as u32,
+            fps: written as f32 / started.elapsed().as_secs_f32(),
+        });
     }
     for source in sources.values() {
         let lanes = source.graph().and_then(|graph| graph.lanes());
@@ -434,16 +498,12 @@ fn encode(
             )));
         }
     }
-    if written < frames {
+    if written < frames && finished.is_ok() {
         sink(Event::Warning(format!(
             "stopped at frame {written} of {frames}"
         )));
     }
-    // the file is closed in the normal way, so a stopped render still plays
-    match written {
-        0 => Err("stopped".into()),
-        _ => encoder.finish(written),
-    }
+    finished
 }
 
 fn fit(
@@ -531,6 +591,16 @@ pub(crate) fn packs(job: &Job, graph: &Graph, joined: bool, changed: bool) -> bo
 }
 
 pub fn run(jobs: &[Job], timeline: Option<&[Sound]>, setup: &Setup, sink: Sink, cancel: &Cancel) {
+    let _svp = jobs
+        .iter()
+        .any(|job| {
+            !job.copy
+                && (job.config.interpolation.enabled
+                    || job.config.pre.enabled
+                    || job.config.dedup.enabled)
+        })
+        .then(|| crate::svp::Svp::load(&config::app_dir()).ok())
+        .flatten();
     match timeline.filter(|_| !jobs.is_empty()) {
         Some(sounds) => joined(jobs, sounds, setup, sink, cancel),
         None => separate(jobs, setup, sink, cancel),

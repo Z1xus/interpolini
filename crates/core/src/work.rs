@@ -401,6 +401,43 @@ impl<T> Sender<T> {
     }
 }
 
+impl<T: Send + 'static> Sender<T> {
+    pub fn send_cancel(&self, item: T, cancel: &Cancel) -> std::result::Result<(), T> {
+        {
+            let mut line = locked(&self.0.line);
+            if !line.reader || cancel.stopped() {
+                return Err(item);
+            }
+            if line.items.len() < line.room {
+                line.items.push_back(item);
+                self.0.readable.notify_one();
+                return Ok(());
+            }
+        }
+        let lane = Arc::clone(&self.0);
+        let _wake = cancel.wake(move || {
+            let _line = locked(&lane.line);
+            lane.writable.notify_all();
+        });
+        let mut line = locked(&self.0.line);
+        loop {
+            if !line.reader || cancel.stopped() {
+                return Err(item);
+            }
+            if line.items.len() < line.room {
+                line.items.push_back(item);
+                self.0.readable.notify_one();
+                return Ok(());
+            }
+            line = self
+                .0
+                .writable
+                .wait(line)
+                .unwrap_or_else(|p| p.into_inner());
+        }
+    }
+}
+
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
         locked(&self.0.line).closed = true;

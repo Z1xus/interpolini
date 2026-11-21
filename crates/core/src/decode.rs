@@ -8,7 +8,6 @@ use ffmpeg_next::codec::{self, threading};
 use ffmpeg_next::format::{self, Pixel};
 use ffmpeg_next::log::Level;
 use ffmpeg_next::packet::Mut;
-use ffmpeg_next::software::scaling;
 use ffmpeg_next::{Packet, color, ffi, frame, media};
 
 use crate::budget::{self, Class};
@@ -48,6 +47,26 @@ fn matrix(stream: &format::stream::Stream) -> Option<[u8; 36]> {
     };
     let bytes = unsafe { std::slice::from_raw_parts(data.data, data.size) };
     bytes.try_into().ok()
+}
+
+pub struct Scale {
+    raw: *mut ffi::SwsContext,
+    input: (Pixel, u32, u32),
+    output: (Pixel, u32, u32),
+}
+
+unsafe impl Send for Scale {}
+
+impl Scale {
+    pub fn as_mut_ptr(&mut self) -> *mut ffi::SwsContext {
+        self.raw
+    }
+}
+
+impl Drop for Scale {
+    fn drop(&mut self) {
+        unsafe { ffi::sws_free_context(&mut self.raw) };
+    }
 }
 
 impl Meta {
@@ -135,31 +154,68 @@ impl Meta {
         to: Pixel,
         width: u32,
         height: u32,
-    ) -> Result<scaling::Context> {
-        let flags = scaling::Flags::BILINEAR;
-        let mut scaler =
-            scaling::Context::get(from, self.width, self.height, to, width, height, flags)?;
+    ) -> Result<Scale> {
+        let raw = unsafe { ffi::sws_alloc_context() };
+        if raw.is_null() {
+            return Err("not enough memory".into());
+        }
         let standard = if self.bt601() {
             ffi::SWS_CS_ITU601
         } else {
             ffi::SWS_CS_ITU709
         };
         let range = |format| i32::from(rgb(format) || self.full());
-        unsafe {
-            let table = ffi::sws_getCoefficients(standard);
-            // 0 and 1 << 16 are the neutral brightness, contrast and saturation
-            ffi::sws_setColorspaceDetails(
-                scaler.as_mut_ptr(),
-                table,
-                range(from),
-                table,
-                range(to),
-                0,
-                1 << 16,
-                1 << 16,
-            );
+        let code = unsafe {
+            (*raw).threads = budget::own() as i32;
+            (*raw).flags = ffi::SwsFlags::SWS_BILINEAR as u32;
+            let mut code = 0;
+            for (name, value) in [
+                (c"srcw", i64::from(self.width)),
+                (c"srch", i64::from(self.height)),
+                (
+                    c"src_format",
+                    i64::from(ffi::AVPixelFormat::from(from) as i32),
+                ),
+                (c"dstw", i64::from(width)),
+                (c"dsth", i64::from(height)),
+                (
+                    c"dst_format",
+                    i64::from(ffi::AVPixelFormat::from(to) as i32),
+                ),
+            ] {
+                code = ffi::av_opt_set_int(raw.cast(), name.as_ptr(), value, 0);
+                if code < 0 {
+                    break;
+                }
+            }
+            if code >= 0 {
+                code = ffi::sws_init_context(raw, std::ptr::null_mut(), std::ptr::null_mut());
+                if code >= 0 {
+                    let table = ffi::sws_getCoefficients(standard);
+                    ffi::sws_setColorspaceDetails(
+                        raw,
+                        table,
+                        range(from),
+                        table,
+                        range(to),
+                        0,
+                        1 << 16,
+                        1 << 16,
+                    );
+                }
+            }
+            code
+        };
+        if code < 0 {
+            let mut ptr = raw;
+            unsafe { ffi::sws_free_context(&mut ptr) };
+            return Err(ffmpeg_next::Error::from(code).into());
         }
-        Ok(scaler)
+        Ok(Scale {
+            raw,
+            input: (from, self.width, self.height),
+            output: (to, width, height),
+        })
     }
 }
 
@@ -320,7 +376,7 @@ pub struct Decoder {
     path: PathBuf,
     input: format::context::Input,
     decoder: codec::decoder::Video,
-    scaler: Option<scaling::Context>,
+    scaler: Option<Scale>,
     packet: Packet,
     // the picture that shows now and its number, and the one after it when it is decoded
     frame: frame::Video,
@@ -864,17 +920,16 @@ impl Decoder {
         Ok(key)
     }
 
-    fn scaler(&mut self) -> Result<Option<&mut scaling::Context>> {
+    fn scaler(&mut self) -> Result<Option<&mut Scale>> {
         let (format, width, height) =
             (self.frame.format(), self.frame.width(), self.frame.height());
         if native(format, self.meta.yuv444) && self.by == 1 && (width, height) == self.full {
             return Ok(None);
         }
         // a clip can change its size or format midway, and shrink changes the size of the output
-        let fits = |scaler: &scaling::Context| {
-            let (input, output) = (scaler.input(), scaler.output());
-            (input.format, input.width, input.height) == (format, width, height)
-                && (output.width, output.height) == (self.meta.width, self.meta.height)
+        let fits = |scaler: &Scale| {
+            scaler.input == (format, width, height)
+                && (scaler.output.1, scaler.output.2) == (self.meta.width, self.meta.height)
         };
         if !self.scaler.as_ref().is_some_and(fits) {
             let file = Meta {
