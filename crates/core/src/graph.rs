@@ -9,7 +9,7 @@ use crate::blend::Blend;
 use crate::budget;
 use crate::color::Grade;
 use crate::compose::Scaler;
-use crate::config::{self, Blending, Config, Engine, Masking};
+use crate::config::{self, Blending, Config, Engine, Interpolation, Masking};
 use crate::decode::{Ahead, Decoder, Meta};
 use crate::encode::Spare;
 use crate::mask::{self, Gray};
@@ -378,7 +378,10 @@ impl Graph {
             ..
         } = config;
         let mask = config.mask.enabled.then_some(&config.mask);
-        let half = interpolation.half && width % 4 == 0 && height % 4 == 0;
+        let fits = width % 4 == 0 && height % 4 == 0;
+        let half = interpolation.half && fits;
+        // rife hides the svp settings, so its svp passes use the defaults
+        let helper = Interpolation::default();
         let stencil = match gray {
             Some(gray) => {
                 Some(svp.mask(&gray.fit(width, height, config.mask.soft)?, width, height)?)
@@ -401,8 +404,14 @@ impl Graph {
         let mut fused = false;
         if dedup.enabled && dedup.threshold > 0.0 && !skipped {
             let rate = format!("num:{},den:{},abs:true", fps.0, fps.1);
-            let options = |gpu| Options::new(interpolation, &rate, mask, image, limit, gpu, half);
             let last = !interpolate && pre.is_none();
+            // the peel of a later rife pass covers the repeated frames
+            let mask = mask.filter(|mask| last || mask.method != Masking::Peel);
+            let (settings, half) = match interpolation.engine {
+                Engine::Rife => (&helper, fits),
+                Engine::Svp => (interpolation, half),
+            };
+            let options = |gpu| Options::new(settings, &rate, mask, image, limit, gpu, half);
             let made = match blended && last {
                 true => svp.smooth_blend(&input, &options(true), weights, blending),
                 false => Err("no blend".into()),
@@ -433,8 +442,7 @@ impl Graph {
             };
             match (mask, image) {
                 (Some(mask), _) if mask.method == Masking::Peel => {
-                    let options =
-                        |gpu| Options::new(interpolation, "", None, None, None, gpu, half);
+                    let options = |gpu| Options::new(&helper, "", None, None, None, gpu, fits);
                     let layer = svp.layer(input, &options(true), mask.peel);
                     let layer = layer.or_else(|_| svp.layer(input, &options(false), mask.peel))?;
                     let layer = Arc::new(layer);
