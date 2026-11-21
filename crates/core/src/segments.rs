@@ -196,7 +196,7 @@ fn run(lane: Lane) {
                     *decoder = Some(feed(&clip, threads, by)?);
                 }
                 let source = |index| match decoder {
-                    Some((_, decoder)) => decoder.picture(index),
+                    Some((_, decoder)) => decoder.raw(index),
                     None => Err("no decoder".into()),
                 };
                 blend.frame(source, n, size.0, size.1)
@@ -350,9 +350,14 @@ impl Segments {
             // one more lane on the gpu when its pictures fit in memory
             let gpu = lanes > 0 && self.fits > self.most;
             let total = lanes + usize::from(gpu);
-            // the lanes run ahead as far as memory allows, so a faster lane makes more parts
+            // one part per active lane plus one spare keeps every lane fed without hoarding gigabytes
             let least = if self.packing() { total + 1 } else { 1 };
-            let open = (self.room / self.longest.max(1)).max(least);
+            let cap = if self.packing() {
+                usize::MAX
+            } else {
+                total + 1
+            };
+            let open = (self.room / self.longest.max(1)).clamp(least, cap.max(least));
             if self.parts.len() >= if lanes == 0 { 1 } else { open } {
                 break;
             }

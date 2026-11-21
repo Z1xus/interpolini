@@ -387,25 +387,79 @@ fn row(picture: &frame::Video, plane: usize, y: usize) -> &[u8] {
     &picture.data(plane)[y * picture.stride(plane)..]
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn unpack_nv12_row_avx2(src: &[u8], u: &mut [u8], v: &mut [u8]) {
+    use std::arch::x86_64::{
+        _mm_storeu_si128, _mm256_castsi256_si128, _mm256_extracti128_si256, _mm256_loadu_si256,
+        _mm256_permute4x64_epi64, _mm256_setr_epi8, _mm256_shuffle_epi8,
+    };
+    let width = u.len();
+    let shuf = _mm256_setr_epi8(
+        0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15, 0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5,
+        7, 9, 11, 13, 15,
+    );
+    let mut x = 0;
+    while x + 16 <= width {
+        unsafe {
+            let raw = _mm256_loadu_si256(src.as_ptr().add(x * 2).cast());
+            let sep = _mm256_shuffle_epi8(raw, shuf);
+            let ord = _mm256_permute4x64_epi64(sep, 0xD8);
+            _mm_storeu_si128(u.as_mut_ptr().add(x).cast(), _mm256_castsi256_si128(ord));
+            _mm_storeu_si128(
+                v.as_mut_ptr().add(x).cast(),
+                _mm256_extracti128_si256::<1>(ord),
+            );
+        }
+        x += 16;
+    }
+    let (pairs, _) = src[x * 2..width * 2].as_chunks::<2>();
+    for ((pair, u), v) in pairs.iter().zip(&mut u[x..]).zip(&mut v[x..]) {
+        [*u, *v] = *pair;
+    }
+}
+
 fn unpack(picture: &frame::Video, meta: &Meta, planes: [*mut u8; 3], strides: [isize; 3]) {
     let target = |plane: usize, y: usize, width| unsafe {
         std::slice::from_raw_parts_mut(planes[plane].offset(y as isize * strides[plane]), width)
     };
     let (width, height) = (meta.width as usize, meta.height as usize);
-    for y in 0..height {
-        target(0, y, width).copy_from_slice(&row(picture, 0, y)[..width]);
+    if picture.stride(0) == width && strides[0] == width as isize {
+        let len = width * height;
+        unsafe { std::slice::from_raw_parts_mut(planes[0], len) }
+            .copy_from_slice(&picture.data(0)[..len]);
+    } else {
+        for y in 0..height {
+            target(0, y, width).copy_from_slice(&row(picture, 0, y)[..width]);
+        }
     }
     let (width, height) = (width >> meta.shift(), height >> meta.shift());
-    for y in 0..height {
-        if picture.format() == Pixel::NV12 {
-            let (pairs, _) = row(picture, 1, y)[..width * 2].as_chunks::<2>();
+    if picture.format() == Pixel::NV12 {
+        #[cfg(target_arch = "x86_64")]
+        let avx2 = std::arch::is_x86_feature_detected!("avx2");
+        for y in 0..height {
+            let src = &row(picture, 1, y)[..width * 2];
             let (u, v) = (target(1, y, width), target(2, y, width));
+            #[cfg(target_arch = "x86_64")]
+            if avx2 {
+                unsafe { unpack_nv12_row_avx2(src, u, v) };
+                continue;
+            }
+            let (pairs, _) = src.as_chunks::<2>();
             for ((pair, u), v) in pairs.iter().zip(u).zip(v) {
                 [*u, *v] = *pair;
             }
-        } else {
-            for plane in 1..3 {
-                target(plane, y, width).copy_from_slice(&row(picture, plane, y)[..width]);
+        }
+    } else {
+        for plane in 1..3 {
+            if picture.stride(plane) == width && strides[plane] == width as isize {
+                let len = width * height;
+                unsafe { std::slice::from_raw_parts_mut(planes[plane], len) }
+                    .copy_from_slice(&picture.data(plane)[..len]);
+            } else {
+                for y in 0..height {
+                    target(plane, y, width).copy_from_slice(&row(picture, plane, y)[..width]);
+                }
             }
         }
     }
@@ -456,6 +510,10 @@ impl Decoder {
     // the gpu takes the clip only when its first picture equals the one of the cpu
     pub fn gpu(path: &Path) -> Option<Self> {
         let mut cpu = Self::open(path).ok()?;
+        Self::gpu_from(path, &mut cpu)
+    }
+
+    pub fn gpu_from(path: &Path, cpu: &mut Self) -> Option<Self> {
         // these codecs decode bit exact by their spec, and the gpu gives 8 bit 4:2:0 and 4:4:4 as they are
         // at an odd size a driver can abort
         let exact = matches!(
@@ -467,12 +525,15 @@ impl Decoder {
             return None;
         }
         let reference = cpu.picture(0).ok()?;
+        let by = cpu.by;
         ffmpeg_next::log::set_level(Level::Quiet);
         let mut rungs = gpus()
             .into_iter()
             .flat_map(|kind| [(kind, FLIGHT), (kind, 1)]);
         let found = rungs.find_map(|(kind, threads)| {
-            let mut decoder = Self::start(path, |_, _| threads, Some(kind)).ok()?;
+            let mut decoder = Self::start(path, |_, _| threads, Some(kind))
+                .ok()?
+                .shrink(by);
             let picture = decoder.picture(0).ok()?;
             decoder.meta = cpu.meta;
             same(&picture, &reference).then_some(decoder)
@@ -1037,6 +1098,10 @@ impl Ahead {
 
     pub fn picture(&self, n: i32) -> Result<frame::Video> {
         Ok(planar(self.decoded(n)?, &self.meta))
+    }
+
+    pub fn raw(&self, n: i32) -> Result<frame::Video> {
+        self.decoded(n)
     }
 
     fn decoded(&self, n: i32) -> Result<frame::Video> {

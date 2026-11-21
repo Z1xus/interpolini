@@ -310,6 +310,10 @@ impl Map for Rife {
         }
     }
 
+    fn passthrough(&self, n: i32) -> Option<i32> {
+        (!self.made(n)).then(|| self.place(n).0)
+    }
+
     fn render(
         &self,
         n: i32,

@@ -81,6 +81,10 @@ pub trait Reader: Send + Sync + 'static {
 pub trait Map: Send + Sync + 'static {
     fn need(&self, n: i32) -> Vec<i32>;
 
+    fn passthrough(&self, _n: i32) -> Option<i32> {
+        None
+    }
+
     fn render(
         &self,
         n: i32,
@@ -125,12 +129,22 @@ unsafe extern "C" fn read<R: Reader>(
     run(user, |_, reader: &R| reader.read(n, planes, strides))
 }
 
+static MAP_PASS: OnceLock<bool> = OnceLock::new();
+
 unsafe extern "C" fn need<M: Map>(user: Raw, n: i32, frames: *mut i32) -> i32 {
     let cell = unsafe { &*user.cast::<Cell<M>>() };
     let value = cell
         .value
         .read()
         .unwrap_or_else(|poison| poison.into_inner());
+    if let Some((api, map)) = value.as_ref() {
+        let pass = *MAP_PASS
+            .get_or_init(|| unsafe { api._library.get::<Raw>(b"osvp_map_pass\0").is_ok() });
+        if pass && let Some(index) = map.passthrough(n) {
+            unsafe { *frames = index };
+            return -1;
+        }
+    }
     let needed = value
         .as_ref()
         .map(|(_, map)| map.need(n))

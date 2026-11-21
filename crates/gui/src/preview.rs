@@ -155,9 +155,7 @@ pub fn shown(mut config: Config) -> Config {
 
 // the copy is made here, so that the window thread only wraps the pixels
 fn pixels(image: &Image) -> Pixels {
-    let mut pixels = Pixels::new(image.width, image.height);
-    pixels.make_mut_bytes().copy_from_slice(&image.rgba);
-    pixels
+    Pixels::clone_from_slice(&image.rgba, image.width, image.height)
 }
 
 fn strip(peaks: &[f32]) -> Pixels {

@@ -189,7 +189,7 @@ impl Graph {
             }
         };
         let follow = Follow::new(cancel);
-        let decoder = Decoder::chosen(clip, threads)?
+        let mut decoder = Decoder::chosen(clip, threads)?
             .following(&follow)
             .shrink(config.shrink);
         cancel.check()?;
@@ -226,10 +226,10 @@ impl Graph {
             }
             (true, false) => (Feed::Plain(Box::new(Ahead::new(decoder))), false),
             (false, _) => {
-                let decoder = match Decoder::gpu(clip) {
+                let decoder = match Decoder::gpu_from(clip, &mut decoder) {
                     Some(gpu) => {
                         sink(Event::Info("decoding on the gpu".into()));
-                        gpu.following(&follow).shrink(config.shrink)
+                        gpu.following(&follow)
                     }
                     None => decoder,
                 };
@@ -628,10 +628,21 @@ pub fn image(scaler: &Scaler, picture: &frame::Video, width: u32) -> Result<Imag
     // the scaler writes past the end of a row, and a frame has the space for that
     let mut scaled = frame::Video::new(Pixel::RGBA, width, height);
     scaler.run(&mut scaled, picture)?;
-    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
-    for row in scaled.data(0).chunks(scaled.stride(0)) {
-        rgba.extend_from_slice(&row[..width as usize * 4]);
-    }
+    let row_bytes = width as usize * 4;
+    let total = row_bytes * height as usize;
+    let rgba = if scaled.stride(0) == row_bytes {
+        scaled.data(0)[..total].to_vec()
+    } else {
+        let mut rgba = Vec::with_capacity(total);
+        for row in scaled
+            .data(0)
+            .chunks(scaled.stride(0))
+            .take(height as usize)
+        {
+            rgba.extend_from_slice(&row[..row_bytes]);
+        }
+        rgba
+    };
     Ok(Image {
         width,
         height,
