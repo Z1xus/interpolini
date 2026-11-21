@@ -11,7 +11,7 @@ use crate::Result;
 use crate::blend::Blend;
 use crate::budget;
 use crate::config::Blending;
-use crate::decode::{AHEAD, Ahead, Decoder, Meta, PAST, REFERENCES};
+use crate::decode::{Ahead, Decoder, Meta, PAST, REFERENCES, ahead};
 use crate::encode::{GOP, Spare};
 use crate::work::{self, Cancel, Receiver, Sender};
 
@@ -243,7 +243,7 @@ impl Segments {
         // a quarter of the memory: half for the pictures of the lanes, half for the frames that wait
         let budget = budget::bytes(class);
         let useful = budget::useful(height).min(6).min(cores);
-        let held = math.window() + REFERENCES + AHEAD + useful;
+        let held = math.window() + REFERENCES + ahead(picture) + useful;
         // a clip that does not fit still runs with one lane and few frames in flight
         let lanes = (budget / 2 / (held * picture + history)).max(1);
         let most = (cores / useful).clamp(1, lanes);

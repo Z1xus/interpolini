@@ -382,6 +382,7 @@ pub struct Decoder {
     frame: frame::Video,
     at: i32,
     past: VecDeque<(i32, frame::Video)>,
+    staging: Vec<frame::Video>,
     keep: usize,
     picture: usize,
     // the number that the decoder goes to, the gpu gives only the pictures near it
@@ -422,7 +423,10 @@ pub fn yuv444(format: Pixel) -> bool {
 fn native(format: Pixel, full: bool) -> bool {
     match full {
         true => yuv444(format),
-        false => matches!(format, Pixel::YUV420P | Pixel::YUVJ420P | Pixel::NV12),
+        false => matches!(
+            format,
+            Pixel::YUV420P | Pixel::YUVJ420P | Pixel::NV12 | Pixel::P010LE | Pixel::YUV420P10LE
+        ),
     }
 }
 
@@ -475,11 +479,237 @@ unsafe fn unpack_nv12_row_avx2(src: &[u8], u: &mut [u8], v: &mut [u8]) {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+fn unpack_nv12_row_neon(src: &[u8], u: &mut [u8], v: &mut [u8]) {
+    use std::arch::aarch64::{vld2q_u8, vst1q_u8};
+    let width = u.len();
+    let mut x = 0;
+    while x + 16 <= width {
+        unsafe {
+            let pair = vld2q_u8(src.as_ptr().add(x * 2));
+            vst1q_u8(u.as_mut_ptr().add(x), pair.0);
+            vst1q_u8(v.as_mut_ptr().add(x), pair.1);
+        }
+        x += 16;
+    }
+    let (pairs, _) = src[x * 2..width * 2].as_chunks::<2>();
+    for ((pair, u), v) in pairs.iter().zip(&mut u[x..]).zip(&mut v[x..]) {
+        [*u, *v] = *pair;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn unpack_p010_y_row_avx2(src: &[u8], dst: &mut [u8]) {
+    use std::arch::x86_64::{
+        _mm256_loadu_si256, _mm256_packus_epi16, _mm256_permute4x64_epi64, _mm256_srli_epi16,
+        _mm256_storeu_si256,
+    };
+    let width = dst.len();
+    let mut x = 0;
+    while x + 32 <= width {
+        unsafe {
+            let a = _mm256_srli_epi16::<8>(_mm256_loadu_si256(src.as_ptr().add(x * 2).cast()));
+            let b = _mm256_srli_epi16::<8>(_mm256_loadu_si256(src.as_ptr().add(x * 2 + 32).cast()));
+            let packed = _mm256_permute4x64_epi64::<0xD8>(_mm256_packus_epi16(a, b));
+            _mm256_storeu_si256(dst.as_mut_ptr().add(x).cast(), packed);
+        }
+        x += 32;
+    }
+    for (i, dst) in dst[x..].iter_mut().enumerate() {
+        *dst = src[(x + i) * 2 + 1];
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn unpack_p010_y_row_neon(src: &[u8], dst: &mut [u8]) {
+    use std::arch::aarch64::{vld2q_u8, vst1q_u8};
+    let width = dst.len();
+    let mut x = 0;
+    while x + 16 <= width {
+        unsafe {
+            let pair = vld2q_u8(src.as_ptr().add(x * 2));
+            vst1q_u8(dst.as_mut_ptr().add(x), pair.1);
+        }
+        x += 16;
+    }
+    for (i, dst) in dst[x..].iter_mut().enumerate() {
+        *dst = src[(x + i) * 2 + 1];
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn unpack_p010_uv_row_avx2(src: &[u8], u: &mut [u8], v: &mut [u8]) {
+    use std::arch::x86_64::{
+        _mm_storeu_si128, _mm256_castsi256_si128, _mm256_extracti128_si256, _mm256_loadu_si256,
+        _mm256_packus_epi16, _mm256_permute4x64_epi64, _mm256_setr_epi8, _mm256_shuffle_epi8,
+        _mm256_srli_epi16,
+    };
+    let width = u.len();
+    let shuf = _mm256_setr_epi8(
+        0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15, 0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5,
+        7, 9, 11, 13, 15,
+    );
+    let mut x = 0;
+    while x + 16 <= width {
+        unsafe {
+            let a = _mm256_srli_epi16::<8>(_mm256_loadu_si256(src.as_ptr().add(x * 4).cast()));
+            let b = _mm256_srli_epi16::<8>(_mm256_loadu_si256(src.as_ptr().add(x * 4 + 32).cast()));
+            let packed = _mm256_permute4x64_epi64::<0xD8>(_mm256_packus_epi16(a, b));
+            let sep = _mm256_shuffle_epi8(packed, shuf);
+            let ord = _mm256_permute4x64_epi64::<0xD8>(sep);
+            _mm_storeu_si128(u.as_mut_ptr().add(x).cast(), _mm256_castsi256_si128(ord));
+            _mm_storeu_si128(
+                v.as_mut_ptr().add(x).cast(),
+                _mm256_extracti128_si256::<1>(ord),
+            );
+        }
+        x += 16;
+    }
+    for i in x..width {
+        u[i] = src[i * 4 + 1];
+        v[i] = src[i * 4 + 3];
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn unpack_p010_uv_row_neon(src: &[u8], u: &mut [u8], v: &mut [u8]) {
+    use std::arch::aarch64::{vld4q_u8, vst1q_u8};
+    let width = u.len();
+    let mut x = 0;
+    while x + 16 <= width {
+        unsafe {
+            let quad = vld4q_u8(src.as_ptr().add(x * 4));
+            vst1q_u8(u.as_mut_ptr().add(x), quad.1);
+            vst1q_u8(v.as_mut_ptr().add(x), quad.3);
+        }
+        x += 16;
+    }
+    for i in x..width {
+        u[i] = src[i * 4 + 1];
+        v[i] = src[i * 4 + 3];
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn unpack_p10_plane_row_avx2(src: &[u8], dst: &mut [u8]) {
+    use std::arch::x86_64::{
+        _mm256_loadu_si256, _mm256_packus_epi16, _mm256_permute4x64_epi64, _mm256_srli_epi16,
+        _mm256_storeu_si256,
+    };
+    let width = dst.len();
+    let mut x = 0;
+    while x + 32 <= width {
+        unsafe {
+            let a = _mm256_srli_epi16::<2>(_mm256_loadu_si256(src.as_ptr().add(x * 2).cast()));
+            let b = _mm256_srli_epi16::<2>(_mm256_loadu_si256(src.as_ptr().add(x * 2 + 32).cast()));
+            let packed = _mm256_permute4x64_epi64::<0xD8>(_mm256_packus_epi16(a, b));
+            _mm256_storeu_si256(dst.as_mut_ptr().add(x).cast(), packed);
+        }
+        x += 32;
+    }
+    for (i, dst) in dst[x..].iter_mut().enumerate() {
+        let pos = (x + i) * 2;
+        *dst = (u16::from_le_bytes([src[pos], src[pos + 1]]) >> 2).min(255) as u8;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn unpack_p10_plane_row_neon(src: &[u8], dst: &mut [u8]) {
+    use std::arch::aarch64::{
+        vcombine_u8, vld1q_u8, vqshrn_n_u16, vreinterpretq_u16_u8, vst1q_u8,
+    };
+    let width = dst.len();
+    let mut x = 0;
+    while x + 16 <= width {
+        unsafe {
+            let a = vreinterpretq_u16_u8(vld1q_u8(src.as_ptr().add(x * 2)));
+            let b = vreinterpretq_u16_u8(vld1q_u8(src.as_ptr().add(x * 2 + 16)));
+            let packed = vcombine_u8(vqshrn_n_u16::<2>(a), vqshrn_n_u16::<2>(b));
+            vst1q_u8(dst.as_mut_ptr().add(x), packed);
+        }
+        x += 16;
+    }
+    for (i, dst) in dst[x..].iter_mut().enumerate() {
+        let pos = (x + i) * 2;
+        *dst = (u16::from_le_bytes([src[pos], src[pos + 1]]) >> 2).min(255) as u8;
+    }
+}
+
 fn unpack(picture: &frame::Video, meta: &Meta, planes: [*mut u8; 3], strides: [isize; 3]) {
     let target = |plane: usize, y: usize, width| unsafe {
         std::slice::from_raw_parts_mut(planes[plane].offset(y as isize * strides[plane]), width)
     };
     let (width, height) = (meta.width as usize, meta.height as usize);
+    let (cw, ch) = (width >> meta.shift(), height >> meta.shift());
+    #[cfg(target_arch = "x86_64")]
+    let avx2 = std::arch::is_x86_feature_detected!("avx2");
+    if picture.format() == Pixel::P010LE {
+        for y in 0..height {
+            let src = &row(picture, 0, y)[..width * 2];
+            let dst = target(0, y, width);
+            #[cfg(target_arch = "x86_64")]
+            if avx2 {
+                unsafe { unpack_p010_y_row_avx2(src, dst) };
+                continue;
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                unpack_p010_y_row_neon(src, dst);
+                continue;
+            }
+            #[allow(unreachable_code)]
+            for (i, dst) in dst.iter_mut().enumerate() {
+                *dst = src[i * 2 + 1];
+            }
+        }
+        for y in 0..ch {
+            let src = &row(picture, 1, y)[..cw * 4];
+            let (u, v) = (target(1, y, cw), target(2, y, cw));
+            #[cfg(target_arch = "x86_64")]
+            if avx2 {
+                unsafe { unpack_p010_uv_row_avx2(src, u, v) };
+                continue;
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                unpack_p010_uv_row_neon(src, u, v);
+                continue;
+            }
+            #[allow(unreachable_code)]
+            for i in 0..cw {
+                u[i] = src[i * 4 + 1];
+                v[i] = src[i * 4 + 3];
+            }
+        }
+        return;
+    }
+    if picture.format() == Pixel::YUV420P10LE {
+        for (plane, (w, h)) in [(0, (width, height)), (1, (cw, ch)), (2, (cw, ch))] {
+            for y in 0..h {
+                let src = &row(picture, plane, y)[..w * 2];
+                let dst = target(plane, y, w);
+                #[cfg(target_arch = "x86_64")]
+                if avx2 {
+                    unsafe { unpack_p10_plane_row_avx2(src, dst) };
+                    continue;
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    unpack_p10_plane_row_neon(src, dst);
+                    continue;
+                }
+                #[allow(unreachable_code)]
+                for (i, dst) in dst.iter_mut().enumerate() {
+                    let pos = i * 2;
+                    *dst = (u16::from_le_bytes([src[pos], src[pos + 1]]) >> 2).min(255) as u8;
+                }
+            }
+        }
+        return;
+    }
     if picture.stride(0) == width && strides[0] == width as isize {
         let len = width * height;
         unsafe { std::slice::from_raw_parts_mut(planes[0], len) }
@@ -489,32 +719,36 @@ fn unpack(picture: &frame::Video, meta: &Meta, planes: [*mut u8; 3], strides: [i
             target(0, y, width).copy_from_slice(&row(picture, 0, y)[..width]);
         }
     }
-    let (width, height) = (width >> meta.shift(), height >> meta.shift());
     if picture.format() == Pixel::NV12 {
-        #[cfg(target_arch = "x86_64")]
-        let avx2 = std::arch::is_x86_feature_detected!("avx2");
-        for y in 0..height {
-            let src = &row(picture, 1, y)[..width * 2];
-            let (u, v) = (target(1, y, width), target(2, y, width));
+        for y in 0..ch {
+            let src = &row(picture, 1, y)[..cw * 2];
+            let (u, v) = (target(1, y, cw), target(2, y, cw));
             #[cfg(target_arch = "x86_64")]
             if avx2 {
                 unsafe { unpack_nv12_row_avx2(src, u, v) };
                 continue;
             }
+            #[cfg(target_arch = "aarch64")]
+            {
+                unpack_nv12_row_neon(src, u, v);
+                continue;
+            }
+            #[allow(unreachable_code)]
             let (pairs, _) = src.as_chunks::<2>();
+            #[allow(unreachable_code)]
             for ((pair, u), v) in pairs.iter().zip(u).zip(v) {
                 [*u, *v] = *pair;
             }
         }
     } else {
         for plane in 1..3 {
-            if picture.stride(plane) == width && strides[plane] == width as isize {
-                let len = width * height;
+            if picture.stride(plane) == cw && strides[plane] == cw as isize {
+                let len = cw * ch;
                 unsafe { std::slice::from_raw_parts_mut(planes[plane], len) }
                     .copy_from_slice(&picture.data(plane)[..len]);
             } else {
-                for y in 0..height {
-                    target(plane, y, width).copy_from_slice(&row(picture, plane, y)[..width]);
+                for y in 0..ch {
+                    target(plane, y, cw).copy_from_slice(&row(picture, plane, y)[..cw]);
                 }
             }
         }
@@ -522,7 +756,10 @@ fn unpack(picture: &frame::Video, meta: &Meta, planes: [*mut u8; 3], strides: [i
 }
 
 fn planar(picture: frame::Video, meta: &Meta) -> frame::Video {
-    if picture.format() != Pixel::NV12 {
+    if !matches!(
+        picture.format(),
+        Pixel::NV12 | Pixel::P010LE | Pixel::YUV420P10LE
+    ) {
         return picture;
     }
     let planar = frame::Video::new(meta.pixel(), meta.width, meta.height);
@@ -748,7 +985,8 @@ impl Decoder {
         let picture = picture.unwrap_or(wide.max(1) as usize * high.max(1) as usize * 3);
         let keep = match budget::current() {
             Class::Interactive => (HISTORY / picture).clamp(PAST, 64),
-            _ => PAST,
+            Class::Render => 2,
+            Class::Background => PAST,
         };
         Ok(Self {
             path: path.to_owned(),
@@ -759,6 +997,7 @@ impl Decoder {
             frame: frame::Video::empty(),
             at: -1,
             past: VecDeque::new(),
+            staging: Vec::new(),
             keep,
             picture,
             wanted: i32::MIN,
@@ -813,7 +1052,7 @@ impl Decoder {
                         ticks.map(|ticks| (ticks as f64 * self.frames_per_tick).round() as i32);
                     let timed = timed.unwrap_or(self.at + 1);
                     if self.gpu && timed.saturating_add(self.keep as i32) >= self.wanted {
-                        download(&mut self.ahead)?;
+                        download(&mut self.ahead, &mut self.staging)?;
                     }
                     if unsafe { (*self.ahead.as_ptr()).decode_error_flags } != 0 {
                         self.damaged(timed);
@@ -896,7 +1135,10 @@ impl Decoder {
         self.pending = false;
         self.lost = true;
         self.at = -1;
-        self.past.clear();
+        let limit = ahead(self.picture) + self.keep + 4;
+        for (_, old) in self.past.drain(..) {
+            recycle(&mut self.staging, old, self.gpu, limit);
+        }
         self.after = None;
         Ok(())
     }
@@ -971,18 +1213,61 @@ fn hardware(picture: &frame::Video) -> bool {
     !unsafe { (*picture.as_ptr()).hw_frames_ctx.is_null() }
 }
 
-fn download(picture: &mut frame::Video) -> Result<()> {
+fn recycle(staging: &mut Vec<frame::Video>, frame: frame::Video, gpu: bool, limit: usize) {
+    if gpu && !hardware(&frame) && frame.width() > 0 && staging.len() < limit {
+        staging.push(frame);
+    }
+}
+
+fn clear_side_data(frame: &mut frame::Video) {
+    unsafe {
+        let raw = frame.as_mut_ptr();
+        loop {
+            if (*raw).nb_side_data <= 0 {
+                break;
+            }
+            let kind = (**(*raw).side_data).type_;
+            ffi::av_frame_remove_side_data(raw, kind);
+        }
+    }
+}
+
+fn download(picture: &mut frame::Video, staging: &mut Vec<frame::Video>) -> Result<()> {
     if !hardware(picture) {
         return Err("the gpu does not decode this clip".into());
     }
-    let mut copy = frame::Video::empty();
-    let code = unsafe {
+    let (w, h) = (picture.width(), picture.height());
+    let mut copy = staging
+        .iter()
+        .position(|f| {
+            !hardware(f)
+                && f.width() == w
+                && f.height() == h
+                && unsafe { ffi::av_frame_is_writable(f.as_ptr().cast_mut()) != 0 }
+        })
+        .map(|pos| staging.swap_remove(pos))
+        .unwrap_or_else(frame::Video::empty);
+    let reused = copy.width() > 0;
+    if reused {
+        clear_side_data(&mut copy);
+    }
+    let mut code = unsafe {
         let (to, from) = (copy.as_mut_ptr(), picture.as_ptr());
         match ffi::av_hwframe_transfer_data(to, from, 0) {
             0 => ffi::av_frame_copy_props(to, from),
             code => code,
         }
     };
+    if code < 0 && reused {
+        copy = frame::Video::empty();
+        code = unsafe {
+            let (to, from) = (copy.as_mut_ptr(), picture.as_ptr());
+            match ffi::av_hwframe_transfer_data(to, from, 0) {
+                0 => ffi::av_frame_copy_props(to, from),
+                code => code,
+            }
+        };
+    }
     if code < 0 {
         return Err(ffmpeg_next::Error::from(code).into());
     }
@@ -1030,13 +1315,20 @@ impl Decoder {
                 Some(number) if number <= n || self.at < 0 => {
                     std::mem::swap(&mut self.frame, &mut self.ahead);
                     let last = std::mem::replace(&mut self.ahead, frame::Video::empty());
-                    // a gap in the history gives wrong pictures
+                    let limit = ahead(self.picture) + self.keep + 4;
                     match self.at >= 0 && !hardware(&last) {
                         true => self.past.push_back((self.at, last)),
-                        false => self.past.clear(),
+                        false => {
+                            recycle(&mut self.staging, last, self.gpu, limit);
+                            for (_, old) in self.past.drain(..) {
+                                recycle(&mut self.staging, old, self.gpu, limit);
+                            }
+                        }
                     }
-                    if self.past.len() > self.keep {
-                        self.past.pop_front();
+                    if self.past.len() > self.keep
+                        && let Some((_, old)) = self.past.pop_front()
+                    {
+                        recycle(&mut self.staging, old, self.gpu, limit);
                     }
                     self.at = number;
                     self.after = None;
@@ -1049,7 +1341,7 @@ impl Decoder {
             return Err(Error("the clip has no frames".into()));
         }
         if hardware(&self.frame) {
-            download(&mut self.frame)?;
+            download(&mut self.frame, &mut self.staging)?;
         }
         Ok(None)
     }
@@ -1089,7 +1381,10 @@ impl Decoder {
     }
 }
 
-pub(crate) const AHEAD: usize = 8;
+pub(crate) fn ahead(picture: usize) -> usize {
+    let limit = budget::bytes(budget::current()) / 16;
+    (limit / picture.max(1)).clamp(8, 24)
+}
 
 type Link = (mpsc::Sender<i32>, mpsc::Receiver<Result<frame::Video>>);
 
@@ -1103,13 +1398,14 @@ pub struct Ahead {
 impl Ahead {
     pub fn new(mut decoder: Decoder) -> Self {
         let meta = decoder.meta();
+        let depth = ahead(decoder.picture);
         let (wanted, asked) = mpsc::channel::<i32>();
         let (ready, pictures) = mpsc::channel();
         let thread = work::spawn("decoder", move || {
             let mut made = VecDeque::new();
             let (mut next, mut last, mut order) = (0, -1, false);
             loop {
-                let asked = match order && made.len() < AHEAD && next < meta.frames {
+                let asked = match order && made.len() < depth && next < meta.frames {
                     true => asked.try_recv(),
                     false => asked.recv().map_err(|_| TryRecvError::Disconnected),
                 };
@@ -1156,7 +1452,11 @@ impl Ahead {
     }
 
     pub fn raw(&self, n: i32) -> Result<frame::Video> {
-        self.decoded(n)
+        let picture = self.decoded(n)?;
+        Ok(match picture.format() {
+            Pixel::P010LE | Pixel::YUV420P10LE => planar(picture, &self.meta),
+            _ => picture,
+        })
     }
 
     fn decoded(&self, n: i32) -> Result<frame::Video> {
