@@ -105,6 +105,31 @@ jobs:
             find "$folder" -type f -print0 | sort -z | xargs -0 zip -X -q "${folder%/}.zip"
           done
           sha256sum ./*.zip ./*.exe > SHA256SUMS
+      - name: Scan
+        env:
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+        run: |
+          printf '\n### Virus scans\n\n' > scans.md
+          badge=https://www.shieldcn.dev/badge
+          query="variant=secondary&amp;size=sm&amp;logo=virustotal&amp;mode"
+          while read -r name label; do
+            file=dist/interpolini-$name
+            sum=$(sha256sum "$file" | cut -d' ' -f1)
+            # files over 32 MB need a one-time upload url
+            url=$(curl -fsS -H "x-apikey: $VT_API_KEY" https://www.virustotal.com/api/v3/files/upload_url | jq -r .data)
+            sleep 16
+            curl -fsS -H "x-apikey: $VT_API_KEY" -F "file=@$file" "$url" > /dev/null
+            printf '<a href="https://www.virustotal.com/gui/file/%s"><picture><source media="(prefers-color-scheme: dark)" srcset="%s/%s.svg?%s=dark"><img alt="%s" src="%s/%s.svg?%s=light"></picture></a> ' \
+              "$sum" "$badge" "$label" "$query" "$name" "$badge" "$label" "$query" >> scans.md
+            # the free api allows 4 requests per minute
+            sleep 16
+          done <<'EOF'
+          windows-x86_64.zip Windows
+          windows-x86_64-setup.exe Windows%20installer
+          macos-arm64.zip macOS%20%28Apple%20Silicon%29
+          macos-x86_64.zip macOS%20%28Intel%29
+          linux-x86_64.zip Linux
+          EOF
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -112,8 +137,9 @@ jobs:
         run: |
           awk -v version="## ${GITHUB_REF_NAME#v}" '$0 == version {on = 1; next} /^## / {on = 0} on' \
             source/CHANGELOG.md > notes.md
-          notes=(--generate-notes)
-          [[ -n "$(tr -d '[:space:]' < notes.md)" ]] && notes=(--notes-file notes.md)
+          notes=(--notes-file notes.md)
+          [[ -z "$(tr -d '[:space:]' < notes.md)" ]] && notes+=(--generate-notes)
+          cat scans.md >> notes.md
           gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.exe dist/SHA256SUMS source/CHANGELOG.md \
             --verify-tag --title "$GITHUB_REF_NAME" "${notes[@]}"
   mirror:
