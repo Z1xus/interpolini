@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.34
+- Faster: RIFE with peel mask
+- Fixed: Preview freeze on mask changes
+- Fixed: Maximized window at startup
+
 ## 0.1.33
 - New: Preview cache, marked on the timeline
 - New: Last crash in debug info
