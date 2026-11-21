@@ -935,6 +935,14 @@ impl Decoder {
         Self::gpu_from(path, &mut cpu)
     }
 
+    pub(crate) fn fast_cpu(&self, fps: f64, interpolate: bool) -> bool {
+        self.decoder.id() == codec::Id::H264
+            && self.meta.width <= 1920
+            && self.meta.height <= 1080
+            && budget::machine().cores >= 8
+            && (fps >= 120.0 || !interpolate)
+    }
+
     pub fn gpu_from(path: &Path, cpu: &mut Self) -> Option<Self> {
         // these codecs decode bit exact by their spec, and the gpu gives 8 bit 4:2:0 and 4:4:4 as they are
         // at an odd size a driver can abort

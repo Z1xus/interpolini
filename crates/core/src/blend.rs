@@ -1,5 +1,7 @@
+use std::collections::VecDeque;
 use std::sync::Mutex;
 
+use ffmpeg_next::ffi;
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::frame;
 use rayon::prelude::*;
@@ -15,6 +17,9 @@ const INEXACT: u32 = 13;
 const BLOCK_WINDOW: usize = 12;
 const BLOCK_FRAMES: usize = 8;
 const TILE: usize = 256;
+
+#[repr(C, align(32))]
+struct AccU16([u16; TILE]);
 
 #[repr(C, align(32))]
 struct AccU32([u32; TILE]);
@@ -979,13 +984,474 @@ fn blend_mixed_uv_row(out_u: &mut [u8], out_v: &mut [u8], lines: &[MixedLine<'_>
     }
 }
 
+fn blend_plane_row_equal_scalar(out: &mut [u8], lines: &[(&[u8], usize, u32)], y: usize) {
+    let n = lines.len() as u32;
+    let half = n / 2;
+    let recip = (1u32 << 24).div_ceil(n);
+    for (col, sample) in out.iter_mut().enumerate() {
+        let mut sum = half;
+        for &(data, stride, _) in lines {
+            sum += u32::from(data[y * stride + col]);
+        }
+        *sample = ((sum * recip) >> 24).min(255) as u8;
+    }
+}
+
+fn blend_nv12_uv_row_equal_scalar(
+    out_u: &mut [u8],
+    out_v: &mut [u8],
+    lines: &[(&[u8], usize, u32)],
+    y: usize,
+) {
+    let n = lines.len() as u32;
+    let half = n / 2;
+    let recip = (1u32 << 24).div_ceil(n);
+    for col in 0..out_u.len() {
+        let mut su = half;
+        let mut sv = half;
+        for &(data, stride, _) in lines {
+            let at = y * stride + col * 2;
+            su += u32::from(data[at]);
+            sv += u32::from(data[at + 1]);
+        }
+        out_u[col] = ((su * recip) >> 24).min(255) as u8;
+        out_v[col] = ((sv * recip) >> 24).min(255) as u8;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn resolve_u16_32_avx2(
+    s0: std::arch::x86_64::__m256i,
+    s1: std::arch::x86_64::__m256i,
+    ok16: bool,
+    vrecip16: std::arch::x86_64::__m256i,
+    vrecip24: std::arch::x86_64::__m256i,
+) -> std::arch::x86_64::__m256i {
+    use std::arch::x86_64::{
+        _mm256_castsi256_si128, _mm256_cvtepu16_epi32, _mm256_extracti128_si256,
+        _mm256_mulhi_epu16, _mm256_mullo_epi32, _mm256_packus_epi16, _mm256_packus_epi32,
+        _mm256_permute4x64_epi64, _mm256_srli_epi32,
+    };
+    let (r0, r1) = if ok16 {
+        (
+            _mm256_mulhi_epu16(s0, vrecip16),
+            _mm256_mulhi_epu16(s1, vrecip16),
+        )
+    } else {
+        let q0 = _mm256_srli_epi32::<24>(_mm256_mullo_epi32(
+            _mm256_cvtepu16_epi32(_mm256_castsi256_si128(s0)),
+            vrecip24,
+        ));
+        let q1 = _mm256_srli_epi32::<24>(_mm256_mullo_epi32(
+            _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(s0)),
+            vrecip24,
+        ));
+        let q2 = _mm256_srli_epi32::<24>(_mm256_mullo_epi32(
+            _mm256_cvtepu16_epi32(_mm256_castsi256_si128(s1)),
+            vrecip24,
+        ));
+        let q3 = _mm256_srli_epi32::<24>(_mm256_mullo_epi32(
+            _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(s1)),
+            vrecip24,
+        ));
+        (
+            _mm256_permute4x64_epi64::<0xD8>(_mm256_packus_epi32(q0, q1)),
+            _mm256_permute4x64_epi64::<0xD8>(_mm256_packus_epi32(q2, q3)),
+        )
+    };
+    _mm256_permute4x64_epi64::<0xD8>(_mm256_packus_epi16(r0, r1))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn blend_plane_row_equal_avx2(out: &mut [u8], lines: &[(&[u8], usize, u32)], y: usize) {
+    use std::arch::x86_64::{
+        _mm_loadu_si128, _mm256_add_epi16, _mm256_cvtepu8_epi16, _mm256_set1_epi16,
+        _mm256_set1_epi32, _mm256_storeu_si256,
+    };
+    let width = out.len();
+    let n = lines.len() as u32;
+    let half = (n / 2) as u16;
+    let ok16 = n <= 16;
+    let recip16 = ((1u32 << 16).div_ceil(n)) as u16;
+    let recip24 = (1u32 << 24).div_ceil(n);
+    let vhalf = _mm256_set1_epi16(half as i16);
+    let vrecip16 = _mm256_set1_epi16(recip16 as i16);
+    let vrecip24 = _mm256_set1_epi32(recip24 as i32);
+    let mut x = 0;
+    while x + 32 <= width {
+        let mut s0 = vhalf;
+        let mut s1 = vhalf;
+        for &(data, stride, _) in lines {
+            unsafe {
+                let p = data.as_ptr().add(y * stride + x);
+                s0 = _mm256_add_epi16(s0, _mm256_cvtepu8_epi16(_mm_loadu_si128(p.cast())));
+                s1 = _mm256_add_epi16(s1, _mm256_cvtepu8_epi16(_mm_loadu_si128(p.add(16).cast())));
+            }
+        }
+        let packed = unsafe { resolve_u16_32_avx2(s0, s1, ok16, vrecip16, vrecip24) };
+        unsafe { _mm256_storeu_si256(out.as_mut_ptr().add(x).cast(), packed) };
+        x += 32;
+    }
+    for (dx, sample) in out[x..].iter_mut().enumerate() {
+        let col = x + dx;
+        let mut sum = u32::from(half);
+        for &(data, stride, _) in lines {
+            sum += u32::from(data[y * stride + col]);
+        }
+        *sample = ((sum * recip24) >> 24).min(255) as u8;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn blend_plane_row_equal_blocked_avx2(
+    out: &mut [u8],
+    lines: &[(&[u8], usize, u32)],
+    y: usize,
+) {
+    use std::arch::x86_64::{
+        _mm_loadu_si128, _mm256_add_epi16, _mm256_cvtepu8_epi16, _mm256_load_si256,
+        _mm256_set1_epi16, _mm256_set1_epi32, _mm256_store_si256, _mm256_storeu_si256,
+    };
+    let width = out.len();
+    let n = lines.len() as u32;
+    let half = (n / 2) as u16;
+    let ok16 = n <= 16;
+    let recip16 = ((1u32 << 16).div_ceil(n)) as u16;
+    let recip24 = (1u32 << 24).div_ceil(n);
+    let vrecip16 = _mm256_set1_epi16(recip16 as i16);
+    let vrecip24 = _mm256_set1_epi32(recip24 as i32);
+    let mut acc = AccU16([0; TILE]);
+    let mut x0 = 0;
+    while x0 < width {
+        let len = (width - x0).min(TILE);
+        let vec_len = len & !31;
+        acc.0[..len].fill(half);
+        for chunk in lines.chunks(BLOCK_FRAMES) {
+            let mut x = 0;
+            while x < vec_len {
+                unsafe {
+                    let ptr = acc.0.as_mut_ptr().add(x).cast();
+                    let mut s0 = _mm256_load_si256(ptr);
+                    let mut s1 = _mm256_load_si256(ptr.add(1));
+                    for &(data, stride, _) in chunk {
+                        let p = data.as_ptr().add(y * stride + x0 + x);
+                        s0 = _mm256_add_epi16(s0, _mm256_cvtepu8_epi16(_mm_loadu_si128(p.cast())));
+                        s1 = _mm256_add_epi16(
+                            s1,
+                            _mm256_cvtepu8_epi16(_mm_loadu_si128(p.add(16).cast())),
+                        );
+                    }
+                    _mm256_store_si256(ptr, s0);
+                    _mm256_store_si256(ptr.add(1), s1);
+                }
+                x += 32;
+            }
+            for dx in vec_len..len {
+                let col = x0 + dx;
+                let mut sum = acc.0[dx];
+                for &(data, stride, _) in chunk {
+                    sum += u16::from(data[y * stride + col]);
+                }
+                acc.0[dx] = sum;
+            }
+        }
+        let mut x = 0;
+        while x < vec_len {
+            unsafe {
+                let ptr = acc.0.as_ptr().add(x).cast();
+                let packed = resolve_u16_32_avx2(
+                    _mm256_load_si256(ptr),
+                    _mm256_load_si256(ptr.add(1)),
+                    ok16,
+                    vrecip16,
+                    vrecip24,
+                );
+                _mm256_storeu_si256(out.as_mut_ptr().add(x0 + x).cast(), packed);
+            }
+            x += 32;
+        }
+        for dx in vec_len..len {
+            out[x0 + dx] = ((u32::from(acc.0[dx]) * recip24) >> 24).min(255) as u8;
+        }
+        x0 += len;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn blend_nv12_uv_row_equal_avx2(
+    out_u: &mut [u8],
+    out_v: &mut [u8],
+    lines: &[(&[u8], usize, u32)],
+    y: usize,
+) {
+    use std::arch::x86_64::{
+        _mm_loadu_si128, _mm_storeu_si128, _mm256_add_epi16, _mm256_castsi256_si128,
+        _mm256_cvtepu8_epi16, _mm256_extracti128_si256, _mm256_load_si256,
+        _mm256_permute4x64_epi64, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_setr_epi8,
+        _mm256_shuffle_epi8, _mm256_store_si256,
+    };
+    let width = out_u.len();
+    let n = lines.len() as u32;
+    let half = (n / 2) as u16;
+    let ok16 = n <= 16;
+    let recip16 = ((1u32 << 16).div_ceil(n)) as u16;
+    let recip24 = (1u32 << 24).div_ceil(n);
+    let vhalf = _mm256_set1_epi16(half as i16);
+    let vrecip16 = _mm256_set1_epi16(recip16 as i16);
+    let vrecip24 = _mm256_set1_epi32(recip24 as i32);
+    let shuf = _mm256_setr_epi8(
+        0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15, 0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5,
+        7, 9, 11, 13, 15,
+    );
+    if lines.len() >= BLOCK_WINDOW {
+        let mut acc = AccU16([0; TILE]);
+        let tile_pairs = TILE / 2;
+        let mut x0 = 0;
+        while x0 < width {
+            let pairs = (width - x0).min(tile_pairs);
+            let bytes = pairs * 2;
+            let vec_bytes = bytes & !31;
+            acc.0[..bytes].fill(half);
+            for chunk in lines.chunks(BLOCK_FRAMES) {
+                let mut b = 0;
+                while b < vec_bytes {
+                    unsafe {
+                        let ptr = acc.0.as_mut_ptr().add(b).cast();
+                        let mut s0 = _mm256_load_si256(ptr);
+                        let mut s1 = _mm256_load_si256(ptr.add(1));
+                        for &(data, stride, _) in chunk {
+                            let p = data.as_ptr().add(y * stride + x0 * 2 + b);
+                            s0 = _mm256_add_epi16(
+                                s0,
+                                _mm256_cvtepu8_epi16(_mm_loadu_si128(p.cast())),
+                            );
+                            s1 = _mm256_add_epi16(
+                                s1,
+                                _mm256_cvtepu8_epi16(_mm_loadu_si128(p.add(16).cast())),
+                            );
+                        }
+                        _mm256_store_si256(ptr, s0);
+                        _mm256_store_si256(ptr.add(1), s1);
+                    }
+                    b += 32;
+                }
+                for db in vec_bytes..bytes {
+                    let mut sum = acc.0[db];
+                    for &(data, stride, _) in chunk {
+                        sum += u16::from(data[y * stride + x0 * 2 + db]);
+                    }
+                    acc.0[db] = sum;
+                }
+            }
+            let mut b = 0;
+            while b < vec_bytes {
+                unsafe {
+                    let ptr = acc.0.as_ptr().add(b).cast();
+                    let packed = resolve_u16_32_avx2(
+                        _mm256_load_si256(ptr),
+                        _mm256_load_si256(ptr.add(1)),
+                        ok16,
+                        vrecip16,
+                        vrecip24,
+                    );
+                    let ord = _mm256_permute4x64_epi64::<0xD8>(_mm256_shuffle_epi8(packed, shuf));
+                    let col = x0 + b / 2;
+                    _mm_storeu_si128(
+                        out_u.as_mut_ptr().add(col).cast(),
+                        _mm256_castsi256_si128(ord),
+                    );
+                    _mm_storeu_si128(
+                        out_v.as_mut_ptr().add(col).cast(),
+                        _mm256_extracti128_si256::<1>(ord),
+                    );
+                }
+                b += 32;
+            }
+            for col in x0 + vec_bytes / 2..x0 + pairs {
+                let db = (col - x0) * 2;
+                out_u[col] = ((u32::from(acc.0[db]) * recip24) >> 24).min(255) as u8;
+                out_v[col] = ((u32::from(acc.0[db + 1]) * recip24) >> 24).min(255) as u8;
+            }
+            x0 += pairs;
+        }
+        return;
+    }
+    let mut x = 0;
+    while x + 16 <= width {
+        let mut s0 = vhalf;
+        let mut s1 = vhalf;
+        for &(data, stride, _) in lines {
+            unsafe {
+                let p = data.as_ptr().add(y * stride + x * 2);
+                s0 = _mm256_add_epi16(s0, _mm256_cvtepu8_epi16(_mm_loadu_si128(p.cast())));
+                s1 = _mm256_add_epi16(s1, _mm256_cvtepu8_epi16(_mm_loadu_si128(p.add(16).cast())));
+            }
+        }
+        unsafe {
+            let packed = resolve_u16_32_avx2(s0, s1, ok16, vrecip16, vrecip24);
+            let ord = _mm256_permute4x64_epi64::<0xD8>(_mm256_shuffle_epi8(packed, shuf));
+            _mm_storeu_si128(out_u.as_mut_ptr().add(x).cast(), _mm256_castsi256_si128(ord));
+            _mm_storeu_si128(
+                out_v.as_mut_ptr().add(x).cast(),
+                _mm256_extracti128_si256::<1>(ord),
+            );
+        }
+        x += 16;
+    }
+    for col in x..width {
+        let mut su = u32::from(half);
+        let mut sv = u32::from(half);
+        for &(data, stride, _) in lines {
+            let at = y * stride + col * 2;
+            su += u32::from(data[at]);
+            sv += u32::from(data[at + 1]);
+        }
+        out_u[col] = ((su * recip24) >> 24).min(255) as u8;
+        out_v[col] = ((sv * recip24) >> 24).min(255) as u8;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn resolve_u16_16_neon(
+    s0: std::arch::aarch64::uint16x8_t,
+    s1: std::arch::aarch64::uint16x8_t,
+    vrecip: std::arch::aarch64::uint32x4_t,
+) -> std::arch::aarch64::uint8x16_t {
+    use std::arch::aarch64::{
+        vcombine_u8, vcombine_u16, vget_low_u16, vmovl_high_u16, vmovl_u16, vmulq_u32, vqmovn_u16,
+        vqshrn_n_u32,
+    };
+    unsafe {
+        let q0 = vqshrn_n_u32::<24>(vmulq_u32(vmovl_u16(vget_low_u16(s0)), vrecip));
+        let q1 = vqshrn_n_u32::<24>(vmulq_u32(vmovl_high_u16(s0), vrecip));
+        let q2 = vqshrn_n_u32::<24>(vmulq_u32(vmovl_u16(vget_low_u16(s1)), vrecip));
+        let q3 = vqshrn_n_u32::<24>(vmulq_u32(vmovl_high_u16(s1), vrecip));
+        vcombine_u8(vqmovn_u16(vcombine_u16(q0, q1)), vqmovn_u16(vcombine_u16(q2, q3)))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn blend_plane_row_equal_neon(out: &mut [u8], lines: &[(&[u8], usize, u32)], y: usize) {
+    use std::arch::aarch64::{
+        vaddw_high_u8, vaddw_u8, vdupq_n_u16, vdupq_n_u32, vget_low_u8, vld1q_u8, vst1q_u8,
+    };
+    let width = out.len();
+    let n = lines.len() as u32;
+    let half = (n / 2) as u16;
+    let recip = (1u32 << 24).div_ceil(n);
+    let vhalf = unsafe { vdupq_n_u16(half) };
+    let vrecip = unsafe { vdupq_n_u32(recip) };
+    let mut x = 0;
+    while x + 16 <= width {
+        let mut s0 = vhalf;
+        let mut s1 = vhalf;
+        for &(data, stride, _) in lines {
+            unsafe {
+                let px = vld1q_u8(data.as_ptr().add(y * stride + x));
+                s0 = vaddw_u8(s0, vget_low_u8(px));
+                s1 = vaddw_high_u8(s1, px);
+            }
+        }
+        unsafe { vst1q_u8(out.as_mut_ptr().add(x), resolve_u16_16_neon(s0, s1, vrecip)) };
+        x += 16;
+    }
+    for (dx, sample) in out[x..].iter_mut().enumerate() {
+        let col = x + dx;
+        let mut sum = u32::from(half);
+        for &(data, stride, _) in lines {
+            sum += u32::from(data[y * stride + col]);
+        }
+        *sample = ((sum * recip) >> 24).min(255) as u8;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn blend_nv12_uv_row_equal_neon(
+    out_u: &mut [u8],
+    out_v: &mut [u8],
+    lines: &[(&[u8], usize, u32)],
+    y: usize,
+) {
+    use std::arch::aarch64::{
+        vaddw_high_u8, vaddw_u8, vdupq_n_u16, vdupq_n_u32, vget_low_u8, vld1q_u8, vst1q_u8,
+        vuzp1q_u8, vuzp2q_u8,
+    };
+    let width = out_u.len();
+    let n = lines.len() as u32;
+    let half = (n / 2) as u16;
+    let recip = (1u32 << 24).div_ceil(n);
+    let vhalf = unsafe { vdupq_n_u16(half) };
+    let vrecip = unsafe { vdupq_n_u32(recip) };
+    let mut x = 0;
+    while x + 16 <= width {
+        let (mut a0, mut a1, mut b0, mut b1) = (vhalf, vhalf, vhalf, vhalf);
+        for &(data, stride, _) in lines {
+            unsafe {
+                let p = data.as_ptr().add(y * stride + x * 2);
+                let p0 = vld1q_u8(p);
+                let p1 = vld1q_u8(p.add(16));
+                a0 = vaddw_u8(a0, vget_low_u8(p0));
+                a1 = vaddw_high_u8(a1, p0);
+                b0 = vaddw_u8(b0, vget_low_u8(p1));
+                b1 = vaddw_high_u8(b1, p1);
+            }
+        }
+        unsafe {
+            let r0 = resolve_u16_16_neon(a0, a1, vrecip);
+            let r1 = resolve_u16_16_neon(b0, b1, vrecip);
+            vst1q_u8(out_u.as_mut_ptr().add(x), vuzp1q_u8(r0, r1));
+            vst1q_u8(out_v.as_mut_ptr().add(x), vuzp2q_u8(r0, r1));
+        }
+        x += 16;
+    }
+    for col in x..width {
+        let mut su = u32::from(half);
+        let mut sv = u32::from(half);
+        for &(data, stride, _) in lines {
+            let at = y * stride + col * 2;
+            su += u32::from(data[at]);
+            sv += u32::from(data[at + 1]);
+        }
+        out_u[col] = ((su * recip) >> 24).min(255) as u8;
+        out_v[col] = ((sv * recip) >> 24).min(255) as u8;
+    }
+}
+
 fn blend_plane_row(
     out: &mut [u8],
     lines: &[(&[u8], usize, u32)],
     y: usize,
+    equal: bool,
     #[cfg(target_arch = "x86_64")] simd: bool,
 ) {
     let blocked = lines.len() >= BLOCK_WINDOW;
+    if equal {
+        #[cfg(target_arch = "x86_64")]
+        if simd {
+            unsafe {
+                if blocked {
+                    blend_plane_row_equal_blocked_avx2(out, lines, y);
+                } else {
+                    blend_plane_row_equal_avx2(out, lines, y);
+                }
+            }
+            return;
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            blend_plane_row_equal_neon(out, lines, y);
+            return;
+        }
+        #[allow(unreachable_code)]
+        {
+            blend_plane_row_equal_scalar(out, lines, y);
+            return;
+        }
+    }
     #[cfg(target_arch = "x86_64")]
     if simd {
         unsafe {
@@ -1018,9 +1484,27 @@ fn blend_nv12_uv_row(
     out_v: &mut [u8],
     lines: &[(&[u8], usize, u32)],
     y: usize,
+    equal: bool,
     #[cfg(target_arch = "x86_64")] simd: bool,
 ) {
     let blocked = lines.len() >= BLOCK_WINDOW;
+    if equal {
+        #[cfg(target_arch = "x86_64")]
+        if simd {
+            unsafe { blend_nv12_uv_row_equal_avx2(out_u, out_v, lines, y) };
+            return;
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            blend_nv12_uv_row_equal_neon(out_u, out_v, lines, y);
+            return;
+        }
+        #[allow(unreachable_code)]
+        {
+            blend_nv12_uv_row_equal_scalar(out_u, out_v, lines, y);
+            return;
+        }
+    }
     #[cfg(target_arch = "x86_64")]
     if simd {
         unsafe {
@@ -1079,18 +1563,23 @@ enum Chroma<'a> {
 
 pub struct Blend {
     weights: Vec<u32>,
+    equal: bool,
     exact: Vec<f32>,
     curve: Option<[f32; 256]>,
     inverse: Vec<u8>,
     step: (i64, i64),
     last: i64,
     held: Mutex<Vec<(i64, frame::Video)>>,
+    pool: Mutex<VecDeque<frame::Video>>,
     pub frames: i32,
 }
 
 impl Blend {
     pub fn new(weights: &[f64], from: (i64, i64), blending: &Blending, frames: i32) -> Self {
         let (scale, sum) = (f64::from(1 << SHIFT), weights.iter().sum::<f64>());
+        let equal = weights.len() >= 2
+            && weights.len() <= 255
+            && weights.windows(2).all(|w| (w[0] - w[1]).abs() <= 1e-12 * sum);
         let (mut total, mut before) = (0.0, 0);
         let fixed = weights
             .iter()
@@ -1115,12 +1604,14 @@ impl Blend {
         };
         Self {
             weights: fixed,
+            equal,
             exact: weights.iter().map(|weight| (weight / sum) as f32).collect(),
             curve: (gamma != 1.0).then(|| std::array::from_fn(curve)),
             inverse,
             step,
             last: i64::from(frames - 1),
             held: Mutex::new(Vec::new()),
+            pool: Mutex::new(VecDeque::new()),
             frames: i32::try_from(
                 (i128::from(frames) * i128::from(step.1) + i128::from(step.0) - 1)
                     / i128::from(step.0),
@@ -1180,7 +1671,22 @@ impl Blend {
         } else {
             Pixel::YUV420P
         };
-        let output = frame::Video::new(format, width, height);
+        let output = {
+            let mut pool = self
+                .pool
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let found = pool.iter().position(|frame| {
+                frame.format() == format
+                    && frame.width() == width
+                    && frame.height() == height
+                    && unsafe { ffi::av_frame_is_writable(frame.as_ptr().cast_mut()) != 0 }
+            });
+            match found.and_then(|index| pool.remove(index)) {
+                Some(frame) => frame,
+                None => frame::Video::new(format, width, height),
+            }
+        };
         #[cfg(target_arch = "x86_64")]
         let simd = std::arch::is_x86_feature_detected!("avx2")
             && self.weights.len() >= 2
@@ -1261,6 +1767,7 @@ impl Blend {
                 std::slice::from_raw_parts_mut(raw.data[2], v_stride * ch),
             )
         };
+        let equal = self.equal;
         let blend_y = |row: &mut [u8], y: usize| {
             if let Some(curve) = &self.curve {
                 blend_gamma_row(
@@ -1278,6 +1785,7 @@ impl Blend {
                     row,
                     &y_lines,
                     y,
+                    equal,
                     #[cfg(target_arch = "x86_64")]
                     simd,
                 );
@@ -1289,6 +1797,7 @@ impl Blend {
                 v_row,
                 lines,
                 cy,
+                equal,
                 #[cfg(target_arch = "x86_64")]
                 simd,
             ),
@@ -1298,6 +1807,7 @@ impl Blend {
                     u_row,
                     u_lines,
                     cy,
+                    equal,
                     #[cfg(target_arch = "x86_64")]
                     simd,
                 );
@@ -1305,6 +1815,7 @@ impl Blend {
                     v_row,
                     v_lines,
                     cy,
+                    equal,
                     #[cfg(target_arch = "x86_64")]
                     simd,
                 );
@@ -1346,6 +1857,16 @@ impl Blend {
             if h % 2 == 1 {
                 blend_y(&mut y_out[(h - 1) * y_stride..][..w], h - 1);
             }
+        }
+        {
+            let mut pool = self
+                .pool
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            if pool.len() >= 4 {
+                pool.pop_front();
+            }
+            pool.push_back(share(&output));
         }
         Ok(output)
     }

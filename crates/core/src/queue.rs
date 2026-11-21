@@ -321,6 +321,8 @@ fn encode(
     let encoded = muncher.as_ref().map_or(encoded, |muncher| muncher.meta);
     let changed = upscaler.is_some() || muncher.is_some();
     let packed = packs(job, graph, timeline.is_some(), changed);
+    let from = ((start - job.at) * rate).round().max(0.0) as i32;
+    graph.warm(from, from + frames, packed);
     let mut encoder = Encoder::open(
         format::output(&absolute(output))?,
         &encoded,
@@ -340,7 +342,6 @@ fn encode(
         "encoding with {}{fallback}",
         encoder.name
     )));
-    let from = ((start - job.at) * rate).round().max(0.0) as i32;
     let fused = packed
         && encoder
             .spare()

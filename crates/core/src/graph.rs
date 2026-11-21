@@ -192,7 +192,9 @@ impl Graph {
         // a blend reads the clip in its own decoders, this one only seeks
         let threads = |fps, height| {
             let plan = Plan::new(fps, config);
-            match plan.plain(config) && plan.blended {
+            let dedup = config.dedup.enabled && config.dedup.threshold > 0.0;
+            let plain = !dedup && plan.pre.is_none() && !plan.interpolate;
+            match plain && plan.blended {
                 true => 1,
                 false => budget::decode(height),
             }
@@ -223,7 +225,8 @@ impl Graph {
         )));
 
         let plan = Plan::new(source_fps, config);
-        let plain = plan.plain(config);
+        let dedup = config.dedup.enabled && config.dedup.threshold > 0.0;
+        let plain = !dedup && plan.pre.is_none() && !plan.interpolate;
         let Plan {
             blended, weights, ..
         } = &plan;
@@ -235,12 +238,15 @@ impl Graph {
             }
             (true, false) => (Feed::Plain(Box::new(Ahead::new(decoder))), Fused::None),
             (false, _) => {
-                let decoder = match Decoder::gpu_from(clip, &mut decoder) {
-                    Some(gpu) => {
-                        sink(Event::Info("decoding on the gpu".into()));
-                        gpu.following(&follow)
-                    }
-                    None => decoder,
+                let decoder = match !decoder.fast_cpu(source_fps, plan.interpolate) {
+                    true => match Decoder::gpu_from(clip, &mut decoder) {
+                        Some(gpu) => {
+                            sink(Event::Info("decoding on the gpu".into()));
+                            gpu.following(&follow)
+                        }
+                        None => decoder,
+                    },
+                    false => decoder,
                 };
                 Self::host(decoder, config, &plan, sink, cancel)?
             }
@@ -605,6 +611,13 @@ impl Graph {
         let mut segments = segments.lock().unwrap_or_else(|poison| poison.into_inner());
         segments.encode(spare, from, end);
         true
+    }
+
+    pub(crate) fn warm(&self, from: i32, end: i32, packed: bool) {
+        if let Feed::File(segments) = &self.feed {
+            let mut segments = segments.lock().unwrap_or_else(|poison| poison.into_inner());
+            segments.warm(from, end, packed);
+        }
     }
 
     pub(crate) fn made(&self, n: i32, cancel: &Cancel) -> Result<Made> {

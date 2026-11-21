@@ -242,7 +242,8 @@ impl Segments {
         let history = probe.history();
         // a quarter of the memory: half for the pictures of the lanes, half for the frames that wait
         let budget = budget::bytes(class);
-        let useful = budget::useful(height).min(6).min(cores);
+        let cap = if height <= 1080 { 4 } else { 6 };
+        let useful = budget::useful(height).min(cap).min(cores);
         let held = math.window() + REFERENCES + ahead(picture) + useful;
         // a clip that does not fit still runs with one lane and few frames in flight
         let lanes = (budget / 2 / (held * picture + history)).max(1);
@@ -278,6 +279,25 @@ impl Segments {
         self.spare = Some(spare);
         self.from = from;
         self.frames = self.frames.min(end);
+    }
+
+    pub fn warm(&mut self, from: i32, end: i32, packed: bool) {
+        if !self.parts.is_empty() {
+            return;
+        }
+        let stop = end.min(self.frames);
+        let from = from.clamp(0, stop);
+        if from >= stop {
+            return;
+        }
+        self.planned = from;
+        self.next = None;
+        self.longest = 0;
+        let limit = if packed { 2 } else { self.most.max(1) };
+        let saved = self.frames;
+        self.frames = stop;
+        self.plan_lanes(limit, false);
+        self.frames = saved;
     }
 
     fn packing(&self) -> bool {
@@ -330,7 +350,11 @@ impl Segments {
     }
 
     fn plan(&mut self) {
-        while self.planned < self.frames {
+        self.plan_lanes(usize::MAX, true);
+    }
+
+    fn plan_lanes(&mut self, max_parts: usize, allow_gpu: bool) {
+        while self.planned < self.frames && self.parts.len() < max_parts {
             let start = self.planned;
             let end = match self.next {
                 Some(end) => end,
@@ -350,7 +374,7 @@ impl Segments {
                 fit.clamp(1, self.most)
             };
             // one more lane on the gpu when its pictures fit in memory
-            let gpu = lanes > 0 && self.fits > self.most;
+            let gpu = allow_gpu && lanes > 0 && self.fits > self.most;
             let total = lanes + usize::from(gpu);
             // one part per active lane plus one spare keeps every lane fed without hoarding gigabytes
             let least = if self.packing() { total + 1 } else { 1 };

@@ -112,10 +112,10 @@ pub fn differences(clip: &Path, from: f64, to: f64, cancel: &Cancel) -> Result<V
         }
         return Ok(vec![row]);
     }
-    drop(probe);
     let threads = (budget::own().min(budget::useful(meta.height)) / SPOTS as usize).max(1);
     let third = span / SPOTS;
-    let ranges: Vec<_> = (0..SPOTS)
+    let mut probe = Some(probe);
+    let tasks: Vec<_> = (0..SPOTS)
         .map(|spot| {
             let zone_start = start + spot * third;
             let zone_end = if spot + 1 == SPOTS {
@@ -124,11 +124,17 @@ pub fn differences(clip: &Path, from: f64, to: f64, cancel: &Cancel) -> Result<V
                 start + (spot + 1) * third
             };
             let first = zone_start + (zone_end - zone_start - SAMPLE) / 2;
-            first..(first + SAMPLE).min(zone_end)
+            (
+                first..(first + SAMPLE).min(zone_end),
+                if spot == 0 { probe.take() } else { None },
+            )
         })
         .collect();
-    let run = |range: std::ops::Range<i32>| -> Result<Vec<f32>> {
-        let mut decoder = Decoder::threaded(clip, threads)?.following(&Follow::new(cancel));
+    let run = |(range, reused): (std::ops::Range<i32>, Option<Decoder>)| -> Result<Vec<f32>> {
+        let mut decoder = match reused {
+            Some(decoder) => decoder,
+            None => Decoder::threaded(clip, threads)?.following(&Follow::new(cancel)),
+        };
         let mut pictures = [vec![0u8; bytes], vec![0u8; bytes]];
         let len = (range.end - range.start).max(0);
         let mut row = Vec::with_capacity(len.saturating_sub(1) as usize);
@@ -141,7 +147,7 @@ pub fn differences(clip: &Path, from: f64, to: f64, cancel: &Cancel) -> Result<V
         }
         Ok(row)
     };
-    budget::install(|| ranges.into_par_iter().map(run).collect())
+    budget::install(|| tasks.into_par_iter().map(run).collect())
 }
 
 fn gap(differences: &[Vec<f32>]) -> f32 {
