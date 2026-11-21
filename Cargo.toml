@@ -12,3 +12,5 @@ publish = false
 [profile.release]
 panic = "abort"
 strip = true
+lto = true
+codegen-units = 1

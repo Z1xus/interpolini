@@ -7,7 +7,7 @@ use libloading::Library;
 
 use crate::config::{self, Backend};
 use crate::decode::Meta;
-use crate::svp::{Clip, Frame, Map, Raw, Shape, Svp};
+use crate::svp::{Clip, Frame, Map, NEEDED, Raw, Shape, Svp};
 use crate::tensorrt::{Support, support};
 use crate::work::Cancel;
 use crate::{Event, Result, Sink};
@@ -302,11 +302,14 @@ impl Rife {
 }
 
 impl Map for Rife {
-    fn need(&self, n: i32) -> Vec<i32> {
+    fn need(&self, n: i32, out: &mut [i32; NEEDED]) -> usize {
         let index = self.place(n).0;
-        match self.made(n) {
-            true => vec![index, index + 1],
-            false => vec![index],
+        out[0] = index;
+        if self.made(n) {
+            out[1] = index + 1;
+            2
+        } else {
+            1
         }
     }
 

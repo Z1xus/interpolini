@@ -84,6 +84,7 @@ pub struct Segments {
     probe: Decoder,
     math: Blend,
     cores: usize,
+    useful: usize,
     most: usize,
     fits: usize,
     room: usize,
@@ -241,7 +242,7 @@ impl Segments {
         let history = probe.history();
         // a quarter of the memory: half for the pictures of the lanes, half for the frames that wait
         let budget = budget::bytes(class);
-        let useful = budget::useful(height).min(cores);
+        let useful = budget::useful(height).min(6).min(cores);
         let held = math.window() + REFERENCES + AHEAD + useful;
         // a clip that does not fit still runs with one lane and few frames in flight
         let lanes = (budget / 2 / (held * picture + history)).max(1);
@@ -254,6 +255,7 @@ impl Segments {
             probe,
             math,
             cores,
+            useful,
             most,
             fits: lanes,
             room: (budget / 2 / picture).max(2),
@@ -322,7 +324,7 @@ impl Segments {
             from: self.from,
             meta: self.meta,
             by: self.probe.by(),
-            workers: self.most,
+            workers: self.most + usize::from(self.fits > self.most),
             gpu,
         }));
     }
@@ -364,8 +366,11 @@ impl Segments {
             self.next = None;
             // 0 lanes: one decoder makes the part with all threads
             let (threads, room) = match lanes {
-                0 => (self.cores, 2),
-                lanes => (self.cores.div_ceil(lanes), (end - start) as usize),
+                0 => (self.cores.min(budget::useful(self.size.1).min(8)), 2),
+                lanes => (
+                    (self.cores.saturating_sub(lanes).max(lanes) / lanes).clamp(1, self.useful),
+                    (end - start) as usize,
+                ),
             };
             let (made, pictures) = work::channel(room.clamp(2, self.room));
             if self.started < lanes.max(1) {

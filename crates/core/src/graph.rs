@@ -34,6 +34,13 @@ impl Info {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fused {
+    None,
+    Cpu,
+    Gpu,
+}
+
 enum Feed {
     File(Box<Mutex<Segments>>),
     Plain(Box<Ahead>),
@@ -222,9 +229,9 @@ impl Graph {
         let (feed, fused) = match (plain, *blended) {
             (true, true) => {
                 let segments = Segments::new(clip, decoder, weights, blending)?;
-                (Feed::File(Box::new(Mutex::new(segments))), false)
+                (Feed::File(Box::new(Mutex::new(segments))), Fused::None)
             }
-            (true, false) => (Feed::Plain(Box::new(Ahead::new(decoder))), false),
+            (true, false) => (Feed::Plain(Box::new(Ahead::new(decoder))), Fused::None),
             (false, _) => {
                 let decoder = match Decoder::gpu_from(clip, &mut decoder) {
                     Some(gpu) => {
@@ -236,11 +243,11 @@ impl Graph {
                 Self::host(decoder, config, &plan, sink, cancel)?
             }
         };
-        let blend = blend(&feed, &meta, weights, blending, *blended && !fused);
+        let blend = blend(&feed, &meta, weights, blending, *blended && fused == Fused::None);
         if *blended {
-            let fused = if fused { " on the gpu" } else { "" };
+            let suffix = if fused == Fused::Gpu { " on the gpu" } else { "" };
             sink(Event::Info(format!(
-                "blending {} frames to {} fps{fused}",
+                "blending {} frames to {} fps{suffix}",
                 weights.len(),
                 blending.fps
             )));
@@ -281,7 +288,7 @@ impl Graph {
         plan: &Plan,
         sink: Sink,
         cancel: &Cancel,
-    ) -> Result<(Feed, bool)> {
+    ) -> Result<(Feed, Fused)> {
         let meta = decoder.meta();
         cancel.check()?;
         let svp = Svp::load(&config::app_dir())?;
@@ -349,7 +356,7 @@ impl Graph {
             cancel,
         );
         let (feed, fused) = passes?;
-        let blended = plan.blended && !fused;
+        let blended = plan.blended && fused == Fused::None;
         self.blend = blend(&feed, &self.meta, &plan.weights, &config.blending, blended);
         self.feed = feed;
         Ok(())
@@ -365,7 +372,7 @@ impl Graph {
         gray: Option<&Gray>,
         sink: Sink,
         cancel: &Cancel,
-    ) -> Result<(Feed, bool)> {
+    ) -> Result<(Feed, Fused)> {
         let meta = *meta;
         let Meta {
             width, height, fps, ..
@@ -401,7 +408,7 @@ impl Graph {
         let (pre, target, interpolate, blended) = (*pre, *target, *interpolate, *blended);
         let skipped = interpolate && interpolation.engine == Engine::Svp && pre.is_none();
         let limit = dedup.enabled.then_some(dedup.threshold);
-        let mut fused = false;
+        let mut fused = Fused::None;
         if dedup.enabled && dedup.threshold > 0.0 && !skipped {
             let rate = format!("num:{},den:{},abs:true", fps.0, fps.1);
             let last = !interpolate && pre.is_none();
@@ -412,16 +419,31 @@ impl Graph {
                 Engine::Svp => (interpolation, half),
             };
             let options = |gpu| Options::new(settings, &rate, mask, image, limit, gpu, half);
+            let cpu_blend = blended
+                && last
+                && blending.gamma == 1.0
+                && mask.is_none_or(|mask| mask.method == Masking::Image);
             let made = match blended && last {
                 true => svp.smooth_blend(&input, &options(true), weights, blending),
                 false => Err("no blend".into()),
             };
-            fused = made.is_ok();
+            if made.is_ok() {
+                fused = Fused::Gpu;
+            }
             // the blend on the gpu takes fewer formats than the gpu itself
             let made = made.or_else(|_| svp.smooth(&input, &options(true)));
             let clip = match made {
                 Ok(clip) => clip,
-                Err(_) => svp.smooth(&input, &options(false))?,
+                Err(_) => match cpu_blend {
+                    true => match svp.smooth_blend(&input, &options(false), weights, blending) {
+                        Ok(clip) => {
+                            fused = Fused::Cpu;
+                            clip
+                        }
+                        Err(_) => svp.smooth(&input, &options(false))?,
+                    },
+                    false => svp.smooth(&input, &options(false))?,
+                },
             };
             input = Arc::new(clip.keep(input));
         }
@@ -476,17 +498,31 @@ impl Graph {
                 let limit = limit.filter(|_| skipped);
                 let options =
                     |gpu| Options::new(interpolation, &rate, mask, image, limit, gpu, half);
+                let cpu_blend = blended
+                    && blending.gamma == 1.0
+                    && mask.is_none_or(|mask| mask.method == Masking::Image);
                 let made = match blended {
                     true => svp.smooth_blend(&input, &options(true), weights, blending),
                     false => Err("no blend".into()),
                 };
-                fused = made.is_ok();
+                if made.is_ok() {
+                    fused = Fused::Gpu;
+                }
                 let made = made.or_else(|_| svp.smooth(&input, &options(true)));
                 let clip = match made {
                     Ok(clip) => clip,
                     Err(_) => {
                         sink(Event::Warning("no opencl gpu, rendering on the cpu".into()));
-                        svp.smooth(&input, &options(false))?
+                        match cpu_blend {
+                            true => match svp.smooth_blend(&input, &options(false), weights, blending) {
+                                Ok(clip) => {
+                                    fused = Fused::Cpu;
+                                    clip
+                                }
+                                Err(_) => svp.smooth(&input, &options(false))?,
+                            },
+                            false => svp.smooth(&input, &options(false))?,
+                        }
                     }
                 };
                 let half = if half { ", half-size analysis" } else { "" };

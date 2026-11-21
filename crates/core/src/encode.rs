@@ -464,6 +464,14 @@ fn head(video: &encoder::video::Encoder) -> Vec<u8> {
     }
 }
 
+fn threads(name: &str) -> usize {
+    let own = budget::own();
+    match name {
+        "libx264" | "libx265" => own.min(16),
+        _ => own,
+    }
+}
+
 pub(crate) fn context(
     name: &str,
     meta: &Meta,
@@ -501,7 +509,7 @@ pub(crate) fn context(
     video.set_time_base(base);
     video.set_frame_rate(Some(base.invert()));
     video.set_gop(GOP);
-    unsafe { (*video.as_mut_ptr()).thread_count = budget::own() as i32 };
+    unsafe { (*video.as_mut_ptr()).thread_count = threads(name) as i32 };
     video.set_colorspace(meta.space);
     video.set_color_range(meta.range);
     video.set_color_primaries(meta.primaries);
@@ -555,6 +563,7 @@ pub struct Encoder {
     held: Vec<[f32; 2]>,
     pub packets: [(u32, u64); 2],
     shown: i64,
+    _software: Option<budget::SoftwareEncode>,
 }
 
 // true for a packet, false when the encoder has nothing more for now
@@ -618,6 +627,8 @@ impl Encoder {
         let opened = open(Level::Quiet).or_else(|| open(Level::Error));
         ffmpeg_next::log::set_level(Level::Error);
         let (name, encoder) = opened.ok_or(failure)?;
+        let _software = (name.starts_with("lib") && budget::current() == budget::Class::Render)
+            .then(|| budget::SoftwareEncode::new(threads(name)));
         output
             .add_stream(encoder::find_by_name(name))?
             .set_parameters(&encoder);
@@ -712,6 +723,7 @@ impl Encoder {
             munch: None,
             packets: [(0, 0); 2],
             shown: 0,
+            _software,
         })
     }
 

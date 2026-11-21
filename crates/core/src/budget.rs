@@ -20,6 +20,7 @@ pub struct Machine {
 static PREVIEW: AtomicBool = AtomicBool::new(false);
 static RENDER: AtomicBool = AtomicBool::new(false);
 static LIMIT: AtomicUsize = AtomicUsize::new(0);
+static SOFTWARE: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     static CLASS: Cell<Class> = const { Cell::new(Class::Render) };
@@ -96,6 +97,40 @@ pub fn preview(active: bool) {
 
 pub fn render(active: bool) {
     RENDER.store(active, Ordering::Relaxed);
+    crate::svp::retune();
+}
+
+pub(crate) fn svp_threads() -> usize {
+    let rendering = RENDER.load(Ordering::Relaxed);
+    let previewing = PREVIEW.load(Ordering::Relaxed);
+    let base = if !rendering && previewing {
+        threads(Class::Interactive)
+    } else {
+        threads(Class::Render)
+    };
+    let sw = SOFTWARE.load(Ordering::Relaxed);
+    if sw > 0 {
+        base.saturating_sub(sw).max(base.div_ceil(2))
+    } else {
+        base
+    }
+}
+
+pub(crate) struct SoftwareEncode(usize);
+
+impl SoftwareEncode {
+    pub(crate) fn new(threads: usize) -> Self {
+        SOFTWARE.fetch_add(threads, Ordering::Relaxed);
+        crate::svp::retune();
+        Self(threads)
+    }
+}
+
+impl Drop for SoftwareEncode {
+    fn drop(&mut self) {
+        SOFTWARE.fetch_sub(self.0, Ordering::Relaxed);
+        crate::svp::retune();
+    }
 }
 
 fn back() -> usize {

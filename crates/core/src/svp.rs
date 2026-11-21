@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
 use libloading::Library;
 
-use crate::budget::{self, Class};
+use crate::budget;
 use crate::config::{Algorithm, Blending, Interpolation, Mask, Masking, Speed, Tuning};
 use crate::{Error, Result};
 
@@ -34,7 +34,7 @@ type RenderFn =
     unsafe extern "C" fn(Raw, i32, *const Raw, i32, *const *mut u8, *const isize) -> i32;
 
 // the most input frames that a map reads for one frame
-const NEEDED: usize = 8;
+pub const NEEDED: usize = 8;
 
 api! {
     error: b"osvp_error\0" fn() -> Text;
@@ -79,7 +79,7 @@ pub trait Reader: Send + Sync + 'static {
 }
 
 pub trait Map: Send + Sync + 'static {
-    fn need(&self, n: i32) -> Vec<i32>;
+    fn need(&self, n: i32, out: &mut [i32; NEEDED]) -> usize;
 
     fn passthrough(&self, _n: i32) -> Option<i32> {
         None
@@ -145,11 +145,10 @@ unsafe extern "C" fn need<M: Map>(user: Raw, n: i32, frames: *mut i32) -> i32 {
             return -1;
         }
     }
-    let needed = value
+    let mut needed = [0; NEEDED];
+    let count = value
         .as_ref()
-        .map(|(_, map)| map.need(n))
-        .unwrap_or_default();
-    let count = needed.len().min(NEEDED);
+        .map_or(0, |(_, map)| map.need(n, &mut needed).min(NEEDED));
     unsafe { std::ptr::copy_nonoverlapping(needed.as_ptr(), frames, count) };
     count as i32
 }
@@ -162,16 +161,16 @@ unsafe extern "C" fn render<M: Map>(
     planes: *const *mut u8,
     strides: *const isize,
 ) -> i32 {
-    let inputs = unsafe { std::slice::from_raw_parts(inputs, count as usize) };
+    let count = usize::try_from(count).unwrap_or(0).min(NEEDED);
+    let raw_inputs = unsafe { std::slice::from_raw_parts(inputs, count) };
     let (planes, strides) = unsafe { (*planes.cast(), *strides.cast()) };
     run(user, |api, map: &M| {
-        // lent by the host
-        let inputs: Vec<_> = inputs
-            .iter()
-            .map(|&raw| ManuallyDrop::new(Frame { api, raw }))
-            .collect();
-        let inputs: Vec<&Frame> = inputs.iter().map(|frame| &**frame).collect();
-        map.render(n, &inputs, planes, strides)
+        let owned = std::array::from_fn::<_, NEEDED, _>(|i| {
+            let raw = raw_inputs.get(i).copied().unwrap_or(std::ptr::null_mut());
+            ManuallyDrop::new(Frame { api, raw })
+        });
+        let refs: [&Frame; NEEDED] = std::array::from_fn(|i| &*owned[i]);
+        map.render(n, &refs[..count], planes, strides)
     })
 }
 
@@ -277,7 +276,7 @@ static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
 
 pub fn retune() {
     if let Some(Ok(api)) = API.get() {
-        unsafe { (api.set_threads)(budget::threads(Class::Render) as i32) };
+        unsafe { (api.set_threads)(budget::svp_threads() as i32) };
     }
 }
 
@@ -573,14 +572,20 @@ impl Options {
         let animation = tuning == Tuning::Animation;
         let coarse = animation || speed == Speed::Fastest;
         let quick = coarse || speed == Speed::Faster;
+        let fast = match speed {
+            Speed::Medium => "",
+            Speed::Fast => "fast:1,",
+            Speed::Faster => "fast:2,",
+            Speed::Fastest => "fast:3,",
+        };
 
         let pel = if speed == Speed::Medium { "" } else { "pel:1," };
-        let lean = if gpu && speed == Speed::Medium && !half {
+        let lean = if gpu && !animation {
             "lean:true,"
         } else {
             ""
         };
-        let supers = format!("{{{pel}{lean}gpu:{}}}", u8::from(gpu));
+        let supers = format!("{{{pel}{lean}{fast}gpu:{}}}", u8::from(gpu));
 
         let block = match speed {
             _ if coarse => 32,
@@ -607,13 +612,13 @@ impl Options {
             Tuning::Weak => ",refine:[{thsad:250,search:{distance:-1,satd:true}}]",
             _ => ",refine:[{thsad:250}]",
         };
-        let exact = if speed == Speed::Medium {
+        let exact = if gpu && !animation {
             "exact:false,"
         } else {
             ""
         };
         let analyse = format!(
-            "{{{exact}block:{{w:{block},overlap:{overlap}}},main:{{search:{{{distance}coarse:{{{search}bad:{{sad:2000}}}}}}}}{refine}}}"
+            "{{{exact}{fast}block:{{w:{block},overlap:{overlap}}},main:{{search:{{{distance}coarse:{{{search}bad:{{sad:2000}}}}}}}}{refine}}}"
         );
 
         let algorithm = match interpolation.algorithm {
@@ -643,8 +648,13 @@ impl Options {
             "blend:false,mode:0"
         };
         let dedup = dedup.map_or(String::new(), |limit| format!(",dedup:{limit}"));
+        let adaptive = if speed == Speed::Medium {
+            ""
+        } else {
+            "adaptive:true,"
+        };
         let smooth = format!(
-            "{{rate:{{{rate}}},algo:{algorithm},mask:{{cover:80,area:0,area_sharp:1.2{masking}}},scene:{{{scene}}}{dedup}}}"
+            "{{{fast}{adaptive}rate:{{{rate}}},algo:{algorithm},mask:{{cover:80,area:0,area_sharp:1.2{masking}}},scene:{{{scene}}}{dedup}}}"
         );
 
         let text = |text: String| CString::new(text).unwrap_or_default();
