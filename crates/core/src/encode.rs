@@ -150,10 +150,16 @@ pub fn effort(output: &Output, effort: Effort) -> String {
     }
 }
 
+// videotoolbox reads 0 to 100 with 100 the best, in lambda units
+pub(crate) fn toolbox(quality: u32) -> u32 {
+    100u32.saturating_sub(2 * quality) * ffi::FF_QP2LAMBDA as u32
+}
+
 fn options(name: &str, output: &Output, sized: bool, packed: bool) -> Dictionary<'static> {
     // these av1 encoders count the quantizer to 255, the others to 51 or 63
     let wide = name.starts_with("av1_") && !name.ends_with("_nvenc");
     let quality = (output.quality * if wide { 4 } else { 1 }).to_string();
+    let scaled = toolbox(output.quality).to_string();
     let family = name.rsplit('_').next();
     let rate: &[(&str, &str)] = match family {
         Some("nvenc") if sized => &[("tune", "hq"), ("rc", "vbr")],
@@ -168,7 +174,7 @@ fn options(name: &str, output: &Output, sized: bool, packed: bool) -> Dictionary
         Some("qsv") => &[("global_quality", &quality)],
         Some("vaapi") => &[("rc_mode", "CQP"), ("global_quality", &quality)],
         Some("vulkan") => &[("qp", &quality)],
-        Some("videotoolbox") => &[("flags", "+qscale"), ("global_quality", &quality)],
+        Some("videotoolbox") => &[("flags", "+qscale"), ("global_quality", &scaled)],
         _ => &[("crf", &quality)],
     };
     let preset = presets(name).map(|(key, presets)| (key, presets[output.effort as usize]));

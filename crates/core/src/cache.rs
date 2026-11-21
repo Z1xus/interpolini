@@ -494,10 +494,14 @@ fn opened(
             name if name.ends_with("_amf") => "-forced_idr 1 -global_quality",
             _ => "-global_quality",
         };
+        let level = match name.ends_with("_videotoolbox") {
+            true => encode::toolbox(QUALITY),
+            false => QUALITY,
+        };
         let output = Output {
             quality: QUALITY,
             effort: Effort::Fastest,
-            options: format!("{options} {QUALITY} -bf 0 -slices {SLICES}"),
+            options: format!("{options} {level} -bf 0 -slices {SLICES}"),
             ..Output::default()
         };
         let encoder = encode::context(name, &meta, base, &output, None, false, false)?.ok()?;

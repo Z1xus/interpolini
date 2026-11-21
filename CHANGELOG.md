@@ -1,20 +1,21 @@
 # Changelog
 
 ## 0.1.33
-- New: Preview cache, played parts play again at once
-- New: Ready parts show on the timeline ruler
-- Changed: Playback never waits
-- Changed: Aligned Settings window
-- Changed: Debug info shows the last crash
-- Changed: Lower memory use
-- Faster: Seeks while paused
+- New: Preview cache, marked on the timeline
+- New: Last crash in debug info
+- Changed: Playback skips frames instead of buffering
+- Changed: Grouped Settings window
+- Changed: Lower render memory use
+- Faster: Moving the playhead while paused
 - Faster: Blending
 - Fixed: Stutter at playback start
-- Fixed: Full played below full size
-- Fixed: Wrong playback fps
-- Fixed: Mask editor undo
-- Fixed: Ctrl drag of a selection
+- Fixed: Full resolution playback
+- Fixed: Wrong fps counter
+- Fixed: Mask editor cancel
+- Fixed: Ctrl drag of selected clips
 - Fixed: Raw video streams
+- Fixed: Lossless cuts of some files
+- Fixed: Low encode quality on Mac
 - Fixed: Rare crashes
 - Fixed: Hang on close
 
