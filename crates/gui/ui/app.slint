@@ -90,6 +90,7 @@ export component App inherits Window {
     in property <string> ask;
     in-out property <bool> updates: true;
     in-out property <string> update;
+    in-out property <[Change]> update-changes;
     callback show-update();
     in property <bool> rendering;
     in property <float> progress;

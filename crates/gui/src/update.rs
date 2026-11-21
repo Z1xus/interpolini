@@ -106,7 +106,12 @@ pub fn check(ui: &App) {
     let weak = ui.as_weak();
     services::task("update", move |_| {
         if let Some(version) = newest() {
-            let _ = weak.upgrade_in_event_loop(move |ui| ui.set_update(version.into()));
+            let changes = changelog(&version).map(|text| changes(&text, &version));
+            let changes = changes.unwrap_or_default();
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                ui.set_update_changes(ModelRc::new(VecModel::from(changes)));
+                ui.set_update(version.into());
+            });
         }
     });
 }
@@ -342,17 +347,9 @@ pub fn wire(ui: &App) {
         let Some(window) = crate::components::reuse(&mut made, make) else {
             return;
         };
-        let version = ui.get_update().to_string();
-        window.set_version(version.clone().into());
+        window.set_version(ui.get_update());
         window.set_current(CURRENT.into());
-        let weak = window.as_weak();
-        services::task("changelog", move |_| {
-            let changes = changelog(&version).map(|text| changes(&text, &version));
-            let changes = changes.unwrap_or_default();
-            let _ = weak.upgrade_in_event_loop(move |window| {
-                window.set_changes(ModelRc::new(VecModel::from(changes)));
-            });
-        });
+        window.set_changes(ui.get_update_changes());
         themes::paint(&window.global::<Theme>(), &ui.get_theme(), ui.get_light());
         crate::settings::share_scroll(&ui, &window.global::<System>());
         present(window);
