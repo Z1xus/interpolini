@@ -4,7 +4,10 @@ import layout from "#lib/layout.json";
 export type Rect = { x: number; y: number; w: number; h: number };
 
 const [width, height] = layout.window;
+const [, , dialogWidth, dialogHeight] = layout.scenes.components.dialog;
 
+export const windowSize = { width, height };
+export const dialogSize = { width: dialogWidth, height: dialogHeight };
 export const aspect = width / height;
 
 const fraction = ([x, y, w, h]: number[]): Rect => ({

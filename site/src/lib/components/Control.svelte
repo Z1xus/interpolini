@@ -16,25 +16,62 @@
 	const pane = usePane();
 	const labels = $derived(control.kind === "choose" ? control.options.map((o) => o.label) : []);
 
+	let root: Element | null = null;
+	let observer: IntersectionObserver | undefined;
+	const pending = new WeakMap<Element, () => void>();
+
+	const observe = (canvas: HTMLCanvasElement, paint: () => void) => {
+		const host = canvas.closest("[role=group]");
+		if (!observer || root !== host) {
+			observer?.disconnect();
+			root = host;
+			observer = new IntersectionObserver(
+				(entries) => {
+					for (const item of entries) {
+						if (!item.isIntersecting) continue;
+						observer?.unobserve(item.target);
+						const run = pending.get(item.target);
+						pending.delete(item.target);
+						run?.();
+					}
+				},
+				{ root: host, rootMargin: "200px" }
+			);
+		}
+		pending.set(canvas, paint);
+		observer.observe(canvas);
+		return () => {
+			pending.delete(canvas);
+			observer?.unobserve(canvas);
+		};
+	};
+
+	$effect(() => () => {
+		observer?.disconnect();
+	});
+
 	const thumbnail =
 		(frame: number): Attachment<HTMLCanvasElement> =>
 		(canvas) => {
 			const entry = pane.store.get("moment");
 			if (entry?.status !== "ready" || !(entry.resource instanceof ImageBitmap)) return;
-			const [width, height] = [moment.width, moment.height];
-			const column = frame % moment.columns;
-			const row = Math.floor(frame / moment.columns);
-			required(canvas.getContext("2d")).drawImage(
-				entry.resource,
-				column * width,
-				row * height,
-				width,
-				height,
-				0,
-				0,
-				canvas.width,
-				canvas.height
-			);
+			const bitmap = entry.resource;
+			return observe(canvas, () => {
+				const [width, height] = [moment.width, moment.height];
+				const column = frame % moment.columns;
+				const row = Math.floor(frame / moment.columns);
+				required(canvas.getContext("2d")).drawImage(
+					bitmap,
+					column * width,
+					row * height,
+					width,
+					height,
+					0,
+					0,
+					canvas.width,
+					canvas.height
+				);
+			});
 		};
 
 	const pick = (frame: number) => {

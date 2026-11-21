@@ -3,21 +3,18 @@
 	import Icon from "#lib/components/Icon.svelte";
 	import IconButton from "#lib/components/IconButton.svelte";
 	import Search from "#lib/components/Search.svelte";
-	import { isDark } from "#lib/theme.ts";
-
-	const setTheme = () => {
-		const theme = isDark() ? "light" : "dark";
-		document.documentElement.dataset.theme = theme;
-		try {
-			localStorage.setItem("theme", theme);
-		} catch (error) {
-			console.error(error);
-		}
-	};
+	import { applyTheme, isDark } from "#lib/theme.ts";
 
 	const toggleTheme = () => {
-		if ("startViewTransition" in document) document.startViewTransition(setTheme);
-		else setTheme();
+		const next = isDark() ? "light" : "dark";
+		if (
+			"startViewTransition" in document &&
+			!matchMedia("(prefers-reduced-motion: reduce)").matches
+		) {
+			document.startViewTransition(() => applyTheme(next));
+		} else {
+			applyTheme(next);
+		}
 	};
 </script>
 

@@ -1,6 +1,12 @@
 <script lang="ts">
 	import "#lib/app.css";
-	import { afterNavigate, beforeNavigate, onNavigate, preloadData } from "$app/navigation";
+	import {
+		afterNavigate,
+		beforeNavigate,
+		onNavigate,
+		preloadData,
+		pushState
+	} from "$app/navigation";
 	import { asset } from "$app/paths";
 	import { page } from "$app/state";
 	import type { AssetPath } from "$app/types";
@@ -11,14 +17,41 @@
 	import Sidebar from "#lib/components/Sidebar.svelte";
 	import { providePane } from "#lib/pane.svelte.ts";
 	import { origin, pages, route } from "#lib/pages.ts";
+	import { MediaQuery } from "svelte/reactivity";
 
 	let { children } = $props();
 	const pane = providePane();
+	const reduced = new MediaQuery("prefers-reduced-motion: reduce");
+	const clean = (path: string) => path.replace(/\/$/, "");
+
+	let last = { x: 0, y: 0, time: 0 };
+	let warmed: HTMLAnchorElement | null = null;
+
+	const warmLink = (link: HTMLAnchorElement | null) => {
+		if (!link || link === warmed || link.origin !== location.origin) return;
+		if (clean(link.pathname) === clean(location.pathname)) {
+			if (!link.hash) return;
+			warmed = link;
+			pane.warmSection(link.hash);
+			return;
+		}
+		warmed = link;
+		preloadData(link.href).catch(console.error);
+		pane.warm(link).catch(console.error);
+	};
+
 	beforeNavigate(({ to }) => {
-		if (to?.url.pathname !== page.url.pathname) pane.reset();
+		if (to && clean(to.url.pathname) !== clean(page.url.pathname)) pane.reset();
 	});
 	onNavigate(({ from, to, complete }) => {
-		if (!document.startViewTransition || from?.url.pathname === to?.url.pathname) return;
+		if (
+			!document.startViewTransition ||
+			reduced.current ||
+			!from ||
+			!to ||
+			clean(from.url.pathname) === clean(to.url.pathname)
+		)
+			return;
 		return new Promise<void>((ready) => {
 			document.startViewTransition(async () => {
 				ready();
@@ -27,11 +60,10 @@
 		});
 	});
 	afterNavigate(({ shallow }) => {
-		if (!shallow) pane.restore(location.hash);
+		warmed = null;
+		if (!shallow && !pane.restore(location.hash)) pane.sync();
 	});
 
-	let last = { x: 0, y: 0, time: 0 };
-	let warmed: HTMLAnchorElement | null = null;
 	const ahead = ({
 		clientX: x,
 		clientY: y,
@@ -42,12 +74,25 @@
 		const pxPerMs = Math.hypot(x - last.x, y - last.y) / Math.max(time - last.time, 1);
 		const slow = pxPerMs < 0.3;
 		last = { x, y, time };
-		const link = target instanceof Element ? target.closest("a") : null;
-		if (!link || link === warmed || !slow || pointerType === "touch") return;
-		if (link.origin !== location.origin || link.pathname === location.pathname) return;
-		warmed = link;
-		preloadData(link.href).catch(console.error);
-		pane.warm(link).catch(console.error);
+		if (!slow || pointerType === "touch") return;
+		warmLink(target instanceof Element ? target.closest("a") : null);
+	};
+
+	const intent = (event: Event) => {
+		warmLink(event.target instanceof Element ? event.target.closest("a") : null);
+	};
+
+	const follow = (event: MouseEvent) => {
+		if (event.defaultPrevented || event.button !== 0) return;
+		if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+		const link = event.target instanceof Element ? event.target.closest("a") : null;
+		if (!link || !link.hash || link.origin !== location.origin) return;
+		if (clean(link.pathname) !== clean(location.pathname)) return;
+		const dialog = link.closest("dialog");
+		if (dialog?.open) dialog.close();
+		if (!pane.restore(link.hash, !reduced.current)) return;
+		event.preventDefault();
+		pushState(link.hash, {});
 	};
 
 	const index = $derived(pages.findIndex((entry) => route(entry) === page.route.id));
@@ -68,7 +113,12 @@
 </svelte:head>
 
 <svelte:window onhashchange={() => pane.restore(location.hash)} />
-<svelte:document onpointermove={ahead} />
+<svelte:document
+	onpointermove={ahead}
+	onpointerdown={intent}
+	onfocusin={intent}
+	onclickcapture={follow}
+/>
 
 <a
 	href="#content"

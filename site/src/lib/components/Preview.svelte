@@ -13,10 +13,11 @@
 		playback,
 		store,
 		broken = $bindable()
-	}: { show: Show; view: View; playback: Playback; store: Store; broken: boolean } = $props();
+	}: { show?: Show; view: View; playback: Playback; store: Store; broken: boolean } = $props();
 
 	let renderer = $state<Renderer>();
 	let visible = $state(true);
+	let drawn = $state(false);
 
 	const setup: Attachment<HTMLCanvasElement> = (canvas) => {
 		const build = () => {
@@ -31,6 +32,7 @@
 		const lose = (event: Event) => {
 			event.preventDefault();
 			renderer = undefined;
+			drawn = false;
 			broken = true;
 		};
 		build();
@@ -48,13 +50,29 @@
 	};
 
 	const source = $derived.by(() => {
+		if (!show) return undefined;
 		const entry = store.get(assetOf(show));
 		if (renderer && entry?.status === "ready")
-			return sourceOf(renderer, show, entry.resource, view, () => store.fail(assetOf(show)));
+			return sourceOf(
+				renderer,
+				show,
+				entry.resource,
+				view,
+				() => store.fail(assetOf(show)),
+				() => (drawn = true)
+			);
 	});
 
 	$effect(() => {
-		if (store.get(assetOf(show))?.status === "failed") playback.stop();
+		if (!show) {
+			drawn = false;
+			playback.frames = 0;
+			playback.stop();
+		}
+	});
+
+	$effect(() => {
+		if (show && store.get(assetOf(show))?.status === "failed") playback.stop();
 	});
 
 	$effect(() => () => {
@@ -83,5 +101,7 @@
 	});
 </script>
 
-<canvas {@attach setup} class={["absolute inset-0 size-full bg-black", broken && "invisible"]}
+<canvas
+	{@attach setup}
+	class={["absolute inset-0 size-full bg-black", (!show || !drawn || broken) && "invisible"]}
 ></canvas>

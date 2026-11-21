@@ -1,4 +1,4 @@
-import { gridRate, moment, shapeOf, variantNames } from "#lib/assets.ts";
+import { gridOf, gridRate, moment, shapeOf, variantNames } from "#lib/assets.ts";
 import { sizeOf, type Resource } from "#lib/loader.ts";
 import type { Renderer } from "#lib/renderer.ts";
 import { settingsOf, planOf, type Show, type View } from "#lib/show.ts";
@@ -86,21 +86,31 @@ export function sourceOf(
 	show: Show,
 	resource: Resource,
 	view: View,
-	fail: () => void
+	fail: () => void,
+	ondraw?: () => void
 ) {
 	if ("grid" in show) {
 		const sheet = { ...sizeOf(resource), ...shapeOf(show.grid) };
 		const index = variantNames(show.grid).indexOf(show.variant);
-		const draw = () => renderer.tiles(resource, sheet, index, view);
+		const draw = () => {
+			renderer.tiles(resource, sheet, index, view);
+			ondraw?.();
+		};
 		return resource instanceof HTMLVideoElement
 			? videoSource(resource, draw, fail)
 			: { frames: 0, seek: () => void draw() };
 	}
 	if (resource instanceof ImageBitmap && "blend" in show) {
 		const plan = fixed(planOf(settingsOf(show), show).weights);
-		return stackSource((frame) => renderer.frames(resource, plan, show.blend, frame, view));
+		return stackSource((frame) => {
+			renderer.frames(resource, plan, show.blend, frame, view);
+			ondraw?.();
+		});
 	}
 }
 
-export const pixelsOf = (show: Show, resource: Resource) =>
-	sizeOf(resource).width / ("grid" in show ? shapeOf(show.grid).columns : moment.columns);
+export const pixelsOf = (show: Show) => {
+	if ("blend" in show) return moment.width;
+	const grid = gridOf(show.grid);
+	return grid.crop.width * (grid.zoom ?? 1);
+};

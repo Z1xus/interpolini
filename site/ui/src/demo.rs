@@ -46,9 +46,10 @@ pub const ADD_MASK: (f32, f32) = (1015.0, 435.0);
 pub const FIRST_MASK: (f32, f32) = (1015.0, 357.0);
 
 struct Media {
-    thumbs: Vec<Image>,
+    thumbs: ModelRc<Image>,
     wave: Image,
     original: Image,
+    preview: Image,
     result: SharedPixelBuffer<Rgba8Pixel>,
 }
 
@@ -159,7 +160,7 @@ fn clip(media: &Media, audio: bool, at: f32, cuts: (f32, f32), link: i32) -> Cli
         ratio: 16.0 / 9.0,
         zoom_x: 1.0,
         zoom_y: 1.0,
-        thumbs: ModelRc::new(VecModel::from(media.thumbs.clone())),
+        thumbs: media.thumbs.clone(),
         waves: ModelRc::new(VecModel::from(if audio {
             vec![media.wave.clone()]
         } else {
@@ -324,7 +325,7 @@ fn reset(app: &App, media: &Media) {
     app.set_prefs(prefs(false));
     app.set_recent(ModelRc::default());
     app.set_closing("".into());
-    app.set_preview(Image::from_rgba8(media.result.clone()));
+    app.set_preview(media.preview.clone());
     app.set_mode(Mode::Render);
     app.set_separate(false);
     app.set_left("".into());
@@ -633,6 +634,11 @@ fn thumbnails(bytes: &[u8]) -> Vec<Image> {
 #[cfg(target_arch = "wasm32")]
 pub fn set_thumbnails(app: &App, bytes: &[u8]) {
     let thumbs = ModelRc::new(VecModel::from(thumbnails(bytes)));
+    MEDIA.with_borrow_mut(|media| {
+        if let Some(media) = media {
+            media.thumbs = thumbs.clone();
+        }
+    });
     let clips = app.get_clips();
     for (index, mut clip) in clips.iter().enumerate() {
         if !clip.audio {
@@ -643,13 +649,15 @@ pub fn set_thumbnails(app: &App, bytes: &[u8]) {
 }
 
 pub fn app(thumbs: &[u8], peaks: &[u8], frames: &[u8]) -> Result<App, PlatformError> {
-    let thumbs = thumbnails(thumbs);
+    let thumbs = ModelRc::new(VecModel::from(thumbnails(thumbs)));
     let app = App::new()?;
+    let result = half(frames, true);
     MEDIA.set(Some(Media {
         thumbs,
         wave: wave(peaks),
         original: Image::from_rgba8(half(frames, false)),
-        result: half(frames, true),
+        preview: Image::from_rgba8(result.clone()),
+        result,
     }));
     app.set_original(
         MEDIA

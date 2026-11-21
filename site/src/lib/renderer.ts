@@ -73,6 +73,8 @@ export function createRenderer(canvas: HTMLCanvasElement) {
 		createTexture(gl, 1, gl.LINEAR),
 		createTexture(gl, 2, gl.NEAREST)
 	];
+	const maxTileTextures = 6;
+	const tileTextures = new Map<ImageBitmap, WebGLTexture>();
 	let atlas: ImageBitmap | undefined;
 	let weights: Float32Array | undefined;
 
@@ -94,7 +96,29 @@ export function createRenderer(canvas: HTMLCanvasElement) {
 			resize(sheet.width / sheet.columns, sheet.height / sheet.rows);
 			gl.useProgram(linked);
 			gl.activeTexture(gl.TEXTURE0);
-			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+			if (source instanceof ImageBitmap) {
+				let texture = tileTextures.get(source);
+				if (texture) {
+					tileTextures.delete(source);
+					tileTextures.set(source, texture);
+					gl.bindTexture(gl.TEXTURE_2D, texture);
+				} else {
+					texture = createTexture(gl, 0, gl.LINEAR);
+					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+					tileTextures.set(source, texture);
+					if (tileTextures.size > maxTileTextures) {
+						const oldest = tileTextures.keys().next().value;
+						if (oldest) {
+							const evicted = tileTextures.get(oldest);
+							tileTextures.delete(oldest);
+							if (evicted) gl.deleteTexture(evicted);
+						}
+					}
+				}
+			} else {
+				gl.bindTexture(gl.TEXTURE_2D, textures[0]);
+				gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+			}
 			gl.uniform1i(uniforms.video, 0);
 			gl.uniform2i(uniforms.grid, sheet.columns, sheet.rows);
 			gl.uniform1i(uniforms.tile, index);
@@ -126,6 +150,8 @@ export function createRenderer(canvas: HTMLCanvasElement) {
 		},
 		dispose() {
 			for (const texture of textures) gl.deleteTexture(texture);
+			for (const texture of tileTextures.values()) gl.deleteTexture(texture);
+			tileTextures.clear();
 			gl.deleteProgram(tilesProgram.linked);
 			gl.deleteProgram(framesProgram.linked);
 			gl.getExtension("WEBGL_lose_context")?.loseContext();

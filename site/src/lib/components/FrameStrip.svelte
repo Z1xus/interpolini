@@ -22,11 +22,15 @@
 	const frames = $derived(Array.from({ length: to - from + 1 }, (_, index) => from + index));
 	let rail: HTMLDivElement;
 	const buttons: HTMLButtonElement[] = [];
+	let centered = false;
 
 	$effect(() => {
 		const button = buttons[value - from];
-		if (button && rail)
-			rail.scrollLeft = button.offsetLeft - (rail.clientWidth - button.offsetWidth) / 2;
+		if (!button || !rail) return;
+		const left = button.offsetLeft - (rail.clientWidth - button.offsetWidth) / 2;
+		const smooth = centered && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+		centered = true;
+		rail.scrollTo({ left, behavior: smooth ? "smooth" : "instant" });
 	});
 
 	const press = (event: KeyboardEvent) => {

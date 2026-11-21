@@ -20,8 +20,8 @@
 	const wanted = $derived(text.trim());
 	const results = $derived.by(() => {
 		if (!rank || !wanted) return [];
-		if (model !== "ready") return rank(wanted);
-		return meaning ? rank(meaning.text, meaning.vector) : [];
+		if (model === "ready" && meaning) return rank(meaning.text, meaning.vector);
+		return rank(wanted);
 	});
 	const current = $derived(model !== "ready" || meaning?.text === wanted);
 	const hrefOf = (entry: Entry) => `${resolve("/")}${entry.path}`;
@@ -34,19 +34,7 @@
 		worker?.postMessage({ text: wanted });
 	};
 
-	function load() {
-		if (!worker) {
-			worker = new Worker(new URL("../search.worker.ts", import.meta.url), { type: "module" });
-			worker.onmessage = ({ data }: MessageEvent<Reply>) => {
-				if ("ready" in data) model = data.ready ? "ready" : "failed";
-				else {
-					busy = false;
-					meaning = data;
-				}
-				ask();
-			};
-			worker.postMessage({ root: new URL(`${resolve("/")}model/`, location.href).href });
-		}
+	function loadIndex() {
 		index ??= Promise.all([
 			import("#lib/search.ts"),
 			fetch(`${resolve("/")}search.json`).then((response) => response.json())
@@ -58,9 +46,25 @@
 			});
 	}
 
+	function loadModel() {
+		if (worker) return;
+		worker = new Worker(new URL("../search.worker.ts", import.meta.url), { type: "module" });
+		worker.onmessage = ({ data }: MessageEvent<Reply>) => {
+			if ("ready" in data) model = data.ready ? "ready" : "failed";
+			else {
+				busy = false;
+				meaning = data;
+			}
+			ask();
+		};
+		worker.postMessage({ root: new URL(`${resolve("/")}model/`, location.href).href });
+	}
+
 	function open() {
-		load();
+		loadIndex();
+		loadModel();
 		text = "";
+		meaning = undefined;
 		dialog.showModal();
 	}
 
@@ -69,7 +73,7 @@
 	});
 
 	$effect(() => {
-		void wanted;
+		if (!wanted) meaning = undefined;
 		chosen = 0;
 		ask();
 	});
@@ -86,8 +90,10 @@
 	const move = (event: KeyboardEvent) => {
 		if (event.key === "ArrowDown") chosen = Math.min(chosen + 1, results.length - 1);
 		else if (event.key === "ArrowUp") chosen = Math.max(chosen - 1, 0);
-		else if (event.key === "Enter" && current && results[chosen]) goto(hrefOf(results[chosen]));
-		else return;
+		else if (event.key === "Enter" && current && results[chosen]) {
+			dialog.close();
+			goto(hrefOf(results[chosen]));
+		} else return;
 		event.preventDefault();
 	};
 </script>
@@ -97,7 +103,7 @@
 <button
 	type="button"
 	onclick={open}
-	onpointerenter={load}
+	onpointerenter={loadIndex}
 	aria-label="Search"
 	class="flex h-8 cursor-pointer items-center gap-2 rounded-sm border-seam px-2 text-muted hover:text-ink pointer-coarse:h-10 sm:w-52 sm:border sm:bg-rack"
 >
@@ -141,6 +147,7 @@
 			<li id="search-result-{index}" role="option" aria-selected={index === chosen}>
 				<a
 					href={hrefOf(entry)}
+					onclick={() => dialog.close()}
 					onpointermove={() => (chosen = index)}
 					class={[
 						"block cursor-pointer rounded-sm px-3 py-2 transition-none",
@@ -156,7 +163,7 @@
 			</li>
 		{/each}
 	</ul>
-	{#if wanted && rank && results.length === 0 && (model !== "ready" || meaning)}
+	{#if wanted && rank && results.length === 0 && current}
 		<p class="border-t border-seam px-4 py-3 text-sm text-muted">No results</p>
 	{/if}
 	{#if model === "loading"}

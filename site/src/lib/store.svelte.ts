@@ -7,8 +7,11 @@ type Entry =
 	| { status: "ready"; resource: Resource }
 	| { status: "failed" };
 
+const maxCachedBytes = 96 * 1024 * 1024;
+
 export class Store {
 	#entries = new SvelteMap<AssetName, Entry>();
+	#recent: AssetName[] = [];
 	#near: readonly AssetName[] = [];
 	#ahead: readonly AssetName[] = [];
 
@@ -28,8 +31,32 @@ export class Store {
 
 	#sync() {
 		const names = [...this.#near, ...this.#ahead];
+		for (const name of names) {
+			const at = this.#recent.indexOf(name);
+			if (at >= 0) this.#recent.splice(at, 1);
+			this.#recent.push(name);
+		}
 		for (const name of [...this.#entries.keys()]) {
-			if (!names.includes(name)) this.#drop(name);
+			if (names.includes(name)) continue;
+			const entry = this.#entries.get(name);
+			if (entry?.status === "ready" && entry.resource instanceof ImageBitmap) continue;
+			this.#drop(name);
+		}
+		let cached = 0;
+		const unused: { name: AssetName; bytes: number }[] = [];
+		for (const name of this.#recent) {
+			if (names.includes(name)) continue;
+			const entry = this.#entries.get(name);
+			if (entry?.status === "ready" && entry.resource instanceof ImageBitmap) {
+				const bytes = entry.resource.width * entry.resource.height * 4;
+				cached += bytes;
+				unused.push({ name, bytes });
+			}
+		}
+		for (const item of unused) {
+			if (cached <= maxCachedBytes) break;
+			cached -= item.bytes;
+			this.#drop(item.name);
 		}
 		for (const name of names) {
 			if (!this.#entries.has(name)) this.#start(name);
@@ -67,5 +94,7 @@ export class Store {
 		if (entry?.status === "loading") entry.controller.abort();
 		if (entry?.status === "ready") release(entry.resource);
 		this.#entries.delete(name);
+		const at = this.#recent.indexOf(name);
+		if (at >= 0) this.#recent.splice(at, 1);
 	}
 }

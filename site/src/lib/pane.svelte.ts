@@ -14,6 +14,7 @@ type Registration = {
 };
 
 type Entry = Registration & { element: HTMLElement };
+type PageMedia = { first: AssetName[]; byId: Record<string, AssetName[]> };
 
 const readingShare = 0.35;
 const notch = 130;
@@ -24,6 +25,8 @@ class Pane {
 	playback = new Playback();
 	store = new Store();
 	#entries: Entry[] = [];
+	#mediaCache: Record<string, PageMedia> = {};
+	#warmId = 0;
 	#current = -1;
 	#pinned = false;
 	#starts: number[] = [];
@@ -44,22 +47,57 @@ class Pane {
 		this.#enter(index);
 	}
 
-	restore(hash: string) {
+	restore(hash: string, smooth = false) {
 		const { id, value } = parseHash(hash);
 		const entry = this.#entries.find((candidate) => candidate.id === id);
-		if (!entry) return;
+		if (!entry) return false;
 		entry.select(value);
-		entry.element.scrollIntoView();
+		entry.element.scrollIntoView({ behavior: smooth ? "smooth" : "instant" });
 		this.activate(id);
+		return true;
+	}
+
+	sync() {
+		if (this.#dirty) this.#measure();
+		if (this.#pinned || this.#entries.length === 0) return;
+		const at = Math.max(scrollY, 0);
+		this.#enter(this.#starts.findLastIndex((start) => start <= at));
 	}
 
 	async warm(link: HTMLAnchorElement) {
-		const text = await (await fetch(link.pathname)).text();
-		const page = new DOMParser().parseFromString(text, "text/html");
-		const section =
-			page.getElementById(parseHash(link.hash).id) ?? page.querySelector("article section");
-		const names = section?.getAttribute("data-media")?.split(" ").filter(Boolean) ?? [];
-		this.store.warm(names as AssetName[]);
+		const path = link.pathname.endsWith("/") ? link.pathname : `${link.pathname}/`;
+		const id = parseHash(link.hash).id;
+		const token = ++this.#warmId;
+		let pageMedia = this.#mediaCache[path];
+		if (!pageMedia) {
+			const text = await (await fetch(path)).text();
+			const parsed = new DOMParser().parseFromString(text, "text/html");
+			const byId: Record<string, AssetName[]> = {};
+			let first: AssetName[] = [];
+			let seen = false;
+			for (const section of parsed.querySelectorAll("article section")) {
+				const names = (section.getAttribute("data-media")?.split(" ").filter(Boolean) ??
+					[]) as AssetName[];
+				if (!seen) {
+					first = names;
+					seen = true;
+				}
+				if (section.id) byId[section.id] = names;
+			}
+			pageMedia = { first, byId };
+			this.#mediaCache[path] = pageMedia;
+		}
+		if (token !== this.#warmId) return;
+		const names = (id ? pageMedia.byId[id] : undefined) ?? pageMedia.first;
+		this.store.warm(names);
+	}
+
+	warmSection(hash: string) {
+		const { id } = parseHash(hash);
+		const entry = this.#entries.find((candidate) => candidate.id === id);
+		if (!entry) return;
+		this.#warmId++;
+		this.store.warm(entry.assets());
 	}
 
 	track(registration: Registration): Attachment<HTMLElement> {
@@ -110,10 +148,7 @@ class Pane {
 
 	#tick = () => {
 		this.#request = 0;
-		if (this.#dirty) this.#measure();
-		if (this.#pinned || this.#entries.length === 0) return;
-		const at = Math.max(scrollY, 0);
-		this.#enter(this.#starts.findLastIndex((start) => start <= at));
+		this.sync();
 	};
 
 	#measure() {

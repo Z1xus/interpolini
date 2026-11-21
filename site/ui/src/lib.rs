@@ -14,8 +14,11 @@ slint::include_modules!();
 
 const SUPERSAMPLE: f32 = 2.0;
 const MAX_DENSITY: f32 = 4.0;
-const REVEAL_EVERY: Duration = Duration::from_millis(200);
+const REVEAL_EVERY: Duration = Duration::from_millis(60);
+const REVEAL_TRIES: u8 = 4;
 const REFIT_AFTER: Duration = Duration::from_millis(100);
+const SNAP_AFTER: Duration = Duration::from_millis(120);
+const HIDE_DIALOG_AFTER: Duration = Duration::from_millis(60);
 
 struct Palette {
     void: u32,
@@ -57,8 +60,18 @@ thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
     static DIALOG: RefCell<Option<Dialog>> = const { RefCell::new(None) };
     static SCENE: RefCell<String> = const { RefCell::new(String::new()) };
+    static APP_SCENE: RefCell<String> = const { RefCell::new(String::new()) };
+    static DIALOG_SCENE: RefCell<String> = const { RefCell::new(String::new()) };
+    static APP_PAUSED: Cell<bool> = const { Cell::new(false) };
+    static APP_DIRTY: Cell<bool> = const { Cell::new(false) };
+    static DIALOG_VISIBLE: Cell<bool> = const { Cell::new(false) };
+    static DIALOG_DIRTY: Cell<bool> = const { Cell::new(false) };
     static REDUCED: Cell<bool> = const { Cell::new(false) };
+    static REVEAL_OPEN: Cell<bool> = const { Cell::new(false) };
+    static REVEAL_LEFT: Cell<u8> = const { Cell::new(0) };
     static REVEAL: Timer = Timer::default();
+    static SNAP: Timer = Timer::default();
+    static HIDE_DIALOG: Timer = Timer::default();
 }
 
 fn color(rgb: u32) -> Color {
@@ -200,31 +213,85 @@ fn when_created<C: ComponentHandle + 'static>(component: &C, ready: fn()) -> Res
 }
 
 #[wasm_bindgen]
-pub fn mount(canvas_id: &str, thumbs: &[u8], peaks: &[u8], frames: &[u8]) -> Result<(), JsValue> {
+pub fn mount(
+    canvas_id: &str,
+    thumbs: &[u8],
+    peaks: &[u8],
+    frames: &[u8],
+    dark: bool,
+    reduced: bool,
+) -> Result<(), JsValue> {
     CANVAS.set(Some(canvas(canvas_id)?));
+    REDUCED.set(reduced);
     let app = demo::app(thumbs, peaks, frames).map_err(|error| error.to_string())?;
-    paint_app(&app, true);
+    paint_app(&app, dark);
+    calm(&app, reduced);
+    app.global::<System>().set_smooth_scroll(!reduced);
     app.show().map_err(|error| error.to_string())?;
-    let created = when_created(&app, fit);
+    let created = when_created(&app, fit_app);
+    APP_SCENE.set("plain".into());
     APP.set(Some(app));
     created
 }
 
+fn hide_dialog_if_unused() {
+    if SCENE.with_borrow(|scene| is_dialog(scene)) || !DIALOG_VISIBLE.get() {
+        return;
+    }
+    DIALOG.with_borrow(|window| {
+        if let Some(window) = window {
+            let _ = window.hide();
+        }
+    });
+    DIALOG_VISIBLE.set(false);
+}
+
 #[wasm_bindgen]
-pub fn mount_dialog(canvas_id: &str) -> Result<(), JsValue> {
+pub fn mount_dialog(canvas_id: &str, dark: bool) -> Result<(), JsValue> {
     CANVAS.set(Some(canvas(canvas_id)?));
     let window = demo::dialog().map_err(|error| error.to_string())?;
-    paint(&window, true);
+    paint(&window, dark);
     calm(&window, REDUCED.get());
-    SCENE.with_borrow(|scene| demo::tab(&window, scene));
+    let initial = SCENE.with_borrow(|scene| {
+        if is_dialog(scene) {
+            scene.clone()
+        } else {
+            "general-settings".into()
+        }
+    });
+    demo::tab(&window, &initial);
+    DIALOG_SCENE.set(initial);
+    DIALOG_DIRTY.set(false);
     window.show().map_err(|error| error.to_string())?;
-    let created = when_created(&window, fit);
+    DIALOG_VISIBLE.set(true);
+    let created = when_created(&window, || {
+        fit_dialog();
+        if !SCENE.with_borrow(|scene| is_dialog(scene)) {
+            HIDE_DIALOG.with(|timer| {
+                timer.start(
+                    TimerMode::SingleShot,
+                    HIDE_DIALOG_AFTER,
+                    hide_dialog_if_unused,
+                );
+            });
+        }
+    });
     DIALOG.set(Some(window));
     created
 }
 
 #[wasm_bindgen]
 pub fn unmount() -> Result<(), JsValue> {
+    REVEAL.with(Timer::stop);
+    SNAP.with(Timer::stop);
+    HIDE_DIALOG.with(Timer::stop);
+    REVEAL_OPEN.set(false);
+    APP_PAUSED.set(false);
+    APP_DIRTY.set(false);
+    DIALOG_VISIBLE.set(false);
+    DIALOG_DIRTY.set(false);
+    APP_SCENE.set(String::new());
+    DIALOG_SCENE.set(String::new());
     if let Some(app) = APP.take() {
         app.hide().map_err(|error| error.to_string())?;
     }
@@ -234,22 +301,55 @@ pub fn unmount() -> Result<(), JsValue> {
     Ok(())
 }
 
+#[wasm_bindgen]
+pub fn pause(paused: bool) -> Result<(), JsValue> {
+    if APP_PAUSED.replace(paused) == paused {
+        return Ok(());
+    }
+    let mut redraw = false;
+    APP.with_borrow(|app| -> Result<(), JsValue> {
+        let Some(app) = app else { return Ok(()) };
+        if paused {
+            app.hide().map_err(|error| error.to_string())?;
+        } else {
+            app.show().map_err(|error| error.to_string())?;
+            if APP_DIRTY.replace(false) {
+                app.window().request_redraw();
+                redraw = true;
+            }
+        }
+        Ok(())
+    })?;
+    if redraw { wake() } else { Ok(()) }
+}
+
+fn density() -> f32 {
+    let ratio = web_sys::window().map_or(1.0, |window| window.device_pixel_ratio() as f32);
+    (SUPERSAMPLE * ratio).min(MAX_DENSITY)
+}
+
 fn size<C: ComponentHandle>(component: &C, logical: (u32, u32), density: f32) {
     let window = component.window();
+    let target = PhysicalSize::new(
+        (logical.0 as f32 * density) as u32,
+        (logical.1 as f32 * density) as u32,
+    );
+    if window.size() == target && (window.scale_factor() - density).abs() < 0.01 {
+        return;
+    }
     window.dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
         scale_factor: density,
     });
-    window.set_size(PhysicalSize::new(
-        (logical.0 as f32 * density) as u32,
-        (logical.1 as f32 * density) as u32,
-    ));
+    window.set_size(target);
 }
 
-#[wasm_bindgen]
-pub fn fit() {
-    let ratio = web_sys::window().map_or(1.0, |window| window.device_pixel_ratio() as f32);
-    let density = (SUPERSAMPLE * ratio).min(MAX_DENSITY);
+fn fit_app() {
+    let density = density();
     APP.with_borrow(|app| app.iter().for_each(|app| size(app, demo::WINDOW, density)));
+}
+
+fn fit_dialog() {
+    let density = density();
     DIALOG.with_borrow(|window| {
         window
             .iter()
@@ -258,40 +358,150 @@ pub fn fit() {
 }
 
 #[wasm_bindgen]
-pub fn open(section: &str) -> Result<(), JsValue> {
-    APP.with_borrow(|app| app.as_ref().map(|app| demo::open(app, section)));
+pub fn fit() {
+    fit_app();
+    fit_dialog();
+}
+
+fn schedule_reveal() {
+    REVEAL_LEFT.set(REVEAL_TRIES);
     // the panel can get its layout after the first reveal
     REVEAL.with(|timer| {
-        if demo::REVEALED.contains(&section) {
-            timer.start(TimerMode::Repeated, REVEAL_EVERY, || {
-                APP.with_borrow(|app| app.as_ref().map(demo::reveal));
-            });
-        } else {
-            timer.stop();
-        }
+        timer.start(TimerMode::Repeated, REVEAL_EVERY, || {
+            APP.with_borrow(|app| app.as_ref().map(demo::reveal));
+            let left = REVEAL_LEFT.get().saturating_sub(1);
+            REVEAL_LEFT.set(left);
+            if left == 0 {
+                REVEAL.with(Timer::stop);
+            }
+        });
     });
-    wake()
+}
+
+fn wake_app() -> Result<(), JsValue> {
+    if APP_PAUSED.get() {
+        APP_DIRTY.set(true);
+        Ok(())
+    } else {
+        wake()
+    }
+}
+
+#[wasm_bindgen]
+pub fn open(section: &str) -> Result<(), JsValue> {
+    APP.with_borrow(|app| app.as_ref().map(|app| demo::open(app, section)));
+    let revealed = demo::REVEALED.contains(&section);
+    REVEAL_OPEN.set(revealed);
+    if revealed {
+        schedule_reveal();
+    } else {
+        REVEAL.with(Timer::stop);
+    }
+    wake_app()
+}
+
+fn is_dialog(name: &str) -> bool {
+    matches!(
+        name,
+        "components" | "components-install" | "projects-settings" | "general-settings"
+    )
+}
+
+fn app_scene(name: &str) -> &str {
+    if is_dialog(name) { "plain" } else { name }
 }
 
 #[wasm_bindgen]
 pub fn scene(name: &str) -> Result<(), JsValue> {
     SCENE.set(name.into());
-    APP.with_borrow(|app| app.as_ref().map(|app| demo::scene(app, name)).transpose())?;
-    DIALOG.with_borrow(|window| window.iter().for_each(|window| demo::tab(window, name)));
-    // a scene can change the minimum size, and slint then resizes the window from a stale size
-    Timer::single_shot(REFIT_AFTER, fit);
-    wake()
+    let target = app_scene(name);
+    let mut app_changed = false;
+    let mut dialog_changed = false;
+    let same = APP_SCENE.with_borrow(|current| current == target);
+    if !same {
+        APP.with_borrow(|app| {
+            app.as_ref()
+                .map(|app| {
+                    calm(app, true);
+                    demo::scene(app, target)
+                })
+                .transpose()
+        })?;
+        APP_SCENE.set(target.into());
+        // a scene can change the minimum size, and slint then resizes the window from a stale size
+        Timer::single_shot(REFIT_AFTER, fit_app);
+        SNAP.with(|timer| {
+            timer.start(TimerMode::SingleShot, SNAP_AFTER, || {
+                let reduced = REDUCED.get();
+                APP.with_borrow(|app| app.iter().for_each(|app| calm(app, reduced)));
+            });
+        });
+        app_changed = true;
+    }
+    if is_dialog(name) {
+        HIDE_DIALOG.with(Timer::stop);
+        let tab_changed = DIALOG_SCENE.with_borrow(|current| current != name);
+        let shown = DIALOG_VISIBLE.get();
+        let dirty = DIALOG_DIRTY.replace(false);
+        let updated = DIALOG.with_borrow(|window| -> Result<bool, JsValue> {
+            let Some(window) = window else {
+                return Ok(false);
+            };
+            if !shown {
+                window.show().map_err(|error| error.to_string())?;
+            }
+            if tab_changed {
+                demo::tab(window, name);
+            }
+            if !shown && (dirty || tab_changed) {
+                window.window().request_redraw();
+            }
+            Ok(tab_changed || !shown)
+        })?;
+        if updated {
+            if tab_changed {
+                DIALOG_SCENE.set(name.into());
+            }
+            DIALOG_VISIBLE.set(true);
+            dialog_changed = true;
+        }
+    } else if DIALOG_VISIBLE.get() {
+        HIDE_DIALOG.with(Timer::stop);
+        DIALOG.with_borrow(|window| {
+            if let Some(window) = window {
+                let _ = window.hide();
+            }
+        });
+        DIALOG_VISIBLE.set(false);
+    }
+    if app_changed && APP_PAUSED.get() {
+        APP_DIRTY.set(true);
+    }
+    if (app_changed && !APP_PAUSED.get()) || dialog_changed {
+        wake()
+    } else {
+        Ok(())
+    }
 }
 
 #[wasm_bindgen]
 pub fn theme(dark: bool) -> Result<(), JsValue> {
     APP.with_borrow(|app| app.iter().for_each(|app| paint_app(app, dark)));
     DIALOG.with_borrow(|window| window.iter().for_each(|window| paint(window, dark)));
-    wake()
+    if !DIALOG_VISIBLE.get() {
+        DIALOG_DIRTY.set(true);
+    }
+    if APP_PAUSED.get() {
+        APP_DIRTY.set(true);
+        if DIALOG_VISIBLE.get() { wake() } else { Ok(()) }
+    } else {
+        wake()
+    }
 }
 
 #[wasm_bindgen]
 pub fn motion(reduced: bool) -> Result<(), JsValue> {
+    SNAP.with(Timer::stop);
     REDUCED.set(reduced);
     APP.with_borrow(|app| {
         app.iter().for_each(|app| {
@@ -300,7 +510,7 @@ pub fn motion(reduced: bool) -> Result<(), JsValue> {
         })
     });
     DIALOG.with_borrow(|window| window.iter().for_each(|window| calm(window, reduced)));
-    wake()
+    wake_app()
 }
 
 #[wasm_bindgen]
@@ -331,7 +541,10 @@ pub fn configure(
             demo::set_weights(app, weights);
         }
     });
-    wake()
+    if REVEAL_OPEN.get() {
+        schedule_reveal();
+    }
+    wake_app()
 }
 
 #[wasm_bindgen]
@@ -341,7 +554,7 @@ pub fn position(seconds: f32) -> Result<(), JsValue> {
             demo::position(app, seconds);
         }
     });
-    wake()
+    wake_app()
 }
 
 #[wasm_bindgen]
@@ -351,5 +564,5 @@ pub fn thumbnails(bytes: &[u8]) -> Result<(), JsValue> {
             demo::set_thumbnails(app, bytes);
         }
     });
-    wake()
+    wake_app()
 }

@@ -22,15 +22,19 @@
 	const focus = $derived(pane.focus ?? { rect: regions.window });
 	const name = $derived(focus.show && assetOf(focus.show));
 	const entry = $derived(name && pane.store.get(name));
-	const pixels = $derived(
-		focus.show && entry?.status === "ready" ? pixelsOf(focus.show, entry.resource) : stills.width
-	);
+	const pixels = $derived(focus.show ? pixelsOf(focus.show) : stills.width);
 	const shape = $derived(camera(focus, band.current, width, height, pixels));
 	const problem = $derived(status === "failed" || broken || entry?.status === "failed");
-	const waiting = $derived(status === "loading" || entry?.status === "loading");
+	const waiting = $derived(
+		status === "loading" ||
+			(Boolean(name) && entry?.status !== "ready" && entry?.status !== "failed")
+	);
+	const ready = $derived(Boolean(pane.focus) && width > 0 && height > 0 && !waiting);
 	let shown = $state(false);
 	$effect(() => {
-		if (!waiting) shown = true;
+		if (!ready || shown) return;
+		const frame = requestAnimationFrame(() => (shown = true));
+		return () => cancelAnimationFrame(frame);
 	});
 
 	const retry = () => {
@@ -69,8 +73,10 @@
 		<div
 			inert
 			class={[
-				"relative duration-[900ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
-				shown ? "transition-[scale,translate,opacity]" : "opacity-0"
+				"relative",
+				shown
+					? "[transition:scale_900ms_cubic-bezier(0.22,1,0.36,1),translate_900ms_cubic-bezier(0.22,1,0.36,1),opacity_300ms_ease-out]"
+					: "opacity-0 transition-none"
 			]}
 			style:aspect-ratio={aspect}
 			style:width="min(100cqw, {aspect * 100}cqh)"
