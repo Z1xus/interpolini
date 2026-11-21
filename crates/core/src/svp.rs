@@ -1,7 +1,7 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::mem::ManuallyDrop;
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, Weak};
 
 use libloading::Library;
 
@@ -273,6 +273,7 @@ impl Shape {
 }
 
 static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
+static SHARED: Mutex<Weak<Svp>> = Mutex::new(Weak::new());
 
 pub fn retune() {
     if let Some(Ok(api)) = API.get() {
@@ -282,6 +283,11 @@ pub fn retune() {
 
 impl Svp {
     pub fn load(directory: &Path) -> Result<Arc<Self>> {
+        let mut shared = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(existing) = shared.upgrade() {
+            retune();
+            return Ok(existing);
+        }
         let api = API.get_or_init(|| {
             let path = directory.join(libloading::library_filename("open_svpflow"));
             let library = unsafe { Library::new(&path) }
@@ -296,7 +302,9 @@ impl Svp {
         if context.is_null() {
             return Err(unsafe { error(api, None) });
         }
-        Ok(Arc::new(Self { api, context }))
+        let svp = Arc::new(Self { api, context });
+        *shared = Arc::downgrade(&svp);
+        Ok(svp)
     }
 
     fn clip(self: &Arc<Self>, raw: Raw) -> Result<Clip> {
@@ -580,11 +588,10 @@ impl Options {
         };
 
         let pel = if speed == Speed::Medium { "" } else { "pel:1," };
-        let lean = if gpu && !animation {
-            "lean:true,"
-        } else {
-            ""
-        };
+        let gpu_analyse = gpu
+            && !animation
+            && (matches!(speed, Speed::Medium | Speed::Fast) || budget::machine().cores < 6);
+        let lean = if gpu_analyse { "lean:true," } else { "" };
         let supers = format!("{{{pel}{lean}{fast}gpu:{}}}", u8::from(gpu));
 
         let block = match speed {

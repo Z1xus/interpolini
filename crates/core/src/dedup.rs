@@ -80,7 +80,7 @@ fn distance(first: &[u8], second: &[u8]) -> u64 {
 
 pub fn differences(clip: &Path, from: f64, to: f64, cancel: &Cancel) -> Result<Vec<Vec<f32>>> {
     const SAMPLE: i32 = 100;
-    let mut probe = Decoder::chosen(clip, |_, height| budget::decode(height))?
+    let mut probe = Decoder::chosen(clip, |_, height| budget::own().min(budget::useful(height)))?
         .following(&Follow::new(cancel));
     let meta = probe.meta();
     let Meta {
@@ -113,7 +113,7 @@ pub fn differences(clip: &Path, from: f64, to: f64, cancel: &Cancel) -> Result<V
         return Ok(vec![row]);
     }
     drop(probe);
-    let threads = (budget::decode(meta.height) / SPOTS as usize).max(1);
+    let threads = (budget::own().min(budget::useful(meta.height)) / SPOTS as usize).max(1);
     let third = span / SPOTS;
     let ranges: Vec<_> = (0..SPOTS)
         .map(|spot| {

@@ -567,31 +567,10 @@ fn gpus() -> [Gpu; 2] {
     [Gpu::AV_HWDEVICE_TYPE_CUDA, own]
 }
 
-fn available_gpus() -> &'static [Gpu] {
-    static GPUS: OnceLock<Vec<Gpu>> = OnceLock::new();
-    GPUS.get_or_init(|| {
-        ffmpeg_next::log::set_level(Level::Quiet);
-        let found = gpus()
-            .into_iter()
-            .filter(|&kind| unsafe {
-                let mut device = std::ptr::null_mut();
-                let ok = ffi::av_hwdevice_ctx_create(
-                    &mut device,
-                    kind,
-                    std::ptr::null(),
-                    std::ptr::null_mut(),
-                    0,
-                ) >= 0;
-                if !device.is_null() {
-                    ffi::av_buffer_unref(&mut device);
-                }
-                ok
-            })
-            .collect();
-        ffmpeg_next::log::set_level(Level::Error);
-        found
-    })
-}
+static FAILED_GPUS: [std::sync::atomic::AtomicBool; 2] = [
+    std::sync::atomic::AtomicBool::new(false),
+    std::sync::atomic::AtomicBool::new(false),
+];
 
 fn row(picture: &frame::Video, plane: usize, y: usize) -> &[u8] {
     &picture.data(plane)[y * picture.stride(plane)..]
@@ -967,24 +946,33 @@ impl Decoder {
         if !exact || cpu.meta.cropped || !(native(format, false) || yuv444(format)) {
             return None;
         }
-        let available = available_gpus();
-        if available.is_empty() {
+        if FAILED_GPUS
+            .iter()
+            .all(|failed| failed.load(std::sync::atomic::Ordering::Relaxed))
+        {
             return None;
         }
         let reference = cpu.picture(0).ok()?;
         let by = cpu.by;
         ffmpeg_next::log::set_level(Level::Quiet);
-        let mut rungs = available
-            .iter()
-            .copied()
-            .flat_map(|kind| [(kind, FLIGHT), (kind, 1)]);
-        let found = rungs.find_map(|(kind, threads)| {
-            let mut decoder = Self::start(path, |_, _| threads, Some(kind))
-                .ok()?
-                .shrink(by);
-            let picture = decoder.picture(0).ok()?;
-            decoder.meta = cpu.meta;
-            same(&picture, &reference).then_some(decoder)
+        let found = gpus().into_iter().enumerate().find_map(|(slot, kind)| {
+            if FAILED_GPUS[slot].load(std::sync::atomic::Ordering::Relaxed) {
+                return None;
+            }
+            let mut opened = false;
+            let hit = [FLIGHT, 1].into_iter().find_map(|threads| {
+                let mut decoder = Self::start(path, |_, _| threads, Some(kind))
+                    .ok()?
+                    .shrink(by);
+                opened = true;
+                let picture = decoder.picture(0).ok()?;
+                decoder.meta = cpu.meta;
+                same(&picture, &reference).then_some(decoder)
+            });
+            if !opened {
+                FAILED_GPUS[slot].store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            hit
         });
         ffmpeg_next::log::set_level(Level::Error);
         found
@@ -1140,8 +1128,7 @@ impl Decoder {
         let picture = picture.unwrap_or(wide.max(1) as usize * high.max(1) as usize * 3);
         let keep = match budget::current() {
             Class::Interactive => (HISTORY / picture).clamp(PAST, 64),
-            Class::Render => 2,
-            Class::Background => PAST,
+            Class::Render | Class::Background => PAST,
         };
         Ok(Self {
             path: path.to_owned(),
@@ -1606,7 +1593,7 @@ impl Decoder {
 
 pub(crate) fn ahead(picture: usize) -> usize {
     let limit = budget::bytes(budget::current()) / 16;
-    (limit / picture.max(1)).clamp(8, 24)
+    (limit / picture.max(1)).clamp(8, 12)
 }
 
 type Link = (mpsc::Sender<i32>, mpsc::Receiver<Result<frame::Video>>);
