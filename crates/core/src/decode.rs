@@ -935,12 +935,43 @@ impl Decoder {
         Self::gpu_from(path, &mut cpu)
     }
 
+    fn bits_per_frame(&self, fps: f64) -> Option<f64> {
+        if fps <= 0.0 {
+            return None;
+        }
+        let stream_rate = self
+            .input
+            .stream(self.stream)
+            .map(|stream| unsafe { (*stream.parameters().as_ptr()).bit_rate })
+            .unwrap_or(0);
+        let rate = if stream_rate > 0 {
+            stream_rate as f64
+        } else {
+            let container = unsafe { (*self.input.as_ptr()).bit_rate };
+            if container > 0 {
+                container as f64
+            } else {
+                let bytes = std::fs::metadata(&self.path).ok()?.len() as f64;
+                let seconds = f64::from(self.meta.frames) / fps;
+                if seconds <= 0.0 {
+                    return None;
+                }
+                bytes * 8.0 / seconds
+            }
+        };
+        Some(rate / fps)
+    }
+
     pub(crate) fn fast_cpu(&self, fps: f64, interpolate: bool) -> bool {
         self.decoder.id() == codec::Id::H264
             && self.meta.width <= 1920
             && self.meta.height <= 1080
             && budget::machine().cores >= 8
-            && (fps >= 120.0 || !interpolate)
+            && (!interpolate
+                || (fps >= 120.0
+                    && self
+                        .bits_per_frame(fps)
+                        .is_some_and(|bits| bits <= 250_000.0)))
     }
 
     pub fn gpu_from(path: &Path, cpu: &mut Self) -> Option<Self> {
