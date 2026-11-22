@@ -963,15 +963,17 @@ impl Decoder {
     }
 
     pub(crate) fn fast_cpu(&self, fps: f64, interpolate: bool) -> bool {
-        self.decoder.id() == codec::Id::H264
-            && self.meta.width <= 1920
-            && self.meta.height <= 1080
-            && budget::machine().cores >= 8
+        let cores = budget::own();
+        let pixels = u64::from(self.meta.width) * u64::from(self.meta.height);
+        !cfg!(target_os = "macos")
+            && self.decoder.id() == codec::Id::H264
+            && pixels <= 1920 * 1080
+            && cores >= 8
             && (!interpolate
                 || (fps >= 120.0
                     && self
                         .bits_per_frame(fps)
-                        .is_some_and(|bits| bits <= 250_000.0)))
+                        .is_some_and(|bits| bits <= 25_000.0 * cores as f64)))
     }
 
     pub fn gpu_from(path: &Path, cpu: &mut Self) -> Option<Self> {
