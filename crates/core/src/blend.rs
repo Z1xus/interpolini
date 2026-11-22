@@ -18,6 +18,7 @@ const BLOCK_WINDOW: usize = 12;
 const BLOCK_FRAMES: usize = 8;
 const TILE: usize = 256;
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C, align(32))]
 struct AccU16([u16; TILE]);
 
@@ -1322,15 +1323,18 @@ fn resolve_u16_16_neon(
     vrecip: std::arch::aarch64::uint32x4_t,
 ) -> std::arch::aarch64::uint8x16_t {
     use std::arch::aarch64::{
-        vcombine_u8, vcombine_u16, vget_low_u16, vmovl_high_u16, vmovl_u16, vmulq_u32, vqmovn_u16,
-        vqshrn_n_u32,
+        vcombine_u8, vcombine_u16, vget_low_u16, vmovl_high_u16, vmovl_u16, vmulq_u32,
+        vqshrn_n_u16, vshrn_n_u32,
     };
     unsafe {
-        let q0 = vqshrn_n_u32::<24>(vmulq_u32(vmovl_u16(vget_low_u16(s0)), vrecip));
-        let q1 = vqshrn_n_u32::<24>(vmulq_u32(vmovl_high_u16(s0), vrecip));
-        let q2 = vqshrn_n_u32::<24>(vmulq_u32(vmovl_u16(vget_low_u16(s1)), vrecip));
-        let q3 = vqshrn_n_u32::<24>(vmulq_u32(vmovl_high_u16(s1), vrecip));
-        vcombine_u8(vqmovn_u16(vcombine_u16(q0, q1)), vqmovn_u16(vcombine_u16(q2, q3)))
+        let q0 = vshrn_n_u32::<16>(vmulq_u32(vmovl_u16(vget_low_u16(s0)), vrecip));
+        let q1 = vshrn_n_u32::<16>(vmulq_u32(vmovl_high_u16(s0), vrecip));
+        let q2 = vshrn_n_u32::<16>(vmulq_u32(vmovl_u16(vget_low_u16(s1)), vrecip));
+        let q3 = vshrn_n_u32::<16>(vmulq_u32(vmovl_high_u16(s1), vrecip));
+        vcombine_u8(
+            vqshrn_n_u16::<8>(vcombine_u16(q0, q1)),
+            vqshrn_n_u16::<8>(vcombine_u16(q2, q3)),
+        )
     }
 }
 
