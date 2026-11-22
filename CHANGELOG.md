@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.35
+- New: Fast mode for SVP
+- Faster: Everything, you need to move faster than that amigo, speed is life
+- Fixed: Delayed release notes in the update window
+
 ## 0.1.34
 - Faster: RIFE with peel mask
 - Fixed: Preview freeze on mask changes
