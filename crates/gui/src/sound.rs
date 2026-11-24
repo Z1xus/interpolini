@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use interpolini_core::work;
@@ -13,6 +14,7 @@ const SLICE: usize = 2048;
 
 // the gain, as the bits of a float
 static LEVEL: AtomicU32 = AtomicU32::new(0);
+static MISSED: AtomicUsize = AtomicUsize::new(0);
 
 // half of the slider sounds half as loud, which is 10 decibels less
 pub fn level(volume: f32) {
@@ -21,7 +23,7 @@ pub fn level(volume: f32) {
 }
 
 enum Command {
-    Start(Vec<Sound>, f64, Option<Munch>),
+    Start(Vec<Sound>, f64, Option<Munch>, Instant),
     Stop,
 }
 
@@ -55,7 +57,7 @@ impl Audio {
     }
 
     pub fn start(&self, sounds: Vec<Sound>, seconds: f64, munch: Option<Munch>) {
-        self.send(Command::Start(sounds, seconds, munch));
+        self.send(Command::Start(sounds, seconds, munch, Instant::now()));
     }
 
     pub fn stop(&self) {
@@ -92,12 +94,15 @@ fn open(queue: &Queue, signal: &Shared, broken: &Arc<AtomicBool>) -> Option<cpal
         let mut room = false;
         let mut waiting = waiting.try_lock().ok();
         let target = f32::from_bits(LEVEL.load(Ordering::Relaxed));
+        let mut missed = 0;
         for sample in output {
             // the level moves in small steps, a jump is heard as a click
             level += (target - level) * 0.002;
             let next = waiting.as_mut().and_then(|queue| queue.pop_front());
+            missed += usize::from(next.is_none());
             *sample = next.unwrap_or(0.0) * level;
         }
+        MISSED.fetch_add(missed, Ordering::Relaxed);
         if let Some(queue) = &waiting {
             room = queue.len() + 2 * SLICE <= AHEAD;
         }
@@ -139,7 +144,7 @@ fn run(signal: &Shared) {
                     let _ = stream.pause();
                 }
             }
-            Some(Command::Start(sounds, seconds, munch)) => {
+            Some(Command::Start(sounds, seconds, munch, asked)) => {
                 let mixer = Mixer::new(&sounds, true);
                 playing = None;
                 locked(&queue).clear();
@@ -150,6 +155,8 @@ fn run(signal: &Shared) {
                     stream = stream.or_else(|| open(&queue, signal, &broken));
                     let started = stream.as_ref().is_some_and(|stream| stream.play().is_ok());
                     if started {
+                        let late = asked.elapsed().as_secs_f64() * f64::from(RATE);
+                        MISSED.store(2 * late as usize, Ordering::Relaxed);
                         playing =
                             Some((mixer, (seconds * f64::from(RATE)) as i64, munch, [0.0; 2]));
                         locked(&signal.0).hungry = true;
@@ -175,7 +182,17 @@ fn run(signal: &Shared) {
             }
             let [left, right] = samples;
             *position += SLICE as i64;
-            let both = left.iter().zip(&right).flat_map(|(l, r)| [*l, *r]);
+            // the picture never waits for the sound
+            let missed = MISSED.swap(0, Ordering::Relaxed) / 2;
+            if missed > SLICE {
+                if mixer.take(0, *position, missed - SLICE).is_err() {
+                    playing = None;
+                    break;
+                }
+                *position += (missed - SLICE) as i64;
+            }
+            let both = left.iter().zip(&right).skip(missed);
+            let both = both.flat_map(|(l, r)| [*l, *r]);
             locked(&queue).extend(both);
             let held = locked(&signal.0);
             if held.command.is_some() || held.closed {
