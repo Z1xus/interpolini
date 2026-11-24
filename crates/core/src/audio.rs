@@ -23,6 +23,8 @@ const MAX_WINDOW: usize = 30;
 const SAME: f64 = 0.05;
 // the energy per sample under which a track is silent
 const SILENT: f64 = 1e-8;
+// opus needs 80 ms of sound before the cut
+const PREROLL: f64 = 0.1;
 
 struct Track {
     stream: usize,
@@ -150,24 +152,7 @@ impl Source {
                 rate: rate.max(1),
             });
         }
-        let stream_count = input.streams().len();
-        let start = unsafe {
-            let context = input.as_mut_ptr();
-            for index in 0..stream_count {
-                if !kept_streams.contains(&index) {
-                    (**(*context).streams.add(index)).discard = ffi::AVDiscard::AVDISCARD_ALL;
-                }
-            }
-            let offset =
-                crate::decode::origin(&input) + (start * f64::from(ffi::AV_TIME_BASE)) as i64;
-            if start > 0.0 {
-                ffi::av_seek_frame(context, -1, offset, ffi::AVSEEK_FLAG_BACKWARD);
-                for track in &mut tracks {
-                    track.decoder.flush();
-                }
-            }
-            offset as f64 / f64::from(ffi::AV_TIME_BASE)
-        };
+        let start = seek(&mut input, start, |index| kept_streams.contains(&index));
         Ok(Self {
             input,
             tracks,
@@ -233,6 +218,24 @@ impl Source {
         }
         Ok(output)
     }
+}
+
+pub fn seek(input: &mut format::context::Input, start: f64, keep: impl Fn(usize) -> bool) -> f64 {
+    let offset = crate::decode::origin(input) + (start * f64::from(ffi::AV_TIME_BASE)) as i64;
+    unsafe {
+        let context = input.as_mut_ptr();
+        // seek before the discard, mkv indexes only the video
+        if start > PREROLL {
+            let margin = (PREROLL * f64::from(ffi::AV_TIME_BASE)) as i64;
+            ffi::av_seek_frame(context, -1, offset - margin, ffi::AVSEEK_FLAG_BACKWARD);
+        }
+        for index in 0..(*context).nb_streams as usize {
+            if !keep(index) {
+                (**(*context).streams.add(index)).discard = ffi::AVDiscard::AVDISCARD_ALL;
+            }
+        }
+    }
+    offset as f64 / f64::from(ffi::AV_TIME_BASE)
 }
 
 pub fn peaks(clip: &Path, seconds: f64, count: usize, cancel: &Cancel) -> Result<Vec<Vec<f32>>> {

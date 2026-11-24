@@ -8,7 +8,7 @@ use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, ffi, frame, medi
 use rayon::prelude::*;
 
 use crate::Result;
-use crate::audio::{Lane, Mixer, RATE, Source, name};
+use crate::audio::{Lane, Mixer, RATE, Source, name, seek};
 use crate::budget;
 use crate::compose::Scaler;
 use crate::config::{self, Codec, Effort, Output};
@@ -273,20 +273,7 @@ impl Audio {
         if streams.iter().all(Option::is_none) {
             return Ok(None);
         }
-        let offset = unsafe {
-            let context = input.as_mut_ptr();
-            for (index, stream) in streams.iter().enumerate() {
-                if stream.is_none() {
-                    (**(*context).streams.add(index)).discard = ffi::AVDiscard::AVDISCARD_ALL;
-                }
-            }
-            let offset =
-                crate::decode::origin(&input) + (start * f64::from(ffi::AV_TIME_BASE)) as i64;
-            if start > 0.0 {
-                ffi::av_seek_frame(context, -1, offset, ffi::AVSEEK_FLAG_BACKWARD);
-            }
-            offset as f64 / f64::from(ffi::AV_TIME_BASE)
-        };
+        let offset = seek(&mut input, start, |index| streams[index].is_some());
         Ok(Some(Self {
             input,
             streams,
