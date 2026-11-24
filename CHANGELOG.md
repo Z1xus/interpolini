@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.36
+- Faster: MKV audio seeking
+- Fixed: Preview audio sync
+- Fixed: Cached preview CPU spikes
+- Fixed: Memory and autosave settings resetting
+- Fixed: Windows parking work on E-cores
+
 ## 0.1.35
 - New: Fast mode for SVP
 - Faster: Everything, you need to move faster than that amigo, speed is life
