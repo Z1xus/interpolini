@@ -180,8 +180,112 @@ pub fn bytes(class: Class) -> usize {
     }
 }
 
+#[cfg(windows)]
+mod priority {
+    use std::ffi::c_void;
+    use std::sync::Once;
+
+    use super::Class;
+
+    const PROCESS_POWER_THROTTLING: i32 = 4;
+    const THREAD_POWER_THROTTLING: i32 = 3;
+    const CURRENT_VERSION: u32 = 1;
+    const EXECUTION_SPEED: u32 = 1;
+    const IGNORE_TIMER_RESOLUTION: u32 = 4;
+    const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
+    const THREAD_PRIORITY_NORMAL: i32 = 0;
+
+    #[repr(C)]
+    struct PowerThrottlingState {
+        version: u32,
+        control_mask: u32,
+        state_mask: u32,
+    }
+
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut c_void;
+        fn GetCurrentThread() -> *mut c_void;
+        fn SetProcessInformation(
+            process: *mut c_void,
+            class: i32,
+            information: *const c_void,
+            size: u32,
+        ) -> i32;
+        fn SetThreadInformation(
+            thread: *mut c_void,
+            class: i32,
+            information: *const c_void,
+            size: u32,
+        ) -> i32;
+        fn SetThreadPriority(thread: *mut c_void, priority: i32) -> i32;
+    }
+
+    fn process() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| unsafe {
+            let process = GetCurrentProcess();
+            // set both flags together because each call replaces the mask
+            let combined = PowerThrottlingState {
+                version: CURRENT_VERSION,
+                control_mask: EXECUTION_SPEED | IGNORE_TIMER_RESOLUTION,
+                state_mask: 0,
+            };
+            let ok = SetProcessInformation(
+                process,
+                PROCESS_POWER_THROTTLING,
+                (&raw const combined).cast(),
+                size_of::<PowerThrottlingState>() as u32,
+            );
+            if ok == 0 {
+                let speed = PowerThrottlingState {
+                    version: CURRENT_VERSION,
+                    control_mask: EXECUTION_SPEED,
+                    state_mask: 0,
+                };
+                SetProcessInformation(
+                    process,
+                    PROCESS_POWER_THROTTLING,
+                    (&raw const speed).cast(),
+                    size_of::<PowerThrottlingState>() as u32,
+                );
+            }
+        });
+    }
+
+    pub(super) fn thread(class: Class) {
+        process();
+        let (throttled, priority) = match class {
+            Class::Interactive | Class::Render => (0, THREAD_PRIORITY_NORMAL),
+            Class::Background => (EXECUTION_SPEED, THREAD_PRIORITY_BELOW_NORMAL),
+        };
+        let state = PowerThrottlingState {
+            version: CURRENT_VERSION,
+            control_mask: EXECUTION_SPEED,
+            state_mask: throttled,
+        };
+        unsafe {
+            let thread = GetCurrentThread();
+            SetThreadInformation(
+                thread,
+                THREAD_POWER_THROTTLING,
+                (&raw const state).cast(),
+                size_of::<PowerThrottlingState>() as u32,
+            );
+            SetThreadPriority(thread, priority);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod priority {
+    use super::Class;
+
+    pub(super) fn thread(_: Class) {}
+}
+
 pub fn enter(class: Class) {
     CLASS.set(class);
+    priority::thread(class);
 }
 
 pub fn current() -> Class {
@@ -224,8 +328,10 @@ pub fn install<R: Send>(work: impl FnOnce() -> R + Send) -> R {
     let class = current();
     let pool = POOLS[class as usize].get_or_init(|| {
         let name = format!("{class:?}").to_lowercase();
-        let builder = ThreadPoolBuilder::new().num_threads(most(class));
-        let builder = builder.thread_name(move |index| format!("{name} {index}"));
+        let builder = ThreadPoolBuilder::new()
+            .num_threads(most(class))
+            .thread_name(move |index| format!("{name} {index}"))
+            .start_handler(move |_| enter(class));
         builder.build().expect("a thread pool could not start")
     });
     pool.install(work)

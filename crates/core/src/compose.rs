@@ -27,8 +27,13 @@ impl Scaler {
 
     pub fn with(flags: ffi::SwsFlags) -> Self {
         let scaler = unsafe { ffi::sws_alloc_context() };
+        let max = match budget::current() {
+            budget::Class::Interactive => 4,
+            budget::Class::Background => 2,
+            budget::Class::Render => 8,
+        };
         unsafe {
-            (*scaler).threads = budget::own() as i32;
+            (*scaler).threads = budget::own().min(max) as i32;
             (*scaler).flags = flags as u32;
         }
         Self(scaler)
@@ -230,6 +235,12 @@ impl Source {
         cache.is_some_and(|cache| cache.has(cache.index(seconds)))
     }
 
+    pub fn exact(&self, seconds: f64) -> bool {
+        self.cache
+            .as_ref()
+            .is_some_and(|cache| cache.exact(seconds))
+    }
+
     pub fn every(&self) -> usize {
         self.cache
             .as_ref()
@@ -273,6 +284,15 @@ impl Sources {
             None => self
                 .reader(clip, config)
                 .is_some_and(|reader| reader.has(reader.index(seconds))),
+        }
+    }
+
+    pub fn exact(&mut self, clip: &Path, config: &Config, seconds: f64) -> bool {
+        match self.find(clip, config) {
+            Some(index) => self.0[index].2.exact(seconds),
+            None => self
+                .reader(clip, config)
+                .is_some_and(|reader| reader.exact(seconds)),
         }
     }
 

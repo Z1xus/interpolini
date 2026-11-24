@@ -46,12 +46,16 @@ const BURST: u32 = 4;
 const SMALLEST: u32 = 240;
 // 3 s at 60 fps
 const FILL: usize = 180;
+// cached playback keeps a short lookahead instead of decoding 3 s ahead at full cpu
+const CACHED_AHEAD: f64 = 0.25;
 // a seek that stays this long starts the cache fill
 const IDLE: Duration = Duration::from_millis(300);
 // a clip can end a frame before its stretch, and stretches can leave a gap as small
 const EDGE: f64 = 0.05;
 // the seconds before the end of a stretch when the clips of the next one open
 const EARLY: f64 = 2.0;
+// playback clock runway so paced cached playback still opens the next stretch early enough
+const EARLY_CLOCK: f64 = 4.5;
 pub const THUMBS: usize = 8;
 // the software renderer skips columns past 4096
 const WAVE: (usize, usize) = (120, 4096);
@@ -298,6 +302,16 @@ fn hit(open: &mut Sources, layer: &Layer, moved: f64) -> bool {
         &layer.config,
         layer.start + moved * layer.speed,
     )
+}
+
+fn hit_used(open: &mut Sources, layer: &Layer, moved: f64) -> bool {
+    hit(open, layer, moved)
+        || (layer.factor > 1
+            && open.cached(
+                &layer.clip,
+                &result(layer),
+                layer.start + moved * layer.speed,
+            ))
 }
 
 fn gather(
@@ -623,14 +637,6 @@ impl Worker {
             note(ui, String::new(), Note::Sticky, -1.0);
             return None;
         };
-        if !quiet {
-            let cancel = cancel.clone();
-            let _ = ui.upgrade_in_event_loop(move |ui| {
-                if !cancel.stopped() && ui.get_note_kind() != Note::Notice {
-                    say(&ui, "Rendering…".into(), Note::Sticky, -1.0);
-                }
-            });
-        }
         let view = match (view, save) {
             (View::Result, Some(true)) => View::Both,
             (view, _) => view,
@@ -683,6 +689,25 @@ impl Worker {
             }
         }
         // the old graphs must free the gpu first, also the full size ones of a smaller playback
+        let ready = !play
+            && save.is_none()
+            && view != View::Original
+            && shown
+                .iter()
+                .all(|(layer, config)| open.get(&layer.clip, config).is_some())
+            && first
+                .layers
+                .iter()
+                .filter(|layer| !layer.still && !layer.plain)
+                .all(|layer| hit(open, layer, 0.0));
+        if !quiet && !ready {
+            let cancel = cancel.clone();
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                if !cancel.stopped() && ui.get_note_kind() != Note::Notice {
+                    say(&ui, "Rendering…".into(), Note::Sticky, -1.0);
+                }
+            });
+        }
         let small = play && factor > 1;
         let near = parts.iter().take(2).map(|stretch| &stretch.layers);
         let near = near.filter(|_| !small).chain(&scaled);
@@ -772,22 +797,32 @@ impl Worker {
             fps,
             step: 1.0 / fps,
         };
-        // a cached picture shows at once, and the exact one takes its place
-        let solid = layers.iter().filter(|layer| !layer.still);
-        if view != View::Original
-            && solid.into_iter().all(|layer| hit(open, layer, 0.0))
-            && let Ok(quick) = pair(open, canvas, layers, (view, true), 0.0, width, cancel)
-        {
-            post(ui, cancel, frame(quick), String::new(), None, false);
+        // a cached picture shows at once, falling back on misses, skipped frames, or settled compare view
+        let cached = view != View::Original
+            && layers
+                .iter()
+                .filter(|layer| !layer.still && !layer.plain)
+                .all(|layer| hit(open, layer, 0.0));
+        let exact_cached = view != View::Both
+            && cached
+            && layers
+                .iter()
+                .filter(|layer| !layer.still && !layer.plain)
+                .all(|layer| open.exact(&layer.clip, &layer.config, layer.start));
+        let shown = cached
+            && pair(open, canvas, layers, (view, true), 0.0, width, cancel)
+                .map(|quick| post(ui, cancel, frame(quick), String::new(), None, false))
+                .is_ok();
+        if !shown || (!exact_cached && cancel.pause(Instant::now() + IDLE)) {
+            let exact = match pair(open, canvas, layers, (view, false), 0.0, width, cancel) {
+                Ok(exact) => exact,
+                Err(error) => {
+                    fail(ui, cancel, error);
+                    return None;
+                }
+            };
+            post(ui, cancel, frame(exact), String::new(), None, false);
         }
-        let exact = match pair(open, canvas, layers, (view, false), 0.0, width, cancel) {
-            Ok(exact) => exact,
-            Err(error) => {
-                fail(ui, cancel, error);
-                return None;
-            }
-        };
-        post(ui, cancel, frame(exact), String::new(), None, false);
         for (layer, config) in idle(layers, view, size) {
             open.open(&layer.clip, &config, false, &|_| {}, cancel)
                 .ok()?;
@@ -1150,9 +1185,12 @@ fn open_next(
     let mut there = held.to_vec();
     for (index, stretch) in parts.iter().enumerate().skip(1) {
         let from = parts[index - 1].end - EARLY;
+        let from_clock = parts[index - 1].end - EARLY_CLOCK;
         let early = || {
             let made = f64::from_bits(reach.made.load(Ordering::Relaxed));
-            reach.current.load(Ordering::Relaxed) + 1 < index || made < from
+            let clock = reach.clock();
+            reach.current.load(Ordering::Relaxed) + 1 < index
+                || (made < from && (clock.is_nan() || clock < from_clock))
         };
         let mut waiting = locked(&reach.wake.0);
         while early() && !stop.stopped() {
@@ -1271,16 +1309,29 @@ fn compose_all(
             }
             let moved = f64::from(count) * step;
             let begun = Instant::now();
-            let solid = layers.iter().filter(|layer| !layer.still);
-            let cached = !original && solid.into_iter().all(|layer| hit(open, layer, moved));
+            let processed = |layer: &Layer| !layer.still && !layer.plain;
+            let any_processed = layers.iter().any(processed);
+            let any_plain = layers.iter().any(|layer| !layer.still && layer.plain);
+            let cached = !original
+                && layers
+                    .iter()
+                    .filter(|layer| processed(layer))
+                    .all(|layer| hit(open, layer, moved));
+            let paced = !original
+                && (cached
+                    || layers
+                        .iter()
+                        .filter(|layer| processed(layer))
+                        .all(|layer| hit_used(open, layer, moved)));
+            let all_cached = paced && any_processed && !any_plain;
             let shown = pair(open, canvas, &layers, (view, true), moved, width, stop);
             let (image, before) = match shown {
                 Ok(shown) => shown,
                 Err(error) => return failed(error),
             };
             // the opener slows the composer down for a moment
-            if cached {
-                warm = WARM;
+            if all_cached {
+                (warm, spent, done, debt) = (WARM, 0.0, 0, 0.0);
             } else if !reach.opening.load(Ordering::Relaxed) {
                 let took = begun.elapsed().as_secs_f64();
                 match warm > 0 {
@@ -1291,7 +1342,7 @@ fn compose_all(
                     }
                 }
             }
-            let said = match cached {
+            let said = match cached && any_processed {
                 true => details(open, &stretch.layers, original, &setup).0,
                 false => text.clone(),
             };
@@ -1315,7 +1366,17 @@ fn compose_all(
                 break;
             }
             count += 1;
-            if !auto || done < BURST || debt < DEBT || made - reach.clock() > RESERVE {
+            if paced {
+                let lead = made - reach.clock();
+                if lead > CACHED_AHEAD {
+                    let wait = Duration::from_secs_f64((lead - CACHED_AHEAD).min(step * 4.0));
+                    if !stop.pause(Instant::now() + wait) {
+                        return Ok(false);
+                    }
+                }
+            }
+            if all_cached || !auto || done < BURST || debt < DEBT || made - reach.clock() > RESERVE
+            {
                 continue;
             }
             let short = 1.15 * spent / (f64::from(done) * step);

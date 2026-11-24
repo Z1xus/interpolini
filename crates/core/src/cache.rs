@@ -19,11 +19,11 @@ use crate::encode::{self, OPENS};
 use crate::graph::{Graph, Info};
 use crate::work::{self, Cancel};
 
-pub const PIECE: i32 = 30;
+pub const PIECE: i32 = 15;
 const ROOM: usize = 8;
 const IDLE: Duration = Duration::from_millis(100);
 // slices let the decoder use threads without a delay
-const SLICES: usize = 8;
+const SLICES: usize = 4;
 // the quantizer, at least 45 db luma psnr on the test clips
 const QUALITY: u32 = 20;
 // the time between two tries to give a frame to a busy encoder
@@ -269,6 +269,11 @@ impl Reader {
     pub(crate) fn index(&self, seconds: f64) -> i32 {
         let n = (seconds * self.form.fps() * f64::from(self.form.every)).round() as i32;
         (n / self.form.every).clamp(0, self.form.frames() - 1)
+    }
+
+    pub(crate) fn exact(&self, seconds: f64) -> bool {
+        let index = self.index(seconds);
+        index * self.form.every == self.form.info.number(seconds) && self.has(index)
     }
 
     pub(crate) fn has(&self, n: i32) -> bool {

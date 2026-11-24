@@ -145,7 +145,11 @@ export component PreferencesPanel inherits VerticalLayout {
                     options: ["Auto", "512 MB", "1 GB", "2 GB", "4 GB"];
                     value: root.prefs.memory == 0 ? "Auto" : root.prefs.memory == 512 ? "512 MB" : "\{root.prefs.memory / 1024} GB";
                     changed(choice) => {
-                        root.prefs.memory = choice == "Auto" ? 0 : choice == "512 MB" ? 512 : choice.to-float() * 1024;
+                        root.prefs.memory = choice == "512 MB" ? 512
+                            : choice == "1 GB" ? 1024
+                            : choice == "2 GB" ? 2048
+                            : choice == "4 GB" ? 4096
+                            : 0;
                         root.changed();
                     }
                 }
@@ -255,7 +259,10 @@ export component PreferencesPanel inherits VerticalLayout {
                 options: ["Off", "1 min", "5 min", "10 min"];
                 value: root.prefs.autosave == 0 ? "Off" : "\{root.prefs.autosave} min";
                 changed(choice) => {
-                    root.prefs.autosave = choice == "Off" ? 0 : choice.to-float();
+                    root.prefs.autosave = choice == "1 min" ? 1
+                        : choice == "5 min" ? 5
+                        : choice == "10 min" ? 10
+                        : 0;
                     root.changed();
                 }
             }

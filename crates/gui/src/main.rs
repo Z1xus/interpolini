@@ -60,6 +60,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     #[cfg(windows)]
     config::mark();
+    interpolini_core::budget::enter(interpolini_core::budget::Class::Interactive);
     config::create();
     let report = config::app_dir().join("panic.txt");
     let previous = std::panic::take_hook();
