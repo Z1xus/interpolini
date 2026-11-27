@@ -98,12 +98,16 @@
 	const index = $derived(pages.findIndex((entry) => route(entry) === page.route.id));
 	const current = $derived(pages[index]);
 	const title = $derived(current.slug ? `${current.title} | interpolini` : current.title);
+	const markdown = $derived(
+		new URL(asset(`${current.slug || "index"}.md` as AssetPath), origin).href
+	);
 </script>
 
 <svelte:head>
 	<title>{title}</title>
 	<meta name="description" content={current.description} />
 	<meta name="theme-color" content="#e8483a" />
+	<link rel="alternate" type="text/markdown" href={markdown} />
 	<meta property="og:site_name" content="interpolini" />
 	<meta property="og:title" content={title} />
 	<meta property="og:description" content={current.description} />

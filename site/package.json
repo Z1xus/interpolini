@@ -6,7 +6,7 @@
 	"packageManager": "bun@1.4.2",
 	"scripts": {
 		"dev": "vite dev",
-		"build": "vite build && bun scripts/search.ts",
+		"build": "vite build && bun scripts/search.ts && bun scripts/llms.ts",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync",
 		"check": "TSGO_BIN=$PWD/node_modules/tsgo/bin/tsc svelte-check-native --workspace .",

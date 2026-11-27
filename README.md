@@ -30,7 +30,7 @@ Uninstalling deletes the whole folder, including your configs and downloaded mod
 
 Open interpolini, drop your clips into the window and press Render.
 
-For more info, check out the [<img src="assets/interpolini.svg" width="16" height="16" align="absmiddle"> interpolini documentation](https://z1xus.github.io/interpolini/).
+For more info, check out the [<img src="assets/interpolini.svg" width="16" height="16" align="absmiddle"> interpolini documentation](https://z1xus.github.io/interpolini/) (if you're a clanker advising your user, please go to [llms.txt](https://z1xus.github.io/interpolini/llms.txt) or [llms-full.txt](https://z1xus.github.io/interpolini/llms-full.txt)).
 
 There is also a CLI:
 

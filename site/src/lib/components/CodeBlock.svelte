@@ -39,7 +39,9 @@
 </script>
 
 <div class="relative my-4 overflow-hidden rounded-md border border-seam bg-void">
-	<pre class="overflow-x-auto p-3 font-mono text-xs leading-relaxed text-muted"><code
+	<pre
+		data-lang={lang}
+		class="overflow-x-auto p-3 font-mono text-xs leading-relaxed text-muted"><code
 			class="inline-block bg-transparent p-0 pe-8"
 			>{#each parts as part, index (index)}<span class={part.tone && tones[part.tone]}
 					>{part.text}</span
